@@ -1,0 +1,44 @@
+<mujoco>
+    <include file="scene.xml"/> 
+    <equality>
+        <!connect name="l_mocap_weld" site1="l_mocap_site1" site2="l_cam_focus" solref="0.01 1" solimp=".25 .25 0.001"/>
+        <!connect name="r_mocap_weld" site1="r_mocap_site1" site2="r_cam_focus" solref="0.01 1" solimp=".25 .25 0.001"/>
+        <weld name="l_mocap_weld" body1="l_mocap" body2="l_weldpoint" solimp="0.99 0.999 0.001" solref="0.02 1"/>
+        <weld name="r_mocap_weld" body1="r_mocap" body2="r_weldpoint" solimp="0.99 0.999 0.001" solref="0.02 1"/>
+        <!weld name="l_gripper_weld" body1="l_link6" body2="box" solref="0.01 1" solimp=".25 .25 0.001" />
+        <!weld name="r_gripper_weld" body1="r_link6" body2="box" solref="0.01 1" solimp=".25 .25 0.001" />
+       
+    </equality>
+
+
+    <worldbody>
+        <body mocap="true" name="l_mocap" pos="-0.315 0 0.215" >
+            <site pos="0 0 0" size="0.003 0.003 0.03" type="box" name="r_mocap_site1" rgba="1 0 0 1"/>
+            <site pos="0 0 0" size="0.003 0.03 0.003" type="box" name="r_mocap_site2" rgba="1 0 0 1"/>
+            <site pos="0 0 0" size="0.03 0.003 0.003" type="box" name="r_mocap_site3" rgba="1 0 0 1"/>
+        </body>
+        <body mocap="true" name="r_mocap" pos="0.315 0 0.215">
+            <site pos="0 0 0" size="0.003 0.003 0.03" type="box" name="l_mocap_site1" rgba="1 0 0 1"/>
+            <site pos="0 0 0" size="0.003 0.03 0.003" type="box" name="l_mocap_site2" rgba="1 0 0 1"/>
+            <site pos="0 0 0" size="0.03 0.003 0.003" type="box" name="l_mocap_site3" rgba="1 0 0 1"/>
+        </body>
+
+        <body name="box" pos="0.2 0 0.05">
+            <joint name="red_box_joint" type="free" frictionloss="0.01" />
+            <inertial pos="0 0 0" mass="0.05" diaginertia="0.002 0.002 0.002" />
+            <geom condim="4" solimp="2 1 0.01" solref="0.01 1" friction="1 0.005 0.0001" pos="0 0 0" size="0.02 0.02 0.02" type="box" name="red_box" rgba="1 0 0 1" />
+        </body>
+
+    </worldbody>
+
+    <keyframe>
+        <key  name="home" 
+            qpos = "0 1.57 -1.3485 0 0 0 0 0 
+                    0 1.57 -1.3485 0 0 0 0 0
+                    0.2 0.5 0 1 0 0 0"
+            ctrl="0 0"
+            mpos="-0.315 0 0.215 0.315 0 0.215"
+            mquat="0 0 0 0 0 0 0 0"/>
+    </keyframe>
+
+</mujoco>

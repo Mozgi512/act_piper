@@ -1,0 +1,40 @@
+<mujoco model="piper_scene">
+  <include file="piper_dependencies.xml"/>
+  <include file="piper_left.xml"/>
+  <include file="piper_right.xml"/>
+
+
+  <statistic center="0 0 0.1" extent="0.4"/>
+
+  <visual>
+    <headlight diffuse="0.6 0.6 0.6" ambient="0.3 0.3 0.3" specular="0 0 0"/>
+    <rgba haze="0.15 0.25 0.35 1"/>
+    <global azimuth="120" elevation="-20"/>
+  </visual>
+
+  <asset>
+    <texture type="skybox" file="assets/desert.png" gridsize="3 4" gridlayout=".U..LFRB.D.." />
+    <!texture type="skybox" builtin="gradient" rgb1="0.3 0.5 0.7" rgb2="0 0 0" width="512" height="3072"/>
+    <texture type="2d" name="groundplane" builtin="checker" mark="edge" rgb1="0.2 0.3 0.4" rgb2="0.1 0.2 0.3"
+      markrgb="0.8 0.8 0.8" width="300" height="300"/>
+    <material name="groundplane" texture="groundplane" texuniform="true" texrepeat="5 5" reflectance="0"/>
+    <mesh file="tabletop.stl" name="tabletop" scale="0.001 0.001 0.001"/>
+  </asset>
+
+  <worldbody>
+  
+    <light pos="0 0 1.5" dir="0 0 -1" directional="true"/>
+    <geom name="floor" size="0 0 0.05" type="plane" material="groundplane" pos="0 0 -.5"/>
+    <body name="table" pos="0 0 0">
+            <geom group="1" mesh="tabletop" pos="0 0 0" type="mesh" conaffinity="1" contype="1" name="table" rgba="0.2 0.2 0.2 1" />
+        </body>
+        <body name="midair" pos="0 .6 0.2">
+            <site pos="0 0 0" size="0.01" type="sphere" name="midair" rgba="1 0 0 0"/>
+        </body>
+        <camera name="left_pillar" pos="-0.5 -0.4 0.6" fovy="78" mode="targetbody" target="table"/>
+        <camera name="right_pillar" pos="0.5 -0.4 0.6" fovy="78" mode="targetbody" target="table"/>
+        <camera name="top" pos="0 0 0.8" fovy="78" mode="targetbody" target="table"/>
+        <camera name="angle" pos="0 -0.4 0.7" fovy="78" mode="targetbody" target="table"/>
+        <camera name="front_close" pos="0 -0.4 0.4" fovy="78" mode="targetbody" target="l_camera_focus"/>
+  </worldbody>
+</mujoco>
