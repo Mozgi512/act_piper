@@ -168,7 +168,9 @@ def test_policy(task_name):
         episode = [ts]
         if onscreen_render:
             ax = plt.subplot()
-            plt_img = ax.imshow(ts.observation['images']['angle'])
+            cam_image = env.physics.render(height=360, width=640, camera_id="angle")
+            plt_img = ax.imshow(cam_image)
+            #plt_img = ax.imshow(ts.observation['images']['angle'])
             plt.ion()
 
         policy = PickAndTransferPolicy(inject_noise)
@@ -177,7 +179,9 @@ def test_policy(task_name):
             ts = env.step(action)
             episode.append(ts)
             if onscreen_render:
-                plt_img.set_data(ts.observation['images']['angle'])
+                cam_image = env.physics.render(height=360, width=640, camera_id="angle")
+                plt_img.set_data(cam_image)
+                #plt_img.set_data(ts.observation['images']['angle'])
                 plt.pause(0.02)
         plt.close()
 

@@ -1,5 +1,5 @@
-ckpt/
-assets(origin)/
-assets_piper(old)/
-__pycache__/
-sim_dataset/
+ckpt
+assets(origin)
+assets_piper(old)
+__pycache__
+sim_dataset
