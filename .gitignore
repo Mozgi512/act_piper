@@ -2,10 +2,6 @@ ckpt
 assets(origin)
 assets_piper(old)
 __pycache__
-<<<<<<< HEAD
-sim_dataset
-=======
 sim_dataset
 piper_scripted_dataset
 *.csv
->>>>>>> d65101b (joint space simulation without limit)
