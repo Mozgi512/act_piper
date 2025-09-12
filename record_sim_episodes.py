@@ -5,13 +5,15 @@ import argparse
 import matplotlib.pyplot as plt
 import h5py
 
-from constants import PUPPET_GRIPPER_POSITION_NORMALIZE_FN, SIM_TASK_CONFIGS
-from ee_sim_env import make_ee_sim_env
-from sim_env import make_sim_env, BOX_POSE
+from piper_constants import PUPPET_GRIPPER_POSITION_NORMALIZE_FN, SIM_TASK_CONFIGS
+from piper_ee_sim_env import make_ee_sim_env
+from piper_sim_env import make_sim_env, BOX_POSE
 from scripted_policy import PickAndTransferPolicy, InsertionPolicy
 
 import IPython
 e = IPython.embed
+
+START_ARM_POSE = [2.2, 1.1, -0.5, 1.9, -2.1, -0.8, 0, -2.2, 1.1, -0.5, -1.9, -2.1, 1, 0]
 
 
 def main(args):
@@ -52,12 +54,18 @@ def main(args):
         episode = [ts]
         policy = policy_cls(inject_noise)
         # setup plotting
+        all_actions = [] # actionを記録するための空リスト
         if onscreen_render:
             ax = plt.subplot()
             plt_img = ax.imshow(ts.observation['images'][render_cam_name])
             plt.ion()
+
         for step in range(episode_len):
             action = policy(ts)
+
+            #print(f"Step {step:01d} | EE Command: {action}")
+            all_actions.append(action)
+        
             ts = env.step(action)
             episode.append(ts)
             if onscreen_render:
@@ -73,20 +81,24 @@ def main(args):
             print(f"{episode_idx=} Failed")
 
         joint_traj = [ts.observation['qpos'] for ts in episode]
+
         # replace gripper pose with gripper control
         gripper_ctrl_traj = [ts.observation['gripper_ctrl'] for ts in episode]
         for joint, ctrl in zip(joint_traj, gripper_ctrl_traj):
             left_ctrl = PUPPET_GRIPPER_POSITION_NORMALIZE_FN(ctrl[0])
-            right_ctrl = PUPPET_GRIPPER_POSITION_NORMALIZE_FN(ctrl[2])
+            right_ctrl = PUPPET_GRIPPER_POSITION_NORMALIZE_FN(ctrl[1])
             joint[6] = left_ctrl
             joint[6+7] = right_ctrl
 
         subtask_info = episode[0].observation['env_state'].copy() # box pose at step 0
-
         # clear unused variables
         del env
         del episode
         del policy
+
+        #actions_array = np.array(all_actions)
+        np.savetxt("joint_traj.csv", joint_traj, delimiter=",", fmt="%.5f")
+
 
         # setup the environment
         print('Replaying joint commands')
@@ -94,14 +106,21 @@ def main(args):
         BOX_POSE[0] = subtask_info # make sure the sim_env has the same object configurations as ee_sim_env
         ts = env.reset()
 
+        all_actions = [] # actionを記録するための空リスト
         episode_replay = [ts]
+        #start_arm_pose_np = np.array(START_ARM_POSE)
         # setup plotting
         if onscreen_render:
             ax = plt.subplot()
             plt_img = ax.imshow(ts.observation['images'][render_cam_name])
             plt.ion()
         for t in range(len(joint_traj)): # note: this will increase episode length by 1
-            action = joint_traj[t]
+            joint_traj_np = np.array(joint_traj)
+            action = joint_traj_np[t] 
+
+            all_actions.append(action)
+            #print(f"Step {t:01d} | Joint Command: {action}")
+
             ts = env.step(action)
             episode_replay.append(ts)
             if onscreen_render:
@@ -118,6 +137,9 @@ def main(args):
             print(f"{episode_idx=} Failed")
 
         plt.close()
+        joint_traj1 = [ts.observation['qpos'] for ts in episode_replay]
+        #actions_array = np.array(all_actions)
+        np.savetxt("joint_traj1.csv", joint_traj1, delimiter=",", fmt="%.5f")
 
         """
         For each timestep:

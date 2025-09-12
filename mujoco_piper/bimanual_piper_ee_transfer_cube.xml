@@ -25,16 +25,30 @@
 
         <body name="box" pos="0.2 0 0.05">
             <joint name="red_box_joint" type="free" frictionloss="0.01" />
+<<<<<<< HEAD
             <inertial pos="0 0 0" mass="0.01" diaginertia="0.001 0.001 0.001" />
+=======
+            <inertial pos="0 0 0" mass="0.02" diaginertia="0.002 0.002 0.002" />
+>>>>>>> d65101b (joint space simulation without limit)
             <geom condim="4" solimp="2 1 0.01" solref="0.01 1" friction="1 0.005 0.0001" pos="0 0 0" size="0.02 0.02 0.02" type="box" name="red_box" rgba="1 0 0 1" />
         </body>
 
     </worldbody>
 
+    <actuator>
+        <position name="l_gripper" joint="l_joint7" class="finger" kp="40" kv="5"/>
+        <position name="r_gripper" joint="r_joint7" class="finger" kp="40" kv="5"/>
+    </actuator>
+
+    <equality>
+        <joint joint1="l_joint8" joint2="l_joint7" polycoef="0 -1 0 0 0"/>
+        <joint joint1="r_joint8" joint2="r_joint7" polycoef="0 -1 0 0 0"/>
+    </equality>
+
+
     <keyframe>
         <key  name="home" 
-            qpos = "0 1.57 -1.3485 0 0 0 0 0 
-                    0 1.57 -1.3485 0 0 0 0 0
+            qpos = "2.2 1.1 -0.5 1.9 -2.1 -0.8 0 0 -2.2 1.1 -0.5 -1.9 -2.1 1 0 0
                     0.2 0.5 0 1 0 0 0"
             ctrl="0 0"
             mpos="-0.315 0 0.215 0.315 0 0.215"

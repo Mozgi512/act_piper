@@ -1,0 +1,2 @@
+python3 record_sim_episodes.py --task_name sim_transfer_cube_scripted --dataset_dir piper_scripted_dataset --num_episodes 50
+

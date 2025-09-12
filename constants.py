@@ -35,7 +35,8 @@ SIM_TASK_CONFIGS = {
 ### Simulation envs fixed constants
 DT = 0.02
 JOINT_NAMES = ["waist", "shoulder", "elbow", "forearm_roll", "wrist_angle", "wrist_rotate"]
-START_ARM_POSE = [0, 1.57, -1.3485, 0, 0, 0, 0, 0, 0, 1.57, -1.3485, 0, 0, 0, 0, 0]
+#START_ARM_POSE = [0, 1.57, -1.3485, 0, 0, 0, 0, 0, 0, 1.57, -1.3485, 0, 0, 0, 0, 0]
+START_ARM_POSE = [2.2, 1.1, -0.5, 1.9, -2.1, -0.8, 0, 0, -2.2, 1.1, -0.5, -1.9, -2.1, 1, 0, 0]
 
 XML_DIR = str(pathlib.Path(__file__).parent.resolve()) + '/mujoco_piper/' # note: absolute path
 

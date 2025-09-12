@@ -86,7 +86,7 @@
             <body name="r_link4" pos="-0.24221 0.068514 0" quat="0.544767 -0.544769 -0.450809 0.450808" gravcomp="1">
               <inertial pos="0.000276465 -0.00102804 -0.00472831" quat="0.492305 0.505285 0.503294 0.499017"
                 mass="0.127087" diaginertia="4.87057e-05 4.10595e-05 3.82001e-05"/>
-              <joint name="r_joint4" axis="0 0 1" range="-1.832 1.832"/>
+              <joint name="r_joint4" axis="0 0 1" range="-3.664 0"/>
               <geom mesh="link4_2" material="gray_mat" class="visual"/>
               <geom mesh="link4_3" material="darker_gray_mat" class="visual"/>
               <geom mesh="link4_4" material="gray_mat" class="visual"/>
@@ -123,11 +123,19 @@
                     <inertial pos="-0.000277778 -0.0467673 -0.00921029" quat="0.46134 0.536174 -0.553273 0.439968"
                       mass="0.0264823" diaginertia="0.001 0.001 0.001"/>
                     <joint name="r_joint7" axis="0 0 -1" class="finger" range="0 0.035"/>
+<<<<<<< HEAD
                     <geom mesh="link7" material="gray_mat" class="visual" name="r_gripper_finger"/>
                     <geom type="box" size=".012 .015 .0025" pos="0 -0.015 -0.0025" rgba="1 0 0 .2" class="collision"
                       friction="1 0.005 0.0001" solimp="2 1 0.01" solref="0.01 1" contype="1" conaffinity="1" />
                     <geom type="box" size=".015 .015 .0025" pos="0 -0.045 -0.0025" rgba="0 0 1 .2" class="collision"
                      friction="1 0.005 0.0001" solimp="2 1 0.01" solref="0.01 1" contype="1" conaffinity="1" />
+=======
+                    <geom mesh="link7" material="gray_mat" class="visual" />
+                    <geom type="box" size=".012 .015 .0025" pos="0 -0.011 -0.0025" rgba="1 0 0 1" class="collision"
+                      friction="1 0.005 0.0001" solimp="2 1 0.01" solref="0.01 1" contype="1" conaffinity="1" name="r_gripper_finger"/>
+                    <geom type="box" size=".015 .015 .0025" pos="0 -0.041 -0.0025" rgba="0 0 1 1" class="collision"
+                     friction="1 0.005 0.0001" solimp="2 1 0.01" solref="0.01 1" contype="1" conaffinity="1" name="r2"/>
+>>>>>>> d65101b (joint space simulation without limit)
                   </body>
                   <body name="r_link8" pos="0 0 0.13503" quat="1.89468e-08 -1.89469e-08 -0.707108 0.707105" gravcomp="1">
                     <inertial pos="0.000277817 0.0467674 -0.0092103" quat="0.553273 0.439968 -0.46134 0.536174"
@@ -151,13 +159,5 @@
   <contact>
     <exclude body1="r_base_link" body2="r_link1"/>
   </contact>
-
-  <equality>
-    <joint joint1="r_joint8" joint2="r_joint7" polycoef="0 -1 0 0 0"/>
-  </equality>
-
-  <actuator>
-    <position name="r_gripper" joint="r_joint7" class="finger" kp="40" kv="5"/>
-  </actuator>
 
 </mujoco>

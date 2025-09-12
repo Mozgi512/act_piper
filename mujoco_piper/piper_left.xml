@@ -123,11 +123,19 @@
                     <inertial pos="-0.000277778 -0.0467673 -0.00921029" quat="0.46134 0.536174 -0.553273 0.439968"
                       mass="0.0264823" diaginertia="0.001 0.001 0.001"/>
                     <joint name="l_joint7" axis="0 0 -1" class="finger" range="0 0.035"/>
+<<<<<<< HEAD
                     <geom mesh="link7" material="gray_mat" class="visual" name="l_gripper_finger"/>
                     <geom type="box" size=".012 .015 .0025" pos="0 -0.015 -0.0025" rgba="1 0 0 .2" class="collision"
                      friction="1 0.005 0.0001" solimp="2 1 0.01" solref="0.01 1" contype="1" conaffinity="1" />
                     <geom type="box" size=".015 .015 .0025" pos="0 -0.045 -0.0025" rgba="0 0 1 .2" class="collision"
                      friction="1 0.005 0.0001" solimp="2 1 0.01" solref="0.01 1" contype="1" conaffinity="1" />
+=======
+                    <geom mesh="link7" material="gray_mat" class="visual"/>
+                    <geom type="box" size=".012 .015 .0025" pos="0 -0.011 -0.0025" rgba="1 0 0 .2" class="collision"
+                     friction="1 0.005 0.0001" solimp="2 1 0.01" solref="0.01 1" contype="1" conaffinity="1" name="l_gripper_finger"/>
+                    <geom type="box" size=".015 .015 .0025" pos="0 -0.041 -0.0025" rgba="0 0 1 .2" class="collision"
+                     friction="1 0.005 0.0001" solimp="2 1 0.01" solref="0.01 1" contype="1" conaffinity="1" name="l2"/>
+>>>>>>> d65101b (joint space simulation without limit)
                   </body>
                   <body name="l_link8" pos="0 0 0.13503" quat="1.89468e-08 -1.89469e-08 -0.707108 0.707105" gravcomp="1">
                     <inertial pos="0.000277817 0.0467674 -0.0092103" quat="0.553273 0.439968 -0.46134 0.536174"
@@ -151,13 +159,5 @@
   <contact>
     <exclude body1="l_base_link" body2="l_link1"/>
   </contact>
-
-  <equality>
-    <joint joint1="l_joint8" joint2="l_joint7" polycoef="0 -1 0 0 0"/>
-  </equality>
-
-  <actuator>
-    <position name="l_gripper" joint="l_joint7" class="finger" kp="40" kv="5"/>
-  </actuator>
-
+  
 </mujoco>

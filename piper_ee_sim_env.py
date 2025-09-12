@@ -2,11 +2,11 @@ import numpy as np
 import collections
 import os
 
-from constants import DT, XML_DIR, START_ARM_POSE
-from constants import PUPPET_GRIPPER_POSITION_CLOSE
-from constants import PUPPET_GRIPPER_POSITION_UNNORMALIZE_FN
-from constants import PUPPET_GRIPPER_POSITION_NORMALIZE_FN
-from constants import PUPPET_GRIPPER_VELOCITY_NORMALIZE_FN
+from piper_constants import DT, XML_DIR, START_ARM_POSE
+from piper_constants import PUPPET_GRIPPER_POSITION_CLOSE
+from piper_constants import PUPPET_GRIPPER_POSITION_UNNORMALIZE_FN
+from piper_constants import PUPPET_GRIPPER_POSITION_NORMALIZE_FN
+from piper_constants import PUPPET_GRIPPER_VELOCITY_NORMALIZE_FN
 
 from utils import sample_box_pose, sample_insertion_pose
 from dm_control import mujoco
@@ -162,6 +162,22 @@ class TransferCubeEETask(BimanualPiperEETask):
         np.copyto(physics.data.qpos[box_start_idx : box_start_idx + 7], cube_pose)
         # print(f"randomized cube position to {cube_position}")
 
+        """
+        for i in range(physics.model.njnt):
+            joint_name = physics.model.joint(i).name
+            qpos_start_index = physics.model.jnt_qposadr[i]
+            if i < physics.model.njnt - 1:
+                qpos_end_index = physics.model.jnt_qposadr[i+1]
+                qpos_len = qpos_end_index - qpos_start_index
+            else:
+                qpos_len = physics.model.nq - qpos_start_index
+            qpos_indices = list(range(qpos_start_index, qpos_start_index + qpos_len))
+            print(f"qpos{qpos_indices} -> Joint '{joint_name}' (dof: {qpos_len})")
+        """
+        for i in range(physics.model.nu):
+            actuator_name = physics.model.actuator(i).name
+            control_value = physics.data.ctrl[i]
+            print(f"ctrl[{i}] -> Actuator '{actuator_name}': {control_value:.4f}")
         super().initialize_episode(physics)
 
     @staticmethod
@@ -180,8 +196,8 @@ class TransferCubeEETask(BimanualPiperEETask):
             contact_pair = (name_geom_1, name_geom_2)
             all_contact_pairs.append(contact_pair)
 
-        touch_left_gripper = ("red_box", "l_gripper_finger") in all_contact_pairs
-        touch_right_gripper = ("red_box", "r_gripper_finger") in all_contact_pairs
+        touch_left_gripper = ("l_gripper_finger","red_box") in all_contact_pairs
+        touch_right_gripper = ("r_gripper_finger","red_box") in all_contact_pairs
         touch_table = ("red_box", "table") in all_contact_pairs
 
         reward = 0

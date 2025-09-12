@@ -98,7 +98,7 @@ class PickAndTransferPolicy(BasePolicy):
             {"t": 170, "xyz": box_xyz + np.array([0, 0, -0.015]), "quat": gripper_pick_quat.elements, "gripper": 0}, # close gripper
             {"t": 200, "xyz": meet_xyz + np.array([0.05, 0, 0]), "quat": gripper_pick_quat.elements, "gripper": 0}, # approach meet position
             {"t": 220, "xyz": meet_xyz, "quat": gripper_pick_quat.elements, "gripper": 0}, # move to meet position
-            {"t": 310, "xyz": meet_xyz, "quat": gripper_pick_quat.elements, "gripper": 1}, # open gripper
+            {"t": 310, "xyz": meet_xyz, "quat": gripper_pick_quat.elements, "gripper": 0}, # open gripper
             {"t": 360, "xyz": meet_xyz + np.array([0.1, 0, 0]), "quat": gripper_pick_quat.elements, "gripper": 1}, # move to right
             {"t": 400, "xyz": meet_xyz + np.array([0.1, 0, 0]), "quat": gripper_pick_quat.elements, "gripper": 1}, # stay
         ]
@@ -178,6 +178,28 @@ def test_policy(task_name):
             action = policy(ts)
             ts = env.step(action)
             episode.append(ts)
+
+            # === 接触判定デバッグ =======================================================
+            # 現在のphysicsインスタンスを取得
+            #physics = env.physics
+            #print(f"--- Step {step}: {physics.data.ncon} contacts ---")
+            #for i in range(physics.data.ncon):
+            #    contact = physics.data.contact[i]
+            #    geom1_name = physics.model.id2name(contact.geom1, 'geom')
+            #    geom2_name = physics.model.id2name(contact.geom2, 'geom')
+            #   print(f"  Contact {i}: {geom1_name} <--> {geom2_name}")
+
+            # === 関節角度表示==========================================================
+            physics = env.physics
+            print(f"--- Step {step} Joint Angles ---")
+            for i in range(physics.model.njnt):
+                joint_name = physics.model.id2name(i, 'joint')
+                if physics.model.joint(joint_name).type[0] != 0: # freejoint (type 0) を除外
+                    qpos_index = physics.model.jnt_qposadr[i]
+                    angle_rad = physics.data.qpos[qpos_index]
+                    print(f"  {joint_name}: {angle_rad:.1f}")
+            # ========================================================================
+    
             if onscreen_render:
                 cam_image = env.physics.render(height=360, width=640, camera_id="angle")
                 plt_img.set_data(cam_image)

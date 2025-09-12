@@ -6,11 +6,12 @@ from dm_control import mujoco
 from dm_control.rl import control
 from dm_control.suite import base
 
-from constants import DT, XML_DIR, START_ARM_POSE
-from constants import PUPPET_GRIPPER_POSITION_UNNORMALIZE_FN
-from constants import MASTER_GRIPPER_POSITION_NORMALIZE_FN
-from constants import PUPPET_GRIPPER_POSITION_NORMALIZE_FN
-from constants import PUPPET_GRIPPER_VELOCITY_NORMALIZE_FN
+from piper_constants import DT, XML_DIR, START_ARM_POSE
+from piper_constants import PUPPET_GRIPPER_POSITION_CLOSE
+from piper_constants import PUPPET_GRIPPER_POSITION_UNNORMALIZE_FN
+from piper_constants import MASTER_GRIPPER_POSITION_NORMALIZE_FN
+from piper_constants import PUPPET_GRIPPER_POSITION_NORMALIZE_FN
+from piper_constants import PUPPET_GRIPPER_VELOCITY_NORMALIZE_FN
 
 import IPython
 e = IPython.embed
@@ -51,7 +52,7 @@ def make_sim_env(task_name):
         raise NotImplementedError
     return env
 
-class BimanualViperXTask(base.Task):
+class BimanualPiperTask(base.Task):
     def __init__(self, random=None):
         super().__init__(random=random)
 
@@ -70,6 +71,7 @@ class BimanualViperXTask(base.Task):
         env_action = np.concatenate([left_arm_action, full_left_gripper_action, right_arm_action, full_right_gripper_action])
         super().before_step(env_action, physics)
         return
+    
 
     def initialize_episode(self, physics):
         """Sets the state of the environment at the start of each episode."""
@@ -118,7 +120,7 @@ class BimanualViperXTask(base.Task):
         raise NotImplementedError
 
 
-class TransferCubeTask(BimanualViperXTask):
+class TransferCubeTask(BimanualPiperTask):
     def __init__(self, random=None):
         super().__init__(random=random)
         self.max_reward = 4
@@ -127,12 +129,30 @@ class TransferCubeTask(BimanualViperXTask):
         """Sets the state of the environment at the start of each episode."""
         # TODO Notice: this function does not randomize the env configuration. Instead, set BOX_POSE from outside
         # reset qpos, control and box position
-        with physics.reset_context():
+        with physics.reset_context():      
+            """
+            for i in range(physics.model.njnt):
+                joint_name = physics.model.joint(i).name
+                qpos_start_index = physics.model.jnt_qposadr[i]
+                if i < physics.model.njnt - 1:
+                    qpos_end_index = physics.model.jnt_qposadr[i+1]
+                    qpos_len = qpos_end_index - qpos_start_index
+                else:
+                    qpos_len = physics.model.nq - qpos_start_index
+                qpos_indices = list(range(qpos_start_index, qpos_start_index + qpos_len))
+                print(f"qpos{qpos_indices} -> Joint '{joint_name}' (dof: {qpos_len})")
+            """
             physics.named.data.qpos[:16] = START_ARM_POSE
             np.copyto(physics.data.ctrl, START_ARM_POSE)
             assert BOX_POSE[0] is not None
             physics.named.data.qpos[-7:] = BOX_POSE[0]
             # print(f"{BOX_POSE=}")
+
+            for i in range(physics.model.nu):
+                actuator_name = physics.model.actuator(i).name
+                control_value = physics.data.ctrl[i]
+                print(f"ctrl[{i}] -> Actuator '{actuator_name}': {control_value:.4f}")
+                
         super().initialize_episode(physics)
 
     @staticmethod
@@ -151,8 +171,8 @@ class TransferCubeTask(BimanualViperXTask):
             contact_pair = (name_geom_1, name_geom_2)
             all_contact_pairs.append(contact_pair)
 
-        touch_left_gripper = ("red_box", "left_gripper_1") in all_contact_pairs
-        touch_right_gripper = ("red_box", "right_gripper_1") in all_contact_pairs
+        touch_left_gripper = ("l_gripper_finger","red_box") in all_contact_pairs
+        touch_right_gripper = ("r_gripper_finger","red_box") in all_contact_pairs
         touch_table = ("red_box", "table") in all_contact_pairs
 
         reward = 0
@@ -167,7 +187,7 @@ class TransferCubeTask(BimanualViperXTask):
         return reward
 
 
-class InsertionTask(BimanualViperXTask):
+class InsertionTask(BimanualPiperTask):
     def __init__(self, random=None):
         super().__init__(random=random)
         self.max_reward = 4
