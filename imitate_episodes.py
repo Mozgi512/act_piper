@@ -224,6 +224,7 @@ def eval_bc(config, ckpt_name, save_episode=True):
         target_qpos_list = []
         rewards = []
         with torch.inference_mode():
+            actions = []
             for t in range(max_timesteps):
                 ### update onscreen render and wait for DT
                 if onscreen_render:
@@ -269,6 +270,8 @@ def eval_bc(config, ckpt_name, save_episode=True):
                 action = post_process(raw_action)
                 target_qpos = action
 
+                actions.append(action)
+
                 ### step the environment
                 ts = env.step(target_qpos)
 
@@ -276,8 +279,8 @@ def eval_bc(config, ckpt_name, save_episode=True):
                 qpos_list.append(qpos_numpy)
                 target_qpos_list.append(target_qpos)
                 rewards.append(ts.reward)
-
             plt.close()
+            np.savetxt("eval_actions.csv", actions, delimiter=",", fmt="%.5f")
         if real_robot:
             move_grippers([env.puppet_bot_left, env.puppet_bot_right], [PUPPET_GRIPPER_JOINT_OPEN] * 2, move_time=0.5)  # open
             pass
