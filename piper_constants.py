@@ -35,21 +35,22 @@ SIM_TASK_CONFIGS = {
 ### Simulation envs fixed constants
 DT = 0.02
 JOINT_NAMES = ["waist", "shoulder", "elbow", "forearm_roll", "wrist_angle", "wrist_rotate"]
-START_ARM_POSE = [2.2, 1.1, -0.5, 1.9, -2.1, -0.8, 0, 0, -2.2, 1.1, -0.5, -1.9, -2.1, 1, 0, 0]
+START_ARM_POSE = [2.2, 1.1, -0.5, 1.9, -2.1, -0.8, 0.01, -0.01, -2.2, 1.1, -0.5, -1.9, -2.1, 1, 0.01, -0.01]
 
 XML_DIR = str(pathlib.Path(__file__).parent.resolve()) + '/mujoco_piper/' # note: absolute path
 
 # Left finger position limits (qpos[7]), right_finger = -1 * left_finger
-MASTER_GRIPPER_POSITION_OPEN = 0.02417
-MASTER_GRIPPER_POSITION_CLOSE = 0.01244
-PUPPET_GRIPPER_POSITION_OPEN = 0.05800
-PUPPET_GRIPPER_POSITION_CLOSE = 0.0
+MASTER_GRIPPER_POSITION_OPEN = 0.035
+MASTER_GRIPPER_POSITION_CLOSE = 0.005
+PUPPET_GRIPPER_POSITION_OPEN = 0.035
+PUPPET_GRIPPER_POSITION_CLOSE = 0.005
 
 # Gripper joint limits (qpos[6])
-MASTER_GRIPPER_JOINT_OPEN = 0.3083
-MASTER_GRIPPER_JOINT_CLOSE = -0.6842
-PUPPET_GRIPPER_JOINT_OPEN = 1.4910
-PUPPET_GRIPPER_JOINT_CLOSE = -0
+#need to be fixed using real robot piper
+MASTER_GRIPPER_JOINT_OPEN = 0.035
+MASTER_GRIPPER_JOINT_CLOSE = 0.005
+PUPPET_GRIPPER_JOINT_OPEN = 0.035
+PUPPET_GRIPPER_JOINT_CLOSE = 0.005
 
 ############################ Helper functions ############################
 
