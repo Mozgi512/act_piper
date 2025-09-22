@@ -25,7 +25,7 @@
   
     <light pos="0 0 1.5" dir="0 0 -1" directional="true"/>
     <geom name="floor" size="0 0 0.05" type="plane" material="groundplane" pos="0 0 -.5"/>
-    <body name="table" pos="0 0 0">
+    <body name="table" pos="0 0.2 0">
             <geom group="1" mesh="tabletop" pos="0 0 0" type="mesh" conaffinity="1" contype="1" name="table" rgba="0.2 0.2 0.2 1" />
             <!site pos="0 -0.3 0" size="0.01" type="sphere" rgba="0 1 0 1"/>
             <!site pos="0 -0.31 0" size="0.003 0.003 2" type="box" rgba="0 1 0 1" />
@@ -33,10 +33,10 @@
         <body name="midair" pos="0 .6 0.2">
             <site pos="0 0 0" size="0.01" type="sphere" name="midair" rgba="1 0 0 0"/>
         </body>
-        <camera name="left_pillar" pos="-0.5 -0.3 0.6" fovy="58" mode="targetbody" target="table"/>
-        <camera name="right_pillar" pos="0.5 -0.3 0.6" fovy="58" mode="targetbody" target="table"/>
-        <camera name="top" pos="0 0 0.8" fovy="58" mode="targetbody" target="table"/>
-        <camera name="angle" pos="0 -0.3 0.9" fovy="58" mode="targetbody" target="table"/>
-        <camera name="front_close" pos="0 -0.3 0.4" fovy="58" mode="targetbody" target="l_camera_focus"/>
+        <camera name="left_pillar" pos="-0.5 0 0.6" fovy="58" mode="targetbody" target="table"/>
+        <camera name="right_pillar" pos="0.5 0 0.6" fovy="58" mode="targetbody" target="table"/>
+        <camera name="top" pos="0 0.25 0.8" fovy="58" mode="targetbody" target="table"/>
+        <camera name="angle" pos="0 0 0.9" fovy="58" mode="targetbody" target="table"/>
+        <camera name="front_close" pos="0 0 0.4" fovy="58" mode="targetbody" target="l_camera_focus"/>
   </worldbody>
 </mujoco>

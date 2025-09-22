@@ -83,10 +83,10 @@ class BimanualPiperEETask(base.Task):
         # (2) get env._physics.named.data.xpos['vx300s_left/gripper_link']
         #     get env._physics.named.data.xquat['vx300s_left/gripper_link']
         #     repeat the same for right side
-        np.copyto(physics.data.mocap_pos[0], [-0.31718881, 0.1, 0.29525084])
+        np.copyto(physics.data.mocap_pos[0], [-0.3, 0.25, 0.3])
         np.copyto(physics.data.mocap_quat[0], [1, 0, 0, 0])
         # right
-        np.copyto(physics.data.mocap_pos[1], np.array([0.31718881, 0.1, 0.29525084]))
+        np.copyto(physics.data.mocap_pos[1], np.array([0.3, 0.25, 0.3]))
         np.copyto(physics.data.mocap_quat[1],  [1, 0, 0, 0])
 
         # reset gripper control

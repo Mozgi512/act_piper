@@ -80,7 +80,7 @@ class PickAndTransferPolicy(BasePolicy):
 
         meet_left_quat = Quaternion(axis=[1.0, 0.0, 0.0], degrees=90)
 
-        meet_xyz = np.array([0, 0.1, 0.25])
+        meet_xyz = np.array([0, 0.25, 0.25])
 
         self.left_trajectory = [
             {"t": 0, "xyz": init_mocap_pose_left[:3], "quat": init_mocap_pose_left[3:], "gripper": 1}, # sleep
@@ -197,7 +197,7 @@ def test_policy(task_name):
                 if physics.model.joint(joint_name).type[0] != 0: # freejoint (type 0) を除外
                     qpos_index = physics.model.jnt_qposadr[i]
                     angle_rad = physics.data.qpos[qpos_index]
-                    print(f"  {joint_name}: {angle_rad:.1f}")
+                    print(f"  {joint_name}: {angle_rad:.2f}")
             # ========================================================================
     
             if onscreen_render:
