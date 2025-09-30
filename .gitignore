@@ -8,3 +8,4 @@ piper_scripted_ckpt
 *.hdf5
 *.ckpt
 *.csv
+*.mp4

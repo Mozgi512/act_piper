@@ -5,7 +5,7 @@ DATA_DIR = '/home/act/act_piper/piper_scripted_dataset'
 SIM_TASK_CONFIGS = {
     'sim_transfer_cube_scripted':{
         'dataset_dir': DATA_DIR + '/sim_transfer_cube_scripted',
-        'num_episodes': 50,
+        'num_episodes': 100,
         'episode_len': 400,
         'camera_names': ['top']
     },

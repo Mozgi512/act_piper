@@ -2,7 +2,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 from pyquaternion import Quaternion
 
-from constants import SIM_TASK_CONFIGS
+from piper_constants import SIM_TASK_CONFIGS
 from piper_ee_sim_env import make_ee_sim_env
 
 import IPython
@@ -84,11 +84,11 @@ class PickAndTransferPolicy(BasePolicy):
 
         self.left_trajectory = [
             {"t": 0, "xyz": init_mocap_pose_left[:3], "quat": init_mocap_pose_left[3:], "gripper": 1}, # sleep
-            {"t": 100, "xyz": meet_xyz + np.array([-0.1, 0, 0.0]), "quat": meet_left_quat.elements, "gripper": 1}, # approach meet position
-            {"t": 260, "xyz": meet_xyz + np.array([0.02, 0, 0.0]), "quat": meet_left_quat.elements, "gripper": 1}, # move to meet position
-            {"t": 310, "xyz": meet_xyz + np.array([0.02, 0, 0.0]), "quat": meet_left_quat.elements, "gripper": 0}, # close gripper
-            {"t": 360, "xyz": meet_xyz + np.array([-0.1, 0, 0.0]), "quat": np.array([1, 0, 0, 0]), "gripper": 0}, # move left
-            {"t": 400, "xyz": meet_xyz + np.array([-0.1, 0, 0.0]), "quat": np.array([1, 0, 0, 0]), "gripper": 0}, # stay
+            {"t": 100, "xyz": meet_xyz + np.array([0, 0, 0.0]), "quat": meet_left_quat.elements, "gripper": 1}, # approach meet position
+            {"t": 260, "xyz": meet_xyz + np.array([0, 0, 0.0]), "quat": meet_left_quat.elements, "gripper": 1}, # move to meet position
+            {"t": 310, "xyz": meet_xyz + np.array([0, 0, 0.0]), "quat": meet_left_quat.elements, "gripper": 0}, # close gripper
+            {"t": 360, "xyz": meet_xyz + np.array([0, 0, 0.0]), "quat": np.array([1, 0, 0, 0]), "gripper": 0}, # move left
+            {"t": 400, "xyz": meet_xyz + np.array([0, 0, 0.0]), "quat": np.array([1, 0, 0, 0]), "gripper": 0}, # stay
         ]
 
         self.right_trajectory = [
