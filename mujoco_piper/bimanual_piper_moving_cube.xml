@@ -1,0 +1,65 @@
+<mujoco>
+    <include file="scene.xml"/>
+    <!include file="piper_dependencies.xml"/>
+    <!include file="piper_left.xml" />
+    <!include file="piper_right.xml" />
+
+    <worldbody>
+        <body name="box" pos="0.2 0.5 0.05">
+            <joint name="red_box_joint" type="free" frictionloss="0.01" />
+            <inertial pos="0 0 0" mass="0.05" diaginertia="0.002 0.002 0.002" />
+            <geom condim="4" solimp="2 1 0.01" solref="0.01 1" friction="1 0.005 0.0001" pos="0 0 0" size="0.02 0.02 0.02" type="box" name="red_box" rgba="1 0 0 1" />
+        </body>
+
+    </worldbody>
+    <!--
+    </actuator>
+        <position ctrllimited="true" ctrlrange="-2.6878 2.6878" joint="l_joint1" kp="80"  user="1" forcelimited="true" forcerange="-150 150"/>
+        <position ctrllimited="true" ctrlrange="0 3.40339" joint="l_joint2" kp="80"  user="1" forcelimited="true" forcerange="-300 300"/>
+        <position ctrllimited="true" ctrlrange="-3.054326 0" joint="l_joint3" kp="80"  user="1" forcelimited="true" forcerange="-100 100"/>
+        <position ctrllimited="true" ctrlrange="-1.85005 1.85005" joint="l_joint4" kp="40"  user="1" forcelimited="true" forcerange="-100 100"/>
+        <position ctrllimited="true" ctrlrange="-1.309 1.309" joint="l_joint5" kp="10"  user="1"/>
+        <position ctrllimited="true" ctrlrange="-1.74533 1.74533" joint="l_joint6" kp="10"  user="1"/>
+        <position ctrllimited="true" ctrlrange="0 0.035" joint="l_joint7" kp="1"  user="40"/>
+        <!position ctrllimited="true" ctrlrange="-0.035 0" joint="l_joint8" kp="200"  user="1"/>
+
+        <position ctrllimited="true" ctrlrange="-2.6878 2.6878" joint="r_joint1" kp="80"  user="1" forcelimited="true" forcerange="-150 150"/>
+        <position ctrllimited="true" ctrlrange="0 3.40339" joint="r_joint2" kp="80"  user="1" forcelimited="true" forcerange="-300 300"/>
+        <position ctrllimited="true" ctrlrange="-3.054326 0" joint="r_joint3" kp="80"  user="1" forcelimited="true" forcerange="-100 100"/>
+        <position ctrllimited="true" ctrlrange="-1.85005 1.85005" joint="r_joint4" kp="40"  user="1" forcelimited="true" forcerange="-100 100"/>
+        <position ctrllimited="true" ctrlrange="-1.309 1.309" joint="r_joint5" kp="10"  user="1"/>
+        <position ctrllimited="true" ctrlrange="-1.74533 1.74533" joint="r_joint6" kp="10"  user="1"/>
+        <position ctrllimited="true" ctrlrange="0 0.035" joint="r_joint7" kp="1"  user="40"/>
+        <!position ctrllimited="true" ctrlrange="-0.035 0" joint="r_joint8" kp="200"  user="1"/>
+
+    </actuator>
+    -->
+    <actuator>
+        <position name="l_joint1" joint="l_joint1" class="piper" kp="800" kv="5"/>
+        <position name="l_joint2" joint="l_joint2" class="piper" kp="800" kv="5"/>
+        <position name="l_joint3" joint="l_joint3" class="piper" kp="800" kv="5"/>
+        <position name="l_joint4" joint="l_joint4" class="piper" kp="400" kv="5"/>
+        <position name="l_joint5" joint="l_joint5" class="piper" kp="100" kv="1.5"/>
+        <position name="l_joint6" joint="l_joint6" class="piper" kp="100" kv="1.5"/>
+        <position name="l_finger" joint="l_joint7" class="finger" kp="400" kv="5"/>
+        <position name="l_finger2" joint="l_joint8" class="finger" kp="400" kv="5"/>
+
+        <position name="r_joint1" joint="r_joint1" class="piper" kp="800" kv="5"/>
+        <position name="r_joint2" joint="r_joint2" class="piper" kp="800" kv="5"/>
+        <position name="r_joint3" joint="r_joint3" class="piper" kp="800" kv="5"/>
+        <position name="r_joint4" joint="r_joint4" class="piper" kp="400" kv="5"/>
+        <position name="r_joint5" joint="r_joint5" class="piper" kp="100" kv="1.5"/>
+        <position name="r_joint6" joint="r_joint6" class="piper" kp="100" kv="1.5"/>
+        <position name="r_finger" joint="r_joint7" class="finger" kp="400" kv="5"/>
+        <position name="r_finger2" joint="r_joint8" class="finger" kp="400" kv="5"/>
+
+    </actuator>
+
+
+    <keyframe>
+        <key qpos="2.2 1.1 -0.5 1.9 -2.1 -0.8 0 0 -2.2 1.1 -0.5 1.24 -2.1 1 0 0
+        0.2 0.5 0 1 0 0 0"/>
+    </keyframe>
+
+
+</mujoco>

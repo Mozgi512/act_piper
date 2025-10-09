@@ -6,7 +6,7 @@ from dm_control import mujoco
 from dm_control.rl import control
 from dm_control.suite import base
 
-from piper_constants import DT, XML_DIR, START_ARM_POSE
+from piper_constants import DT, XML_DIR, START_ARM_POSE,CUBE_MOVE_DISTANCE
 from piper_constants import PUPPET_GRIPPER_POSITION_CLOSE
 from piper_constants import PUPPET_GRIPPER_POSITION_UNNORMALIZE_FN
 from piper_constants import MASTER_GRIPPER_POSITION_NORMALIZE_FN
@@ -46,6 +46,12 @@ def make_sim_env(task_name):
         xml_path = os.path.join(XML_DIR, f'bimanual_piper_insertion.xml')
         physics = mujoco.Physics.from_xml_path(xml_path)
         task = InsertionTask(random=False)
+        env = control.Environment(physics, task, time_limit=20, control_timestep=DT,
+                                  n_sub_steps=None, flat_observation=False)
+    elif 'sim_moving_cube' in task_name:
+        xml_path = os.path.join(XML_DIR, f'bimanual_piper_moving_cube.xml')
+        physics = mujoco.Physics.from_xml_path(xml_path)
+        task = MovingCubeTask(random=False)
         env = control.Environment(physics, task, time_limit=20, control_timestep=DT,
                                   n_sub_steps=None, flat_observation=False)
     else:
@@ -184,6 +190,89 @@ class TransferCubeTask(BimanualPiperTask):
             reward = 3
         if touch_left_gripper and not touch_table: # successful transfer
             reward = 4
+        return reward
+    
+class MovingCubeTask(BimanualPiperTask):
+    def __init__(self, random=None):
+        super().__init__(random=random)
+        self.max_reward = 1
+
+        self.move_duration = 6.8 # seconds
+
+
+    def initialize_episode(self, physics):
+        """Sets the state of the environment at the start of each episode."""
+        # TODO Notice: this function does not randomize the env configuration. Instead, set BOX_POSE from outside
+        # reset qpos, control and box position
+        with physics.reset_context():      
+            """
+            for i in range(physics.model.njnt):
+                joint_name = physics.model.joint(i).name
+                qpos_start_index = physics.model.jnt_qposadr[i]
+                if i < physics.model.njnt - 1:
+                    qpos_end_index = physics.model.jnt_qposadr[i+1]
+                    qpos_len = qpos_end_index - qpos_start_index
+                else:
+                    qpos_len = physics.model.nq - qpos_start_index
+                qpos_indices = list(range(qpos_start_index, qpos_start_index + qpos_len))
+                print(f"qpos{qpos_indices} -> Joint '{joint_name}' (dof: {qpos_len})")
+            """
+            physics.named.data.qpos[:16] = START_ARM_POSE
+            np.copyto(physics.data.ctrl, START_ARM_POSE)
+            assert BOX_POSE[0] is not None
+            physics.named.data.qpos[-7:] = BOX_POSE[0]
+            # print(f"{BOX_POSE=}")
+
+            for i in range(physics.model.nu):
+                actuator_name = physics.model.actuator(i).name
+                control_value = physics.data.ctrl[i]
+                print(f"ctrl[{i}] -> Actuator '{actuator_name}': {control_value:.4f}")
+                
+        super().initialize_episode(physics)
+
+    def before_step(self, action, physics):
+        """
+        物理シミュレーションが1ステップ進む「前」に呼ばれる。
+        ここでキューブの位置を更新し、その後でアームの制御を行う。
+        """
+        # --- 1. 時間に基づいてキューブの位置を更新 ---
+        current_time = physics.data.time
+        
+        # 移動の進捗を計算 (0.0 から 1.0 の間)
+        progress = min(current_time / self.move_duration, 1.0)
+        
+        # 線形補間で現在のキューブのXYZ座標を計算
+        current_xyz = (1 - progress) * BOX_POSE[0][:3] + progress * (BOX_POSE[0][:3]+ np.array([CUBE_MOVE_DISTANCE*2, 0, 0]))
+        
+        # 物理エンジン内のキューブの座標を直接更新
+        physics.named.data.qpos[-7:-4] = current_xyz
+        # (今回は回転はさせないため、quatはそのまま)
+
+        # --- 2. 親クラスのbefore_stepを呼び、ロボットアームを制御する ---
+        super().before_step(action, physics)
+
+    @staticmethod
+    def get_env_state(physics):
+        env_state = physics.data.qpos.copy()[16:]
+        return env_state
+
+    def get_reward(self, physics):
+        # return whether left gripper is holding the box
+        all_contact_pairs = []
+        for i_contact in range(physics.data.ncon):
+            id_geom_1 = physics.data.contact[i_contact].geom1
+            id_geom_2 = physics.data.contact[i_contact].geom2
+            name_geom_1 = physics.model.id2name(id_geom_1, 'geom')
+            name_geom_2 = physics.model.id2name(id_geom_2, 'geom')
+            contact_pair = (name_geom_1, name_geom_2)
+            all_contact_pairs.append(contact_pair)
+
+        touch_right_gripper = ("r_gripper_finger","red_box") in all_contact_pairs
+
+        reward = 0
+        if touch_right_gripper:
+            reward = 1
+
         return reward
 
 

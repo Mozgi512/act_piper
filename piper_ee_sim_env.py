@@ -2,7 +2,7 @@ import numpy as np
 import collections
 import os
 
-from piper_constants import DT, XML_DIR, START_ARM_POSE
+from piper_constants import DT, XML_DIR, START_ARM_POSE,CUBE_MOVE_DISTANCE
 from piper_constants import PUPPET_GRIPPER_POSITION_CLOSE
 from piper_constants import PUPPET_GRIPPER_POSITION_UNNORMALIZE_FN
 from piper_constants import PUPPET_GRIPPER_POSITION_NORMALIZE_FN
@@ -47,6 +47,12 @@ def make_ee_sim_env(task_name):
         task = InsertionEETask(random=False)
         env = control.Environment(physics, task, time_limit=20, control_timestep=DT,
                                   n_sub_steps=None, flat_observation=False)
+    elif 'sim_moving_cube' in task_name:
+        xml_path = os.path.join(XML_DIR, f'bimanual_piper_ee_moving_cube.xml')
+        physics = mujoco.Physics.from_xml_path(xml_path)
+        task = MovingcubeEETask(random=False)
+        env = control.Environment(physics, task, time_limit=20, control_timestep=DT,
+                                  n_sub_steps=None, flat_observation=False)
     else:
         raise NotImplementedError
     return env
@@ -56,10 +62,10 @@ class BimanualPiperEETask(base.Task):
         super().__init__(random=random)
 
     def before_step(self, action, physics):
-        a_len = len(action) // 2
+        a_len = (len(action) -7)// 2
         action_left = action[:a_len]
         action_right = action[a_len:]
-
+        action_right = action[a_len:]
         # set mocap position and quat
         # left
         np.copyto(physics.data.mocap_pos[0], action_left[:3])
@@ -210,6 +216,109 @@ class TransferCubeEETask(BimanualPiperEETask):
         if touch_left_gripper and not touch_table: # successful transfer
             reward = 4
         return reward
+
+class MovingcubeEETask(BimanualPiperEETask):
+    def __init__(self, random=None):
+        super().__init__(random=random)
+        self.max_reward = 1
+
+    def before_step(self, action, physics):
+        """
+        Moving Cubeタスク専用のアクション処理。
+        親クラスのbefore_stepをオーバーライドし、キューブの制御を追加します。
+        """
+        # アクションを左アーム(8), 右アーム(8), キューブ(7)に分割
+        action_left = action[:8]
+        action_right = action[8:16]
+        action_cube = action[16:]
+
+        # --- 1. 左右アームのmocapとグリッパーを制御 (親クラスのロジックと同様) ---
+        # left
+        np.copyto(physics.data.mocap_pos[0], action_left[:3])
+        np.copyto(physics.data.mocap_quat[0], action_left[3:7])
+        # right
+        np.copyto(physics.data.mocap_pos[1], action_right[:3])
+        np.copyto(physics.data.mocap_quat[1], action_right[3:7])
+        # gripper
+        g_left_ctrl = PUPPET_GRIPPER_POSITION_UNNORMALIZE_FN(action_left[7])
+        g_right_ctrl = PUPPET_GRIPPER_POSITION_UNNORMALIZE_FN(action_right[7])
+        np.copyto(physics.data.ctrl, np.array([g_left_ctrl, g_right_ctrl]))
+
+        # --- 2. キューブの位置を直接更新 (前回の回答で提案したロジック) ---
+        if len(action_cube) == 7:
+            cube_xyz = action_cube[:3]
+            cube_quat = action_cube[3:] # w, x, y, z
+
+            # XMLファイルで定義したキューブのジョイント名
+            # おそらく 'red_box_joint' だと思われますが、XMLファイルをご確認ください。
+            joint_name = 'red_box_joint' 
+            
+            joint_id = physics.model.joint(joint_name).id
+            qpos_address = physics.model.jnt_qposadr[joint_id]
+
+            # qposを直接書き換えてキューブを動かす
+            physics.data.qpos[qpos_address : qpos_address+3] = cube_xyz
+            physics.data.qpos[qpos_address+3 : qpos_address+7] = cube_quat
+    
+
+    def initialize_episode(self, physics):
+        """Sets the state of the environment at the start of each episode."""
+        self.initialize_robots(physics)
+        # randomize box position
+        cube_pose = sample_box_pose()
+        box_start_idx = physics.model.name2id('red_box_joint', 'joint')
+        np.copyto(physics.data.qpos[box_start_idx : box_start_idx + 7], cube_pose)
+        # print(f"randomized cube position to {cube_position}")
+
+        """
+        for i in range(physics.model.njnt):
+            joint_name = physics.model.joint(i).name
+            qpos_start_index = physics.model.jnt_qposadr[i]
+            if i < physics.model.njnt - 1:
+                qpos_end_index = physics.model.jnt_qposadr[i+1]
+                qpos_len = qpos_end_index - qpos_start_index
+            else:
+                qpos_len = physics.model.nq - qpos_start_index
+            qpos_indices = list(range(qpos_start_index, qpos_start_index + qpos_len))
+            print(f"qpos{qpos_indices} -> Joint '{joint_name}' (dof: {qpos_len})")
+        """
+        for i in range(physics.model.nu):
+            actuator_name = physics.model.actuator(i).name
+            control_value = physics.data.ctrl[i]
+            print(f"ctrl[{i}] -> Actuator '{actuator_name}': {control_value:.4f}")
+        super().initialize_episode(physics)
+
+    @staticmethod
+    def get_env_state(physics):
+        env_state = physics.data.qpos.copy()[16:]
+        return env_state
+
+    def get_reward(self, physics):
+        # return whether left gripper is holding the box
+        all_contact_pairs = []
+        for i_contact in range(physics.data.ncon):
+            id_geom_1 = physics.data.contact[i_contact].geom1
+            id_geom_2 = physics.data.contact[i_contact].geom2
+            name_geom_1 = physics.model.id2name(id_geom_1, 'geom')
+            name_geom_2 = physics.model.id2name(id_geom_2, 'geom')
+            contact_pair = (name_geom_1, name_geom_2)
+            all_contact_pairs.append(contact_pair)
+
+        #touch_left_gripper = ("l_gripper_finger","red_box") in all_contact_pairs
+        touch_right_gripper = ("r_gripper_finger","red_box") in all_contact_pairs
+        #touch_table = ("red_box", "table") in all_contact_pairs
+
+        reward = 0
+        if touch_right_gripper:
+            reward = 1
+        #if touch_right_gripper and not touch_table: # lifted
+        #    reward = 2
+        #if touch_left_gripper: # attempted transfer
+        #    reward = 3
+        #if touch_left_gripper and not touch_table: # successful transfer
+        #    reward = 4
+        return reward
+
 
 
 class InsertionEETask(BimanualPiperEETask):

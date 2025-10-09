@@ -131,9 +131,9 @@ def load_data(dataset_dir, num_episodes, camera_names, batch_size_train, batch_s
 ### env utils
 
 def sample_box_pose():
-    x_range = [0.0, 0.2]
+    x_range = [-0.3, 0.2]
     y_range = [0.15, 0.35]
-    z_range = [0.05, 0.05]
+    z_range = [0.01, 0.01]
 
     ranges = np.vstack([x_range, y_range, z_range])
     cube_position = np.random.uniform(ranges[:, 0], ranges[:, 1])

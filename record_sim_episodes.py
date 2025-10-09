@@ -5,10 +5,10 @@ import argparse
 import matplotlib.pyplot as plt
 import h5py
 
-from piper_constants import PUPPET_GRIPPER_POSITION_NORMALIZE_FN, SIM_TASK_CONFIGS
+from piper_constants import PUPPET_GRIPPER_POSITION_NORMALIZE_FN, SIM_TASK_CONFIGS,CUBE_MOVE_DISTANCE
 from piper_ee_sim_env import make_ee_sim_env
 from piper_sim_env import make_sim_env, BOX_POSE
-from scripted_policy import PickAndTransferPolicy, InsertionPolicy
+from scripted_policy import PickAndTransferPolicy, InsertionPolicy,PickMovingCubePolicy
 
 import IPython
 e = IPython.embed
@@ -41,6 +41,8 @@ def main(args):
         policy_cls = PickAndTransferPolicy
     elif task_name == 'sim_insertion_scripted':
         policy_cls = InsertionPolicy
+    elif task_name == 'sim_moving_cube_scripted':
+        policy_cls = PickMovingCubePolicy
     else:
         raise NotImplementedError
 
