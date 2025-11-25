@@ -1,4 +1,4 @@
-python3 record_sim_episodes.py --task_name sim_transfer_cube_scripted --dataset_dir piper_scripted_dataset --num_episodes 50
+python3 record_sim_episodes.py --task_name sim_moving_cube_scripted --dataset_dir piper_scripted_dataset/sim_moving_cube_scripted --num_episodes 50 --onscreen_render
 
 python3 imitate_episodes.py \
 --task_name sim_transfer_cube_scripted \
@@ -8,3 +8,6 @@ python3 imitate_episodes.py \
 --seed 0
 
 python3 visualize_episodes.py --dataset_dir piper_scripted_dataset --episode_idx 0
+
+
+
