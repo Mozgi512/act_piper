@@ -1,8 +1,8 @@
 <mujoco model="piper_description">
 
   <worldbody>
-    <light name="l_spotlight" mode="targetbodycom" target="l_link8" pos="0 0 1"/>
-    <body name="l_base_link" childclass="piper" gravcomp="1" pos="-0.45 0 0">
+    <!light name="l_spotlight" mode="targetbodycom" target="l_link8" pos="0 0 1"/>
+    <body name="l_base_link" childclass="piper" gravcomp="1" pos="-0.43 0 -0.038">
       <inertial pos="-0.00979275 1.82906e-06 0.04101" quat="0.692988 -0.137524 -0.137826 0.69416" mass="0.162549"
         diaginertia="0.000269445 0.000227478 0.000221437"/>
       <geom class="visual" density="0" mesh="base_link" material="gray_mat"/>
@@ -17,7 +17,7 @@
           <inertial pos="0.148794 -0.00242027 0.00175155" quat="-0.0249063 0.70684 0.00803509 0.706889" mass="0.290889"
             diaginertia="0.00177549 0.00173142 0.00014552"/>
           <joint name="l_joint2" axis="0 0 1" range="0 3.14"/>
-          <geom mesh="link2_0" material="gray_mat" class="visual"/>
+          <geom mesh="link2_0" material="Gray_Plastic" class="visual"/>
           <geom mesh="link2_1" material="darker_gray_mat" class="visual"/>
           <geom mesh="link2_2" material="darker_gray_mat" class="visual"/>
           <geom mesh="link2_3" material="dark_gray_mat" class="visual"/>
@@ -67,7 +67,7 @@
             <geom mesh="link3_11" material="white_mat" class="visual"/>
             <geom mesh="link3_12" material="white_mat" class="visual"/>
             <geom mesh="link3_13" material="white_mat" class="visual"/>
-            <geom mesh="link3_14" material="gray_mat" class="visual"/>
+            <geom mesh="link3_14" material="Gray_Plastic" class="visual"/>
             <geom mesh="link3_15" material="gray_mat" class="visual"/>
             <geom mesh="link3_16" material="gray_mat" class="visual"/>
             <geom mesh="link3_17" material="gray_mat" class="visual"/>
@@ -101,19 +101,19 @@
                 <geom mesh="link5_3" material="black_mat" class="visual"/>
                 <geom mesh="link5_4" material="darker_gray_mat" class="visual"/>
                 <geom mesh="link5_5" material="gray_mat" class="visual"/>
-                <geom mesh="link5_6" material="light_gray_mat" class="visual"/>
+                <geom mesh="link5_6" material="gray_mat" class="visual"/>
                 <geom mesh="link5_7" material="gray_mat" class="visual"/>
                 <geom mesh="link5_8" material="gray_mat" class="visual"/>
                 <geom mesh="link5" class="collision"/>
                 <body name="l_link6" pos="0 0.091 0.0014165" quat="0 0 -0.707105 -0.707108" gravcomp="1">
                   <body name="l_weldpoint" pos="0 0 0.13"/>
-                  <body name="l_camera_focus" pos="0.15 0 0.01">
-                    <site pos="-0.15 0 0.12" size="0.01" type="sphere" name="l_cam_focus" rgba="0 1 0 0"/>
+                  <body name="l_camera_focus" pos="-0.07 0 0.13">
+                    <site pos="0 0 0" size="0.01" type="sphere" name="l_cam_focus" rgba="0 1 0 0"/>
                   </body>
                   <site pos="0 0 0.13" size="0.003 0.003 0.03" type="box" name="l_cali_site1" rgba="0 0 1 0" />
                   <site pos="0 0 0.13" size="0.003 0.03 0.003" type="box" name="l_cali_site2" rgba="0 0 1 0" />
                   <site pos="0 0 0.13" size="0.03 0.003 0.003" type="box" name="l_cali_site3" rgba="0 0 1 0" />
-                  <camera name="l_wrist" pos="-0.1 0 0.16" fovy="20" mode="targetbody" target="l_camera_focus"/>
+                  <camera name="l_wrist" pos="-0.07 0 0.06" fovy="20" mode="targetbody" target="l_camera_focus"/>
                   <inertial pos="0.0010312 0.0121761 0.0315481" quat="0.0230402 0.707091 0.0373344 0.70576" mass="1.2"
                     diaginertia="0.001 0.001 0.001"/>
                   <joint name="l_joint6" axis="0 0 1" range="-3.14 3.14"/>

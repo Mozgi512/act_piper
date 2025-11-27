@@ -1,0 +1,67 @@
+<mujoco model="ACTworkspace">
+  <include file="piper_dependencies.xml"/>
+  <include file="piper_left.xml"/>
+  <include file="piper_right.xml"/>
+
+
+  <statistic center="0 0 0" extent="0.4"/>
+
+  <visual>
+    <headlight diffuse="0.5 0.5 0.5" ambient="0.3 0.3 0.3" specular="0 0 0"/>
+    <rgba haze="0.15 0.25 0.35 1"/>
+    <global azimuth="0" elevation="90"/>
+  </visual>
+
+  <asset>
+    <texture type="skybox" file="assets/desert.png" gridsize="3 4" gridlayout=".U..LFRB.D.." />
+    <!texture type="skybox" builtin="gradient" rgb1="0.3 0.5 0.7" rgb2="0 0 0" width="512" height="3072"/>
+    <texture type="2d" name="groundplane" builtin="checker" mark="edge" rgb1="0.2 0.3 0.4" rgb2="0.1 0.2 0.3"
+      markrgb="0.8 0.8 0.8" width="300" height="300"/>
+    <material name="groundplane" texture="groundplane" texuniform="true" texrepeat="5 5" reflectance="0"/>
+    <!mesh file="tabletop.stl" name="tabletop" scale="0.001 0.001 0.001"/>
+    <mesh name="pillar1_mesh" file="pillar1.stl" scale="1 1 1"/>
+    <mesh name="pillar2_mesh" file="pillar2.stl" scale="1 1 1"/>
+    <mesh name="deskbase_mesh" file="deskbase.stl" scale="1 1 1"/>
+    <mesh name="cushion1_mesh" file="cushion1.stl" scale="1 1 1"/>
+    <mesh name="cushion2_mesh" file="cushion2.stl" scale="1 1 1"/>
+    <mesh name="conveyor1_mesh" file="conveyor1.stl" scale="1 1 1"/>
+    <mesh name="conveyor2_mesh" file="conveyor2.stl" scale="1 1 1"/>
+    <mesh name="belt_mesh" file="belt.stl" scale="1 1 1"/>
+    <mesh name="piperbase1_mesh" file="piperbase1.stl" scale="1 1 1"/>
+    <mesh name="piperbase2_mesh" file="piperbase2.stl" scale="1 1 1"/>
+  </asset>
+
+  <worldbody>
+  
+    <!light pos="0 -0.5 5" dir="0 0 -1" directional="false"/>
+    <light name="light_a1" pos="-0.5 -1 2.5" dir="0 0 -1" directional="false" 
+           castshadow="false" diffuse="0.5 0.5 0.5" ambient="0 0 0"/>
+    <light name="light_a2" pos="0.5 -1 2.5" dir="0 0 -1" directional="false" 
+           castshadow="false" diffuse="0.5 0.5 0.5" ambient="0 0 0"/>
+    <light name="light_b1" pos="-0.5 0 2.5" dir="0 0 -1" directional="false" 
+           castshadow="false" diffuse="0.5 0.5 0.5" ambient="0 0 0"/>
+    <light name="light_b2" pos="0.5 0 2.5" dir="0 0 -1" directional="false" 
+           castshadow="false" diffuse="0.5 0.5 0.5" ambient="0 0 0"/>
+    <geom name="floor" size="0 0 0.05" type="plane" material="groundplane" pos="0 0 -.5"/>
+    <body name="table" pos="0 0 -0.05" euler="0 0 3.1416" >
+        <geom name="pillar1" type="mesh" mesh="pillar1_mesh" material="Aluminum_Frame" contype="1" conaffinity="1" pos="0 0 0" rgba="0.5 0.5 0.5 1"/>
+        <geom name="pillar2" type="mesh" mesh="pillar2_mesh" material="Aluminum_Frame" contype="1" conaffinity="1" pos="0 0 0" rgba="0.5 0.5 0.5 1"/>
+        <geom name="deskbase" type="mesh" mesh="deskbase_mesh" material="Aluminum_Frame" contype="1" conaffinity="1" pos="0 0 0" rgba="0.5 0.5 0.5 1"/>
+        <geom name="cushion1" type="mesh" mesh="cushion1_mesh" material="Gray_Sponge" contype="1" conaffinity="1" pos="0 0 0" rgba="0.5 0.5 0.5 1"/>
+        <geom name="cushion2" type="mesh" mesh="cushion2_mesh" material="Gray_Sponge" contype="1" conaffinity="1" pos="0 0 0" rgba="0.5 0.5 0.5 1"/>
+        <geom name="conveyor1" type="mesh" mesh="conveyor1_mesh" material="Aluminum_Frame" contype="1" conaffinity="1" pos="0 0 0" rgba="0.5 0.5 0.5 1"/>
+        <geom name="conveyor2" type="mesh" mesh="conveyor2_mesh" material="Aluminum_Frame" contype="1" conaffinity="1" pos="0 0 0" rgba="0.5 0.5 0.5 1"/>
+        <geom name="belt" type="mesh" mesh="belt_mesh" material="Black_Rubber" contype="1" conaffinity="1" pos="0 0 0" rgba="0.5 0.5 0.5 1"/>
+        <geom name="piperbase1" type="mesh" mesh="piperbase1_mesh" material="Black_Anodized" contype="1" conaffinity="1" pos="0 0 0" rgba="0.5 0.5 0.5 1"/>
+        <geom name="piperbase2" type="mesh" mesh="piperbase2_mesh" material="Black_Anodized" contype="1" conaffinity="1" pos="0 0 0" rgba="0.5 0.5 0.5 1"/>
+    </body>
+    <body name="midair" pos="0 .6 0.2">
+        <site pos="0 0 0" size="0.01" type="sphere" name="midair" rgba="1 0 0 0"/>
+    </body>
+    <camera name="left_pillar" pos="-0.5 0 0.6" fovy="58" mode="targetbody" target="table"/>
+    <camera name="right_pillar" pos="0.5 0 0.6" fovy="58" mode="targetbody" target="table"/>
+    <camera name="top" pos="0 0.22 0.98" fovy="58" mode="fixed" xyaxes="1 0 0 0 1 0"/>
+    <camera name="angle" pos="0 0 0.9" fovy="58" mode="targetbody" target="table"/>
+    <camera name="front_close" pos="0 0 0.4" fovy="58" mode="targetbody" target="l_camera_focus"/>
+  </worldbody>
+</mujoco>

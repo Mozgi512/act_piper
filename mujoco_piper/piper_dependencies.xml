@@ -21,8 +21,9 @@
   </default>
 
   <asset>
-    <material name="gray_mat" rgba="0.59 0.59 0.59 1"/>
+    <!material name="gray_mat" rgba="0.59 0.59 0.59 1"/>
     <material name="light_gray_mat" rgba="0.98 0.98 0.98 1"/>
+    <material name="gray_mat" rgba="0.1 0.1 0.1 1" shininess="0.5" specular="0.2"/>
     <material name="light_medium_gray_mat" rgba="0.85 0.85 0.85 1"/>
     <material name="dark_gray_mat" rgba="0.086 0.086 0.086 1"/>
     <material name="darker_gray_mat" rgba="0.14 0.14 0.14 1"/>
@@ -30,7 +31,12 @@
     <material name="red_mat" rgba="0.82 0.15 0.15 1"/>
     <material name="black_mat" rgba="0 0 0 1"/>
     <material name="light_blue" rgba="0.79 0.82 0.93 1"/>
-
+    <material name="Aluminum_Frame" rgba="0.5 0.5 0.5 1" shininess="0.9" specular="0.4"/>          
+    <material name="Black_Anodized" rgba="0.1 0.1 0.1 1" shininess="0.5" specular="0.2"/>
+    <material name="Black_Rubber" rgba="0.1 0.1 0.1 1" shininess="0.05" specular="0.1"/>
+    <material name="Gray_Sponge" rgba="0.41 0.4 0.42 0.95" shininess="0.0" specular="0.0"/>
+    <material name="Gray_Plastic" rgba="0.2 0.2 0.2 1" shininess="0.5" specular="0.2"/>
+    
     <mesh file="link2_0.obj"/>
     <mesh file="link2_1.obj"/>
     <mesh file="link2_2.obj"/>

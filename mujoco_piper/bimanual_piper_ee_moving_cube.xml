@@ -1,5 +1,5 @@
 <mujoco>
-    <include file="scene.xml"/> 
+    <include file="ACTworkspace.xml"/> 
     <equality>
         <!connect name="l_mocap_weld" site1="l_mocap_site1" site2="l_cam_focus" solref="0.01 1" solimp=".25 .25 0.001"/>
         <!connect name="r_mocap_weld" site1="r_mocap_site1" site2="r_cam_focus" solref="0.01 1" solimp=".25 .25 0.001"/>

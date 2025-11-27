@@ -1,5 +1,5 @@
 <mujoco>
-    <include file="scene.xml"/>
+    <include file="ACTworkspace.xml"/>
     <!include file="piper_dependencies.xml"/>
     <!include file="piper_left.xml" />
     <!include file="piper_right.xml" />
