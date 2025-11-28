@@ -16,3 +16,6 @@ ERROR: could not create window
 Wed Jul 16 18:03:24 2025
 ERROR: could not create window
 
+Thu Nov 27 13:44:01 2025
+ERROR: could not create window
+

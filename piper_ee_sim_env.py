@@ -2,7 +2,7 @@ import numpy as np
 import collections
 import os
 
-from piper_constants import DT, XML_DIR, START_ARM_POSE,CUBE_MOVE_DISTANCE
+from piper_constants import DT, XML_DIR, START_ARM_POSE,BELT_MOVE_SPEED
 from piper_constants import PUPPET_GRIPPER_POSITION_CLOSE
 from piper_constants import PUPPET_GRIPPER_POSITION_UNNORMALIZE_FN
 from piper_constants import PUPPET_GRIPPER_POSITION_NORMALIZE_FN
@@ -65,7 +65,6 @@ class BimanualPiperEETask(base.Task):
         a_len = (len(action) -7)// 2
         action_left = action[:a_len]
         action_right = action[a_len:]
-        action_right = action[a_len:]
         # set mocap position and quat
         # left
         np.copyto(physics.data.mocap_pos[0], action_left[:3])
@@ -77,7 +76,7 @@ class BimanualPiperEETask(base.Task):
         # set gripper
         g_left_ctrl = PUPPET_GRIPPER_POSITION_UNNORMALIZE_FN(action_left[7])
         g_right_ctrl = PUPPET_GRIPPER_POSITION_UNNORMALIZE_FN(action_right[7])
-        np.copyto(physics.data.ctrl, np.array([g_left_ctrl,g_right_ctrl]))
+        np.copyto(physics.data.ctrl[1:3], np.array([g_left_ctrl,g_right_ctrl]))
 
     def initialize_robots(self, physics):
         # reset joint position
@@ -100,7 +99,7 @@ class BimanualPiperEETask(base.Task):
             PUPPET_GRIPPER_POSITION_CLOSE,
             PUPPET_GRIPPER_POSITION_CLOSE
         ])
-        np.copyto(physics.data.ctrl, close_gripper_control)
+        np.copyto(physics.data.ctrl[1:3], close_gripper_control)
 
     def initialize_episode(self, physics):
         """Sets the state of the environment at the start of each episode."""
@@ -145,9 +144,8 @@ class BimanualPiperEETask(base.Task):
         # used in scripted policy to obtain starting pose
         obs['mocap_pose_left'] = np.concatenate([physics.data.mocap_pos[0], physics.data.mocap_quat[0]]).copy()
         obs['mocap_pose_right'] = np.concatenate([physics.data.mocap_pos[1], physics.data.mocap_quat[1]]).copy()
-
-        # used when replaying joint trajectory
-        obs['gripper_ctrl'] = physics.data.ctrl.copy()
+        obs['belt_state'] = physics.data.qpos[16].copy()
+        obs['gripper_ctrl'] = physics.data.ctrl[1:3].copy()
         return obs
 
     def get_reward(self, physics):
@@ -179,11 +177,12 @@ class TransferCubeEETask(BimanualPiperEETask):
                 qpos_len = physics.model.nq - qpos_start_index
             qpos_indices = list(range(qpos_start_index, qpos_start_index + qpos_len))
             print(f"qpos{qpos_indices} -> Joint '{joint_name}' (dof: {qpos_len})")
-        """
         for i in range(physics.model.nu):
             actuator_name = physics.model.actuator(i).name
             control_value = physics.data.ctrl[i]
             print(f"ctrl[{i}] -> Actuator '{actuator_name}': {control_value:.4f}")
+        """
+       
         super().initialize_episode(physics)
 
     @staticmethod
@@ -227,11 +226,9 @@ class MovingcubeEETask(BimanualPiperEETask):
         Moving Cubeタスク専用のアクション処理。
         親クラスのbefore_stepをオーバーライドし、キューブの制御を追加します。
         """
-        # アクションを左アーム(8), 右アーム(8), キューブ(7)に分割
+        # アクションを左アーム(8), 右アーム(8), belt(7)に分割
         action_left = action[:8]
         action_right = action[8:16]
-        action_cube = action[16:]
-
         # --- 1. 左右アームのmocapとグリッパーを制御 (親クラスのロジックと同様) ---
         # left
         np.copyto(physics.data.mocap_pos[0], action_left[:3])
@@ -242,23 +239,8 @@ class MovingcubeEETask(BimanualPiperEETask):
         # gripper
         g_left_ctrl = PUPPET_GRIPPER_POSITION_UNNORMALIZE_FN(action_left[7])
         g_right_ctrl = PUPPET_GRIPPER_POSITION_UNNORMALIZE_FN(action_right[7])
-        np.copyto(physics.data.ctrl, np.array([g_left_ctrl, g_right_ctrl]))
+        np.copyto(physics.data.ctrl[1:3], np.array([g_left_ctrl, g_right_ctrl]))
 
-        # --- 2. キューブの位置を直接更新 (前回の回答で提案したロジック) ---
-        if len(action_cube) == 7:
-            cube_xyz = action_cube[:3]
-            cube_quat = action_cube[3:] # w, x, y, z
-
-            # XMLファイルで定義したキューブのジョイント名
-            # おそらく 'red_box_joint' だと思われますが、XMLファイルをご確認ください。
-            joint_name = 'red_box_joint' 
-            
-            joint_id = physics.model.joint(joint_name).id
-            qpos_address = physics.model.jnt_qposadr[joint_id]
-
-            # qposを直接書き換えてキューブを動かす
-            physics.data.qpos[qpos_address : qpos_address+3] = cube_xyz
-            physics.data.qpos[qpos_address+3 : qpos_address+7] = cube_quat
     
 
     def initialize_episode(self, physics):
@@ -268,6 +250,7 @@ class MovingcubeEETask(BimanualPiperEETask):
         cube_pose = sample_box_pose()
         box_start_idx = physics.model.name2id('red_box_joint', 'joint')
         np.copyto(physics.data.qpos[box_start_idx : box_start_idx + 7], cube_pose)
+        physics.named.data.ctrl['belt_speed'] = BELT_MOVE_SPEED
         # print(f"randomized cube position to {cube_position}")
 
         """
@@ -281,16 +264,17 @@ class MovingcubeEETask(BimanualPiperEETask):
                 qpos_len = physics.model.nq - qpos_start_index
             qpos_indices = list(range(qpos_start_index, qpos_start_index + qpos_len))
             print(f"qpos{qpos_indices} -> Joint '{joint_name}' (dof: {qpos_len})")
-        """
         for i in range(physics.model.nu):
             actuator_name = physics.model.actuator(i).name
             control_value = physics.data.ctrl[i]
             print(f"ctrl[{i}] -> Actuator '{actuator_name}': {control_value:.4f}")
+        """
+
         super().initialize_episode(physics)
 
     @staticmethod
     def get_env_state(physics):
-        env_state = physics.data.qpos.copy()[16:]
+        env_state = physics.data.qpos.copy()[17:]
         return env_state
 
     def get_reward(self, physics):

@@ -6,7 +6,7 @@ from dm_control import mujoco
 from dm_control.rl import control
 from dm_control.suite import base
 
-from piper_constants import DT, XML_DIR, START_ARM_POSE,CUBE_MOVE_DISTANCE
+from piper_constants import DT, XML_DIR, START_ARM_POSE,BELT_MOVE_SPEED
 from piper_constants import PUPPET_GRIPPER_POSITION_CLOSE
 from piper_constants import PUPPET_GRIPPER_POSITION_UNNORMALIZE_FN
 from piper_constants import MASTER_GRIPPER_POSITION_NORMALIZE_FN
@@ -74,7 +74,9 @@ class BimanualPiperTask(base.Task):
         full_left_gripper_action = [left_gripper_action, -left_gripper_action]
         full_right_gripper_action = [right_gripper_action, -right_gripper_action]
 
-        env_action = np.concatenate([left_arm_action, full_left_gripper_action, right_arm_action, full_right_gripper_action])
+        # base env_action (length 16 actuators: 6 + 2 + 6 + 2)
+        env_action = np.concatenate([[BELT_MOVE_SPEED], left_arm_action, full_left_gripper_action, right_arm_action, full_right_gripper_action])
+
         super().before_step(env_action, physics)
         return
     
@@ -149,7 +151,7 @@ class TransferCubeTask(BimanualPiperTask):
                 print(f"qpos{qpos_indices} -> Joint '{joint_name}' (dof: {qpos_len})")
             """
             physics.named.data.qpos[:16] = START_ARM_POSE
-            np.copyto(physics.data.ctrl, START_ARM_POSE)
+            np.copyto(physics.data.ctrl[:16], START_ARM_POSE)
             assert BOX_POSE[0] is not None
             physics.named.data.qpos[-7:] = BOX_POSE[0]
             # print(f"{BOX_POSE=}")
@@ -218,10 +220,10 @@ class MovingCubeTask(BimanualPiperTask):
                 print(f"qpos{qpos_indices} -> Joint '{joint_name}' (dof: {qpos_len})")
             """
             physics.named.data.qpos[:16] = START_ARM_POSE
-            np.copyto(physics.data.ctrl, START_ARM_POSE)
+            np.copyto(physics.data.ctrl[:16], START_ARM_POSE)
             assert BOX_POSE[0] is not None
             physics.named.data.qpos[-7:] = BOX_POSE[0]
-            # print(f"{BOX_POSE=}")
+            physics.named.data.ctrl['belt_speed'] = BELT_MOVE_SPEED
 
             for i in range(physics.model.nu):
                 actuator_name = physics.model.actuator(i).name
@@ -229,27 +231,6 @@ class MovingCubeTask(BimanualPiperTask):
                 print(f"ctrl[{i}] -> Actuator '{actuator_name}': {control_value:.4f}")
                 
         super().initialize_episode(physics)
-
-    def before_step(self, action, physics):
-        """
-        物理シミュレーションが1ステップ進む「前」に呼ばれる。
-        ここでキューブの位置を更新し、その後でアームの制御を行う。
-        """
-        # --- 1. 時間に基づいてキューブの位置を更新 ---
-        current_time = physics.data.time
-        
-        # 移動の進捗を計算 (0.0 から 1.0 の間)
-        progress = min(current_time / self.move_duration, 1.0)
-        
-        # 線形補間で現在のキューブのXYZ座標を計算
-        current_xyz = (1 - progress) * BOX_POSE[0][:3] + progress * (BOX_POSE[0][:3]+ np.array([CUBE_MOVE_DISTANCE*2, 0, 0]))
-        
-        # 物理エンジン内のキューブの座標を直接更新
-        physics.named.data.qpos[-7:-4] = current_xyz
-        # (今回は回転はさせないため、quatはそのまま)
-
-        # --- 2. 親クラスのbefore_stepを呼び、ロボットアームを制御する ---
-        super().before_step(action, physics)
 
     @staticmethod
     def get_env_state(physics):
@@ -287,7 +268,7 @@ class InsertionTask(BimanualPiperTask):
         # reset qpos, control and box position
         with physics.reset_context():
             physics.named.data.qpos[:16] = START_ARM_POSE
-            np.copyto(physics.data.ctrl, START_ARM_POSE)
+            np.copyto(physics.data.ctrl[:16], START_ARM_POSE)
             assert BOX_POSE[0] is not None
             physics.named.data.qpos[-7*2:] = BOX_POSE[0] # two objects
             # print(f"{BOX_POSE=}")

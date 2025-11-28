@@ -5,7 +5,7 @@ import argparse
 import matplotlib.pyplot as plt
 import h5py
 
-from piper_constants import PUPPET_GRIPPER_POSITION_NORMALIZE_FN, SIM_TASK_CONFIGS,CUBE_MOVE_DISTANCE
+from piper_constants import PUPPET_GRIPPER_POSITION_NORMALIZE_FN, SIM_TASK_CONFIGS,BELT_MOVE_SPEED
 from piper_ee_sim_env import make_ee_sim_env
 from piper_sim_env import make_sim_env, BOX_POSE
 from scripted_policy import PickAndTransferPolicy, InsertionPolicy,PickMovingCubePolicy
@@ -30,7 +30,7 @@ def main(args):
     num_episodes = args['num_episodes']
     onscreen_render = args['onscreen_render']
     inject_noise = False
-    render_cam_name = 'angle'
+    render_cam_name = 'top'
 
     if not os.path.isdir(dataset_dir):
         os.makedirs(dataset_dir, exist_ok=True)
@@ -118,11 +118,9 @@ def main(args):
             plt.ion()
         for t in range(len(joint_traj)): # note: this will increase episode length by 1
             joint_traj_np = np.array(joint_traj)
-            action = joint_traj_np[t] 
+            action = joint_traj_np[t].copy()
 
             all_actions.append(action)
-            #print(f"Step {t:01d} | Joint Command: {action}")
-
             ts = env.step(action)
             episode_replay.append(ts)
             if onscreen_render:

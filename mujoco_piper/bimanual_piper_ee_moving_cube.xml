@@ -12,18 +12,18 @@
 
 
     <worldbody>
-        <body mocap="true" name="l_mocap" pos="-0.265 0 0.215" >
+        <body mocap="true" name="l_mocap" pos="-0.235 0 0.16" >
             <site pos="0 0 0" size="0.003 0.003 0.03" type="box" name="r_mocap_site1" rgba="1 0 0 1"/>
             <site pos="0 0 0" size="0.003 0.03 0.003" type="box" name="r_mocap_site2" rgba="1 0 0 1"/>
             <site pos="0 0 0" size="0.03 0.003 0.003" type="box" name="r_mocap_site3" rgba="1 0 0 1"/>
         </body>
-        <body mocap="true" name="r_mocap" pos="0.265 0 0.215">
+        <body mocap="true" name="r_mocap" pos="0.235 0 0.16">
             <site pos="0 0 0" size="0.003 0.003 0.03" type="box" name="l_mocap_site1" rgba="1 0 0 1"/>
             <site pos="0 0 0" size="0.003 0.03 0.003" type="box" name="l_mocap_site2" rgba="1 0 0 1"/>
             <site pos="0 0 0" size="0.03 0.003 0.003" type="box" name="l_mocap_site3" rgba="1 0 0 1"/>
         </body>
 
-        <body name="box" pos="0 0 0.01">
+        <body name="box" pos="0 0 0.2">
             <joint name="red_box_joint" type="free" frictionloss="0.01" />
             <inertial pos="0 0 0" mass="0.02" diaginertia="0.002 0.002 0.002" />
             <geom condim="4" solimp="2 1 0.01" solref="0.01 1" friction="1 0.005 0.0001" pos="0 0 0" size="0.02 0.02 0.02" type="box" name="red_box" rgba="1 0 0 1" />
@@ -42,13 +42,5 @@
     </equality>
 
 
-    <keyframe>
-        <key  name="home" 
-            qpos = "2.2 1.1 -0.5 1.9 -2.1 -0.8 0 0 -2.2 1.1 -0.5 -1.9 -2.1 1 0 0
-                    0.2 0.5 0 1 0 0 0"
-            ctrl="0 0"
-            mpos="-0.315 0 0.215 0.315 0 0.215"
-            mquat="0 0 0 0 0 0 0 0"/>
-    </keyframe>
 
 </mujoco>

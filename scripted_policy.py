@@ -2,7 +2,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 from pyquaternion import Quaternion
 
-from piper_constants import SIM_TASK_CONFIGS,CUBE_MOVE_DISTANCE
+from piper_constants import SIM_TASK_CONFIGS,BELT_MOVE_SPEED
 from piper_ee_sim_env import make_ee_sim_env
 
 import IPython
@@ -15,7 +15,7 @@ class BasePolicy:
         self.step_count = 0
         self.left_trajectory = None
         self.right_trajectory = None
-        self.cube_trajectory = None
+        self.belt_trajectory = None
 
     def generate_trajectory(self, ts_first):
         raise NotImplementedError
@@ -35,15 +35,12 @@ class BasePolicy:
         return xyz, quat, gripper
     
     @staticmethod
-    def cube_interpolate(curr_waypoint, next_waypoint, t):
+    def belt_interpolate(curr_waypoint, next_waypoint, t):
         t_frac = (t - curr_waypoint["t"]) / (next_waypoint["t"] - curr_waypoint["t"])
-        curr_xyz = curr_waypoint['xyz']
-        curr_quat = curr_waypoint['quat']
-        next_xyz = next_waypoint['xyz']
-        next_quat = next_waypoint['quat']
-        xyz = curr_xyz + (next_xyz - curr_xyz) * t_frac
-        quat = curr_quat + (next_quat - curr_quat) * t_frac
-        return xyz, quat
+        curr_x = curr_waypoint['x']
+        next_x = next_waypoint['x']
+        x = curr_x + (next_x - curr_x) * t_frac
+        return x
     
     def __call__(self, ts):
         # generate trajectory at first timestep, then open-loop execution
@@ -59,14 +56,9 @@ class BasePolicy:
             self.curr_right_waypoint = self.right_trajectory.pop(0)
         next_right_waypoint = self.right_trajectory[0]
 
-        if self.cube_trajectory[0]['t'] == self.step_count:
-            self.curr_cube_waypoint = self.cube_trajectory.pop(0)
-        next_cube_waypoint = self.cube_trajectory[0]
-
         # interpolate between waypoints to obtain current pose and gripper command
         left_xyz, left_quat, left_gripper = self.interpolate(self.curr_left_waypoint, next_left_waypoint, self.step_count)
         right_xyz, right_quat, right_gripper = self.interpolate(self.curr_right_waypoint, next_right_waypoint, self.step_count)
-        cube_xyz, cube_quat = self.cube_interpolate(self.curr_cube_waypoint, next_cube_waypoint, self.step_count)
 
         # Inject noise
         if self.inject_noise:
@@ -76,11 +68,9 @@ class BasePolicy:
 
         action_left = np.concatenate([left_xyz, left_quat, [left_gripper]])
         action_right = np.concatenate([right_xyz, right_quat, [right_gripper]])
-        action_cube = np.concatenate([cube_xyz, cube_quat])
 
         self.step_count += 1
-        return np.concatenate([action_left, action_right,action_cube])
-
+        return np.concatenate([action_left, action_right])
 
 class PickAndTransferPolicy(BasePolicy):
 
@@ -129,17 +119,17 @@ class PickMovingCubePolicy(BasePolicy):
 
         box_info = np.array(ts_first.observation['env_state'])
         box_xyz = box_info[:3]
-        box_target_xyz = box_xyz+ np.array([CUBE_MOVE_DISTANCE, 0, 0])
-        box_finish_xyz = box_target_xyz+ np.array([CUBE_MOVE_DISTANCE, 0, 0])
         box_quat = box_info[3:]
+        box_target_xyz = box_xyz + np.array([BELT_MOVE_SPEED*3+0.02, 0, 0])
+
         # print(f"Generate trajectory for {box_xyz=}")
 
         gripper_pick_quat = Quaternion(init_mocap_pose_right[3:])
         gripper_pick_quat = gripper_pick_quat * Quaternion(axis=[0.0, 1.0, 0.0], degrees=-60)
 
-        meet_left_quat = Quaternion(axis=[1.0, 0.0, 0.0], degrees=90)
+        gripper_place_quat = Quaternion(axis=[0, 0.0, 1.0], degrees=0)
 
-        meet_xyz = np.array([0, 0.25, 0.25])
+        meet_xyz = np.array([0, 0.1, 0.025])
 
         self.left_trajectory = [
             {"t": 0, "xyz": init_mocap_pose_left[:3], "quat": init_mocap_pose_left[3:], "gripper": 1}, # sleep
@@ -151,17 +141,11 @@ class PickMovingCubePolicy(BasePolicy):
             {"t": 90, "xyz": box_target_xyz + np.array([0, 0, 0.08]), "quat": gripper_pick_quat.elements, "gripper": 1}, # approach the cube
             {"t": 150, "xyz": box_target_xyz + np.array([0, 0, 0.02]), "quat": gripper_pick_quat.elements, "gripper": 1}, # go down
             {"t": 170, "xyz": box_target_xyz + np.array([0, 0, 0.02]), "quat": gripper_pick_quat.elements, "gripper": 0}, # close gripper
-            {"t": 200, "xyz": meet_xyz + np.array([0.05, 0, 0]), "quat": gripper_pick_quat.elements, "gripper": 0}, # approach meet position
+            {"t": 200, "xyz": meet_xyz + np.array([0, 0, 0.08]), "quat": gripper_pick_quat.elements, "gripper": 0}, # approach meet position
             {"t": 220, "xyz": meet_xyz, "quat": gripper_pick_quat.elements, "gripper": 0}, # move to meet position
             {"t": 310, "xyz": meet_xyz, "quat": gripper_pick_quat.elements, "gripper": 1}, # open gripper
             {"t": 360, "xyz": meet_xyz + np.array([0.1, 0, 0]), "quat": gripper_pick_quat.elements, "gripper": 1}, # move to right
             {"t": 400, "xyz": meet_xyz + np.array([0.1, 0, 0]), "quat": gripper_pick_quat.elements, "gripper": 1}, # stay
-        ]
-        self.cube_trajectory = [
-            {"t": 0, "xyz": box_xyz, "quat": box_quat}, # sleep
-            {"t": 170, "xyz": box_target_xyz , "quat": box_quat}, # approach the cube
-            {"t": 340, "xyz": box_finish_xyz , "quat": box_quat},
-            {"t": 400, "xyz": box_finish_xyz , "quat": box_quat},
         ]
 
 
@@ -231,7 +215,7 @@ def test_policy(task_name):
         episode = [ts]
         if onscreen_render:
             ax = plt.subplot()
-            cam_image = env.physics.render(height=360, width=640, camera_id="angle")
+            cam_image = env.physics.render(height=360, width=640, camera_id="top")
             plt_img = ax.imshow(cam_image)
             #plt_img = ax.imshow(ts.observation['images']['angle'])
             plt.ion()
@@ -253,18 +237,18 @@ def test_policy(task_name):
             #   print(f"  Contact {i}: {geom1_name} <--> {geom2_name}")
 
             # === 関節角度表示==========================================================
-            physics = env.physics
-            print(f"--- Step {step} Joint Angles ---")
-            for i in range(physics.model.njnt):
-                joint_name = physics.model.id2name(i, 'joint')
-                if physics.model.joint(joint_name).type[0] != 0: # freejoint (type 0) を除外
-                    qpos_index = physics.model.jnt_qposadr[i]
-                    angle_rad = physics.data.qpos[qpos_index]
-                    print(f"  {joint_name}: {angle_rad:.2f}")
+            #physics = env.physics
+            #print(f"--- Step {step} Joint Angles ---")
+            #for i in range(physics.model.njnt):
+            #    joint_name = physics.model.id2name(i, 'joint')
+            #    if physics.model.joint(joint_name).type[0] != 0: # freejoint (type 0) を除外
+            #        qpos_index = physics.model.jnt_qposadr[i]
+            #        angle_rad = physics.data.qpos[qpos_index]
+            #        print(f"  {joint_name}: {angle_rad:.2f}")
             # ========================================================================
     
             if onscreen_render:
-                cam_image = env.physics.render(height=360, width=640, camera_id="angle")
+                cam_image = env.physics.render(height=360, width=640, camera_id="top")
                 plt_img.set_data(cam_image)
                 #plt_img.set_data(ts.observation['images']['angle'])
                 plt.pause(0.02)
