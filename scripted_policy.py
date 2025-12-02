@@ -237,14 +237,14 @@ def test_policy(task_name):
             #   print(f"  Contact {i}: {geom1_name} <--> {geom2_name}")
 
             # === 関節角度表示==========================================================
-            #physics = env.physics
-            #print(f"--- Step {step} Joint Angles ---")
-            #for i in range(physics.model.njnt):
-            #    joint_name = physics.model.id2name(i, 'joint')
-            #    if physics.model.joint(joint_name).type[0] != 0: # freejoint (type 0) を除外
-            #        qpos_index = physics.model.jnt_qposadr[i]
-            #        angle_rad = physics.data.qpos[qpos_index]
-            #        print(f"  {joint_name}: {angle_rad:.2f}")
+            physics = env.physics
+            print(f"--- Step {step} Joint Angles ---")
+            for i in range(physics.model.njnt):
+                joint_name = physics.model.id2name(i, 'joint')
+                if physics.model.joint(joint_name).type[0] != 0: # freejoint (type 0) を除外
+                    qpos_index = physics.model.jnt_qposadr[i]
+                    angle_rad = physics.data.qpos[qpos_index]
+                    print(f"  {joint_name}: {angle_rad:.2f}")
             # ========================================================================
     
             if onscreen_render:

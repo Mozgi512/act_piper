@@ -219,7 +219,7 @@ class TransferCubeEETask(BimanualPiperEETask):
 class MovingcubeEETask(BimanualPiperEETask):
     def __init__(self, random=None):
         super().__init__(random=random)
-        self.max_reward = 1
+        self.max_reward = 2
 
     def before_step(self, action, physics):
         """
@@ -290,11 +290,18 @@ class MovingcubeEETask(BimanualPiperEETask):
 
         #touch_left_gripper = ("l_gripper_finger","red_box") in all_contact_pairs
         touch_right_gripper = ("r_gripper_finger","red_box") in all_contact_pairs
+        touch_goal_area = ("red_box", "goal_plate") in all_contact_pairs or ("goal_plate", "red_box") in all_contact_pairs
+        touch_table = ("red_box", "cushion1") in all_contact_pairs or ("cushion1", "red_box") in all_contact_pairs
         #touch_table = ("red_box", "table") in all_contact_pairs
 
         reward = 0
         if touch_right_gripper:
             reward = 1
+        if touch_goal_area:
+            reward = 2
+        if touch_table:
+            reward = 0
+        
         #if touch_right_gripper and not touch_table: # lifted
         #    reward = 2
         #if touch_left_gripper: # attempted transfer

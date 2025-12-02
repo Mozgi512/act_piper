@@ -197,7 +197,7 @@ class TransferCubeTask(BimanualPiperTask):
 class MovingCubeTask(BimanualPiperTask):
     def __init__(self, random=None):
         super().__init__(random=random)
-        self.max_reward = 1
+        self.max_reward = 2
 
         self.move_duration = 6.8 # seconds
 
@@ -249,10 +249,16 @@ class MovingCubeTask(BimanualPiperTask):
             all_contact_pairs.append(contact_pair)
 
         touch_right_gripper = ("r_gripper_finger","red_box") in all_contact_pairs
+        touch_goal_area = ("red_box", "goal_plate") in all_contact_pairs or ("goal_plate", "red_box") in all_contact_pairs
+        touch_table = ("red_box", "cushion1") in all_contact_pairs or ("cushion1", "red_box") in all_contact_pairs
 
         reward = 0
         if touch_right_gripper:
             reward = 1
+        if touch_goal_area:
+            reward = 2
+        if touch_table:
+            reward = 0
 
         return reward
 

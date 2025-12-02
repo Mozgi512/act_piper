@@ -160,7 +160,7 @@ def eval_bc(config, ckpt_name, save_episode=True):
     max_timesteps = config['episode_len']
     task_name = config['task_name']
     temporal_agg = config['temporal_agg']
-    onscreen_cam = 'angle'
+    onscreen_cam = 'top'
 
     # load policy and stats
     ckpt_path = os.path.join(ckpt_dir, ckpt_name)
