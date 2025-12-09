@@ -16,9 +16,9 @@ from piper_constants import PUPPET_GRIPPER_VELOCITY_NORMALIZE_FN
 import IPython
 e = IPython.embed
 
-BOX_POSE = [None] # to be changed from outside
-SOCKET_POSE = [None]
-STICK_POSE = [None]
+REDBOX_POSE = [None] # to be changed from outside
+BLUEBOX_POSE = [None]
+GREENBOX_POSE = [None]
 
 def make_sim_env(task_name):
     """
@@ -264,7 +264,7 @@ class MovingCubeTask(BimanualPiperTask):
 
         return reward
     
-class MovingCubeTask(BimanualPiperTask):
+class CoopTask(BimanualPiperTask):
     def __init__(self, random=None):
         super().__init__(random=random)
         self.max_reward = 2
@@ -291,10 +291,10 @@ class MovingCubeTask(BimanualPiperTask):
             """
             physics.named.data.qpos[:16] = START_ARM_POSE
             np.copyto(physics.data.ctrl[:16], START_ARM_POSE)
-            assert BOX_POSE[0] is not None
-            physics.named.data.qpos[-21:-14] = BOX_POSE[0]
-            physics.named.data.qpos[-14:-7] = SOCKET_POSE[0]
-            physics.named.data.qpos[-7:] = STICK_POSE[0]
+            assert REDBOX_POSE[0] is not None
+            physics.named.data.qpos[-21:-14] = REDBOX_POSE[0]
+            physics.named.data.qpos[-14:-7] = GREENBOX_POSE[0]
+            physics.named.data.qpos[-7:] = BLUEBOX_POSE[0]
 
             physics.named.data.ctrl['belt_speed'] = BELT_MOVE_SPEED
 

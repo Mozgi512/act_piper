@@ -1,0 +1,47 @@
+<mujoco>
+    <include file="ACTworkspace.xml"/>
+
+    <worldbody>
+
+        <body name="red_box" pos="0 0.0 0.05">
+            <joint name="red_box_joint" type="free" frictionloss="0.01" />
+            <inertial pos="0 0 0" mass="0.01" diaginertia="0.002 0.002 0.002" />
+            <geom condim="4" solimp="2 1 0.01" solref="0.01 1" friction="3 0.005 0.0001" pos="0 0 0" size="0.017 0.017 0.017" type="box" name="red_box" rgba="1 0 0 1" />
+        </body>
+
+        <body name="green_box" pos="0 0.0 0.05">
+            <joint name="green_box_joint" type="free" frictionloss="0.01" />
+            <inertial pos="0 0 0" mass="0.01" diaginertia="0.002 0.002 0.002" />
+            <geom condim="4" solimp="2 1 0.01" solref="0.01 1" friction="3 0.005 0.0001" pos="0 0 0" size="0.015 0.015 0.015" type="box" name="green_box" rgba="0 1 0 1" />
+        </body>
+
+        <body name="blue_box" pos="0 0.0 0.05">
+            <joint name="blue_box_joint" type="free" frictionloss="0.01" />
+            <inertial pos="0 0 0" mass="0.01" diaginertia="0.002 0.002 0.002" />
+            <geom condim="4" solimp="2 1 0.01" solref="0.01 1" friction="3 0.005 0.0001" pos="0 0 0" size="0.020 0.020 0.020" type="box" name="blue_box" rgba="0 0 1 1" />
+        </body>
+    </worldbody>
+ 
+    <actuator>
+        <position name="l_joint1" joint="l_joint1" class="piper" kp="800" kv="5"/>
+        <position name="l_joint2" joint="l_joint2" class="piper" kp="800" kv="5"/>
+        <position name="l_joint3" joint="l_joint3" class="piper" kp="800" kv="5"/>
+        <position name="l_joint4" joint="l_joint4" class="piper" kp="400" kv="5"/>
+        <position name="l_joint5" joint="l_joint5" class="piper" kp="100" kv="1.5"/>
+        <position name="l_joint6" joint="l_joint6" class="piper" kp="100" kv="1.5"/>
+        <position name="l_finger" joint="l_joint7" class="finger" kp="400" kv="5"/>
+        <position name="l_finger2" joint="l_joint8" class="finger" kp="400" kv="5"/>
+
+        <position name="r_joint1" joint="r_joint1" class="piper" kp="800" kv="5"/>
+        <position name="r_joint2" joint="r_joint2" class="piper" kp="800" kv="5"/>
+        <position name="r_joint3" joint="r_joint3" class="piper" kp="800" kv="5"/>
+        <position name="r_joint4" joint="r_joint4" class="piper" kp="400" kv="5"/>
+        <position name="r_joint5" joint="r_joint5" class="piper" kp="100" kv="1.5"/>
+        <position name="r_joint6" joint="r_joint6" class="piper" kp="100" kv="1.5"/>
+        <position name="r_finger" joint="r_joint7" class="finger" kp="400" kv="5"/>
+        <position name="r_finger2" joint="r_joint8" class="finger" kp="400" kv="5"/>
+
+    </actuator>
+
+
+</mujoco>

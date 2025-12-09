@@ -8,7 +8,7 @@ from piper_constants import PUPPET_GRIPPER_POSITION_UNNORMALIZE_FN
 from piper_constants import PUPPET_GRIPPER_POSITION_NORMALIZE_FN
 from piper_constants import PUPPET_GRIPPER_VELOCITY_NORMALIZE_FN
 
-from utils import sample_box_pose, sample_insertion_pose,sample_stick_pose,sample_socket_pose
+from utils import sample_redbox_pose, sample_insertion_pose,sample_bluebox_pose,sample_greenbox_pose
 from dm_control import mujoco
 from dm_control.rl import control
 from dm_control.suite import base
@@ -341,16 +341,15 @@ class CoopEETask(BimanualPiperEETask):
         """Sets the state of the environment at the start of each episode."""
         self.initialize_robots(physics)
         # randomize box position
-        cube_pose = sample_box_pose()
-        stick_pose = sample_stick_pose()
-        socket_pose = sample_socket_pose()
-        box_start_idx = physics.model.name2id('green_box_joint', 'joint')
-        socket_start_idx = physics.model.name2id('red_socket_joint', 'joint')
-        stick_start_idx = physics.model.name2id('blue_stick_joint', 'joint')
-        np.copyto(physics.data.qpos[box_start_idx : box_start_idx + 7], cube_pose)
-        np.copyto(physics.data.qpos[box_start_idx + 7 : box_start_idx + 14], socket_pose)
-        np.copyto(physics.data.qpos[box_start_idx + 14 : box_start_idx + 21], stick_pose)
-
+        redcube_pose = sample_redbox_pose()
+        greencube_pose = sample_greenbox_pose()
+        bluecube_pose = sample_bluebox_pose()
+        box_start_idx = physics.model.name2id('red_box_joint', 'joint')
+        #socket_start_idx = physics.model.name2id('red_box_joint', 'joint')
+        #stick_start_idx = physics.model.name2id('blue_box_joint', 'joint')
+        np.copyto(physics.data.qpos[box_start_idx : box_start_idx + 7], redcube_pose)
+        np.copyto(physics.data.qpos[box_start_idx + 7 : box_start_idx + 14], greencube_pose)
+        np.copyto(physics.data.qpos[box_start_idx + 14 : box_start_idx + 21], bluecube_pose)
 
         physics.named.data.ctrl['belt_speed'] = BELT_MOVE_SPEED
         # print(f"randomized cube position to {cube_position}")

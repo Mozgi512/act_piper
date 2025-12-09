@@ -130,7 +130,7 @@ def load_data(dataset_dir, num_episodes, camera_names, batch_size_train, batch_s
 
 ### env utils
 
-def sample_box_pose():
+def sample_redbox_pose():
     x_range = [-0.5, -0.3]
     y_range = [0.30, 0.45]
     z_range = [0.01, 0.01]
@@ -142,7 +142,7 @@ def sample_box_pose():
     return np.concatenate([cube_position, cube_quat])
 
 
-def sample_stick_pose():
+def sample_greenbox_pose():
     x_range = [-0.3, -0.1]
     y_range = [0.30, 0.45]
     z_range = [0.01, 0.01]
@@ -153,7 +153,7 @@ def sample_stick_pose():
     stick_quat = np.array([1, 0, 0, 0])
     return np.concatenate([stick_position, stick_quat])
 
-def sample_socket_pose():
+def sample_bluebox_pose():
     x_range = [-0.1, 0.1]
     y_range = [0.30, 0.45]
     z_range = [0.01, 0.01]
