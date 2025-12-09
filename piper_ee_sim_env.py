@@ -8,7 +8,7 @@ from piper_constants import PUPPET_GRIPPER_POSITION_UNNORMALIZE_FN
 from piper_constants import PUPPET_GRIPPER_POSITION_NORMALIZE_FN
 from piper_constants import PUPPET_GRIPPER_VELOCITY_NORMALIZE_FN
 
-from utils import sample_box_pose, sample_insertion_pose
+from utils import sample_box_pose, sample_insertion_pose,sample_stick_pose,sample_socket_pose
 from dm_control import mujoco
 from dm_control.rl import control
 from dm_control.suite import base
@@ -51,6 +51,12 @@ def make_ee_sim_env(task_name):
         xml_path = os.path.join(XML_DIR, f'bimanual_piper_ee_moving_cube.xml')
         physics = mujoco.Physics.from_xml_path(xml_path)
         task = MovingcubeEETask(random=False)
+        env = control.Environment(physics, task, time_limit=20, control_timestep=DT,
+                                  n_sub_steps=None, flat_observation=False)
+    elif 'sim_coop' in task_name:
+        xml_path = os.path.join(XML_DIR, f'bimanual_piper_ee_coop.xml')
+        physics = mujoco.Physics.from_xml_path(xml_path)
+        task = CoopEETask(random=False)
         env = control.Environment(physics, task, time_limit=20, control_timestep=DT,
                                   n_sub_steps=None, flat_observation=False)
     else:
@@ -310,7 +316,99 @@ class MovingcubeEETask(BimanualPiperEETask):
         #    reward = 4
         return reward
 
+class CoopEETask(BimanualPiperEETask):
+    def __init__(self, random=None):
+        super().__init__(random=random)
+        self.max_reward = 2
 
+    def before_step(self, action, physics):
+        action_left = action[:8]
+        action_right = action[8:16]
+        # left
+        np.copyto(physics.data.mocap_pos[0], action_left[:3])
+        np.copyto(physics.data.mocap_quat[0], action_left[3:7])
+        # right
+        np.copyto(physics.data.mocap_pos[1], action_right[:3])
+        np.copyto(physics.data.mocap_quat[1], action_right[3:7])
+        # gripper
+        g_left_ctrl = PUPPET_GRIPPER_POSITION_UNNORMALIZE_FN(action_left[7])
+        g_right_ctrl = PUPPET_GRIPPER_POSITION_UNNORMALIZE_FN(action_right[7])
+        np.copyto(physics.data.ctrl[1:3], np.array([g_left_ctrl, g_right_ctrl]))
+
+    
+
+    def initialize_episode(self, physics):
+        """Sets the state of the environment at the start of each episode."""
+        self.initialize_robots(physics)
+        # randomize box position
+        cube_pose = sample_box_pose()
+        stick_pose = sample_stick_pose()
+        socket_pose = sample_socket_pose()
+        box_start_idx = physics.model.name2id('green_box_joint', 'joint')
+        socket_start_idx = physics.model.name2id('red_socket_joint', 'joint')
+        stick_start_idx = physics.model.name2id('blue_stick_joint', 'joint')
+        np.copyto(physics.data.qpos[box_start_idx : box_start_idx + 7], cube_pose)
+        np.copyto(physics.data.qpos[box_start_idx + 7 : box_start_idx + 14], socket_pose)
+        np.copyto(physics.data.qpos[box_start_idx + 14 : box_start_idx + 21], stick_pose)
+
+
+        physics.named.data.ctrl['belt_speed'] = BELT_MOVE_SPEED
+        # print(f"randomized cube position to {cube_position}")
+
+        """
+        for i in range(physics.model.njnt):
+            joint_name = physics.model.joint(i).name
+            qpos_start_index = physics.model.jnt_qposadr[i]
+            if i < physics.model.njnt - 1:
+                qpos_end_index = physics.model.jnt_qposadr[i+1]
+                qpos_len = qpos_end_index - qpos_start_index
+            else:
+                qpos_len = physics.model.nq - qpos_start_index
+            qpos_indices = list(range(qpos_start_index, qpos_start_index + qpos_len))
+            print(f"qpos{qpos_indices} -> Joint '{joint_name}' (dof: {qpos_len})")
+        for i in range(physics.model.nu):
+            actuator_name = physics.model.actuator(i).name
+            control_value = physics.data.ctrl[i]
+            print(f"ctrl[{i}] -> Actuator '{actuator_name}': {control_value:.4f}")
+        """
+
+        super().initialize_episode(physics)
+
+    @staticmethod
+    def get_env_state(physics):
+        env_state = physics.data.qpos.copy()[17:17+21]
+        return env_state
+
+    def get_reward(self, physics):
+        # return whether left gripper is holding the box
+        all_contact_pairs = []
+        for i_contact in range(physics.data.ncon):
+            id_geom_1 = physics.data.contact[i_contact].geom1
+            id_geom_2 = physics.data.contact[i_contact].geom2
+            name_geom_1 = physics.model.id2name(id_geom_1, 'geom')
+            name_geom_2 = physics.model.id2name(id_geom_2, 'geom')
+            contact_pair = (name_geom_1, name_geom_2)
+            all_contact_pairs.append(contact_pair)
+
+        #touch_left_gripper = ("l_gripper_finger","red_box") in all_contact_pairs
+        touch_right_gripper = ("r_gripper_finger","green_box") in all_contact_pairs
+        touch_goal_area = ("goal_plate", "green_box") in all_contact_pairs
+        touch_table = ("cushion1", "green_box") in all_contact_pairs
+        reward = 0
+        if touch_right_gripper:
+            reward = 1
+        if touch_goal_area:
+            reward = 2
+        if touch_table:
+            reward = 0
+        
+        #if touch_right_gripper and not touch_table: # lifted
+        #    reward = 2
+        #if touch_left_gripper: # attempted transfer
+        #    reward = 3
+        #if touch_left_gripper and not touch_table: # successful transfer
+        #    reward = 4
+        return reward
 
 class InsertionEETask(BimanualPiperEETask):
     def __init__(self, random=None):

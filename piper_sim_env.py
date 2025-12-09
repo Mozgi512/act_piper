@@ -17,6 +17,8 @@ import IPython
 e = IPython.embed
 
 BOX_POSE = [None] # to be changed from outside
+SOCKET_POSE = [None]
+STICK_POSE = [None]
 
 def make_sim_env(task_name):
     """
@@ -223,6 +225,77 @@ class MovingCubeTask(BimanualPiperTask):
             np.copyto(physics.data.ctrl[:16], START_ARM_POSE)
             assert BOX_POSE[0] is not None
             physics.named.data.qpos[-7:] = BOX_POSE[0]
+            physics.named.data.ctrl['belt_speed'] = BELT_MOVE_SPEED
+
+            for i in range(physics.model.nu):
+                actuator_name = physics.model.actuator(i).name
+                control_value = physics.data.ctrl[i]
+                print(f"ctrl[{i}] -> Actuator '{actuator_name}': {control_value:.4f}")
+                
+        super().initialize_episode(physics)
+
+    @staticmethod
+    def get_env_state(physics):
+        env_state = physics.data.qpos.copy()[16:]
+        return env_state
+
+    def get_reward(self, physics):
+        # return whether left gripper is holding the box
+        all_contact_pairs = []
+        for i_contact in range(physics.data.ncon):
+            id_geom_1 = physics.data.contact[i_contact].geom1
+            id_geom_2 = physics.data.contact[i_contact].geom2
+            name_geom_1 = physics.model.id2name(id_geom_1, 'geom')
+            name_geom_2 = physics.model.id2name(id_geom_2, 'geom')
+            contact_pair = (name_geom_1, name_geom_2)
+            all_contact_pairs.append(contact_pair)
+
+        touch_right_gripper = ("r_gripper_finger","red_box") in all_contact_pairs
+        touch_goal_area = ("red_box", "goal_plate") in all_contact_pairs or ("goal_plate", "red_box") in all_contact_pairs
+        touch_table = ("red_box", "cushion1") in all_contact_pairs or ("cushion1", "red_box") in all_contact_pairs
+
+        reward = 0
+        if touch_right_gripper:
+            reward = 1
+        if touch_goal_area:
+            reward = 2
+        if touch_table:
+            reward = 0
+
+        return reward
+    
+class MovingCubeTask(BimanualPiperTask):
+    def __init__(self, random=None):
+        super().__init__(random=random)
+        self.max_reward = 2
+
+        self.move_duration = 6.8 # seconds
+
+
+    def initialize_episode(self, physics):
+        """Sets the state of the environment at the start of each episode."""
+        # TODO Notice: this function does not randomize the env configuration. Instead, set BOX_POSE from outside
+        # reset qpos, control and box position
+        with physics.reset_context():      
+            """
+            for i in range(physics.model.njnt):
+                joint_name = physics.model.joint(i).name
+                qpos_start_index = physics.model.jnt_qposadr[i]
+                if i < physics.model.njnt - 1:
+                    qpos_end_index = physics.model.jnt_qposadr[i+1]
+                    qpos_len = qpos_end_index - qpos_start_index
+                else:
+                    qpos_len = physics.model.nq - qpos_start_index
+                qpos_indices = list(range(qpos_start_index, qpos_start_index + qpos_len))
+                print(f"qpos{qpos_indices} -> Joint '{joint_name}' (dof: {qpos_len})")
+            """
+            physics.named.data.qpos[:16] = START_ARM_POSE
+            np.copyto(physics.data.ctrl[:16], START_ARM_POSE)
+            assert BOX_POSE[0] is not None
+            physics.named.data.qpos[-21:-14] = BOX_POSE[0]
+            physics.named.data.qpos[-14:-7] = SOCKET_POSE[0]
+            physics.named.data.qpos[-7:] = STICK_POSE[0]
+
             physics.named.data.ctrl['belt_speed'] = BELT_MOVE_SPEED
 
             for i in range(physics.model.nu):

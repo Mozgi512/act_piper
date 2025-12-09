@@ -8,7 +8,7 @@ import h5py
 from piper_constants import PUPPET_GRIPPER_POSITION_NORMALIZE_FN, SIM_TASK_CONFIGS,BELT_MOVE_SPEED
 from piper_ee_sim_env import make_ee_sim_env
 from piper_sim_env import make_sim_env, BOX_POSE
-from scripted_policy import PickAndTransferPolicy, InsertionPolicy,PickMovingCubePolicy
+from scripted_policy import PickAndTransferPolicy, InsertionPolicy,PickMovingCubePolicy,CoopPolicy
 
 import IPython
 e = IPython.embed
@@ -43,6 +43,9 @@ def main(args):
         policy_cls = InsertionPolicy
     elif task_name == 'sim_moving_cube_scripted':
         policy_cls = PickMovingCubePolicy
+    elif task_name == 'sim_coop_scripted':
+        policy_cls = CoopPolicy
+    
     else:
         raise NotImplementedError
 

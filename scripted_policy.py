@@ -78,9 +78,11 @@ class PickAndTransferPolicy(BasePolicy):
         init_mocap_pose_right = ts_first.observation['mocap_pose_right']
         init_mocap_pose_left = ts_first.observation['mocap_pose_left']
 
-        box_info = np.array(ts_first.observation['env_state'])
-        box_xyz = box_info[:3]
-        box_quat = box_info[3:]
+        works_info = np.array(ts_first.observation['env_state'])
+        box_xyz = works_info[:3]
+        box_quat = works_info[3:7]
+
+
         # print(f"Generate trajectory for {box_xyz=}")
 
         gripper_pick_quat = Quaternion(init_mocap_pose_right[3:])
@@ -148,6 +150,56 @@ class PickMovingCubePolicy(BasePolicy):
             {"t": 400, "xyz": meet_xyz + np.array([0.1, 0, 0]), "quat": gripper_pick_quat.elements, "gripper": 1}, # stay
         ]
 
+class CoopPolicy(BasePolicy):
+
+    def generate_trajectory(self, ts_first):
+        init_mocap_pose_right = ts_first.observation['mocap_pose_right']
+        init_mocap_pose_left = ts_first.observation['mocap_pose_left']
+
+        works_info = np.array(ts_first.observation['env_state'])
+        box_xyz = works_info[0:3]
+        box_quat = works_info[3:7]
+        socket_xyz = works_info[7:10]
+        socket_quat = works_info[10:14]
+        stick_xyz = works_info[14:17]
+        stick_quat = works_info[17:21]
+
+        box_target_xyz = box_xyz + np.array([BELT_MOVE_SPEED*8+0.02, 0, 0])
+        socket_target_xyz = socket_xyz + np.array([BELT_MOVE_SPEED*3+0.01, 0, 0])
+        stick_target_xyz = stick_xyz + np.array([BELT_MOVE_SPEED*3-0.01, 0, 0])
+
+        gripper_pick_quat_right = Quaternion(init_mocap_pose_right[3:])
+        gripper_pick_quat_right = gripper_pick_quat_right * Quaternion(axis=[0.0, 1.0, 0.0], degrees=-60)
+
+        gripper_pick_quat_left = Quaternion(init_mocap_pose_left[3:])
+        gripper_pick_quat_left = gripper_pick_quat_left * Quaternion(axis=[0.0, 1.0, 0.0], degrees=60)
+
+        meet_xyz = np.array([0, 0.5, 0.15])
+        place_xyz = np.array([0, 0.1, 0.025])
+
+        self.left_trajectory = [
+            {"t": 0, "xyz": init_mocap_pose_left[:3], "quat": init_mocap_pose_left[3:], "gripper": 1}, # sleep
+            {"t": 90, "xyz": stick_target_xyz + np.array([0, 0, 0.08]), "quat": gripper_pick_quat_left.elements, "gripper": 1}, # approach the cube
+            {"t": 140, "xyz": stick_target_xyz + np.array([0, 0, 0.01]), "quat": gripper_pick_quat_left.elements, "gripper": 1}, # go down
+            {"t": 170, "xyz": stick_target_xyz + np.array([0, 0, 0.01]), "quat": gripper_pick_quat_left.elements, "gripper": 0}, # close gripper
+            {"t": 200, "xyz": meet_xyz + np.array([-0.1, 0, 0.01]), "quat": gripper_pick_quat_left.elements, "gripper": 0}, # approach meet position
+            {"t": 220, "xyz": meet_xyz + np.array([-0.02, 0, 0.01]), "quat": gripper_pick_quat_left.elements, "gripper": 0}, # move to meet position
+            {"t": 250, "xyz": meet_xyz + np.array([-0.02, 0, 0.01]), "quat": gripper_pick_quat_left.elements, "gripper": 1}, # open gripper
+            {"t": 340, "xyz": box_target_xyz + np.array([0, 0, 0.08]), "quat": gripper_pick_quat_left.elements, "gripper": 1}, # move to right
+            {"t": 400, "xyz": box_target_xyz + np.array([0, 0, 0.01]), "quat": gripper_pick_quat_left.elements, "gripper": 1}, # stay
+        ]
+        self.right_trajectory = [
+            {"t": 0, "xyz": init_mocap_pose_right[:3], "quat": init_mocap_pose_right[3:], "gripper": 1}, # sleep
+            {"t": 90, "xyz": socket_target_xyz + np.array([0, 0, 0.08]), "quat": gripper_pick_quat_right.elements, "gripper": 1}, # approach the cube
+            {"t": 140, "xyz": socket_target_xyz + np.array([0, 0, 0.015]), "quat": gripper_pick_quat_right.elements, "gripper": 1}, # go down
+            {"t": 170, "xyz": socket_target_xyz + np.array([0, 0, 0.015]), "quat": gripper_pick_quat_right.elements, "gripper": 0}, # close gripper
+            {"t": 200, "xyz": meet_xyz + np.array([0.1, 0, 0]), "quat": gripper_pick_quat_right.elements, "gripper": 0}, # approach meet position
+            {"t": 220, "xyz": meet_xyz + np.array([0.02, 0, 0]), "quat": gripper_pick_quat_right.elements, "gripper": 0}, # move to meet position
+            {"t": 260, "xyz": meet_xyz + np.array([0.02, 0, 0]), "quat": gripper_pick_quat_right.elements, "gripper": 0},   #wait
+            {"t": 340, "xyz": place_xyz + np.array([0.02, 0, 0]), "quat": gripper_pick_quat_right.elements, "gripper": 0}, # move to right
+            {"t": 400, "xyz": place_xyz + np.array([0.02, 0, 0]), "quat": gripper_pick_quat_right.elements, "gripper": 1}, # stay
+        ]
+
 
 class InsertionPolicy(BasePolicy):
 
@@ -206,7 +258,9 @@ def test_policy(task_name):
     elif 'sim_insertion' in task_name:
         env = make_ee_sim_env('sim_insertion')
     elif 'sim_moving_cube' in task_name:
-        env = make_ee_sim_env('sim_moving_cube') 
+        env = make_ee_sim_env('sim_moving_cube')
+    elif 'sim_coop' in task_name:
+        env = make_ee_sim_env('sim_coop') 
     else:
         raise NotImplementedError
 
@@ -220,7 +274,7 @@ def test_policy(task_name):
             #plt_img = ax.imshow(ts.observation['images']['angle'])
             plt.ion()
 
-        policy = PickMovingCubePolicy(inject_noise)
+        policy = CoopPolicy(inject_noise)
         for step in range(episode_len):
             action = policy(ts)
             ts = env.step(action)
@@ -248,7 +302,7 @@ def test_policy(task_name):
             # ========================================================================
     
             if onscreen_render:
-                cam_image = env.physics.render(height=360, width=640, camera_id="top")
+                cam_image = env.physics.render(height=360, width=640, camera_id="angle")
                 plt_img.set_data(cam_image)
                 #plt_img.set_data(ts.observation['images']['angle'])
                 plt.pause(0.02)
@@ -262,6 +316,5 @@ def test_policy(task_name):
 
 
 if __name__ == '__main__':
-    test_task_name = 'sim_moving_cube_scripted'
+    test_task_name = 'sim_coop_scripted'
     test_policy(test_task_name)
-

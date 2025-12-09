@@ -108,13 +108,13 @@
                 <geom mesh="link5" class="collision"/>
                 <body name="r_link6" pos="0 0.091 0.0014165" quat="0 0 -0.707105 -0.707108" gravcomp="1">
                   <body name="r_weldpoint" pos="0 0 0.13"/>
-                  <body name="r_camera_focus" pos="-0.07 0 0.13">
+                  <body name="r_camera_focus" pos="-0.0 0 0.2">
                     <site pos="0 0 0" size="0.01" type="sphere" name="r_cam_focus" rgba="0 1 0 0"/>
                   </body>
                   <site pos="0 0 0.13" size="0.003 0.003 0.03" type="box" name="r_cali_site1" rgba="0 0 1 0" />
                   <site pos="0 0 0.13" size="0.003 0.03 0.003" type="box" name="r_cali_site2" rgba="0 0 1 0" />
                   <site pos="0 0 0.13" size="0.03 0.003 0.003" type="box" name="r_cali_site3" rgba="0 0 1 0" />
-                  <camera name="r_wrist" pos="-0.07 0 0.06" fovy="20" mode="targetbody" target="r_camera_focus"/>
+                  <camera name="r_wrist" pos="-0.1 0 0.05" fovy="20" mode="targetbody" target="r_camera_focus"/>
                   <inertial pos="0.0010312 0.0121761 0.0315481" quat="0.0230402 0.707091 0.0373344 0.70576" mass="1.2"
                     diaginertia="0.001 0.001 0.001"/>
                   <joint name="r_joint6" axis="0 0 1" range="-3.14 3.14"/>
@@ -126,9 +126,9 @@
                     <joint name="r_joint7" axis="0 0 -1" class="finger" range="0 0.035"/>
                     <geom mesh="link7" material="gray_mat" class="visual" />
                     <geom type="box" size=".012 .015 .0025" pos="0 -0.011 -0.0025" rgba="1 0 0 1" class="collision"
-                      friction="1 0.005 0.0001" solimp="2 1 0.01" solref="0.01 1" contype="1" conaffinity="1" name="r_gripper_finger"/>
+                      friction="5 0.005 0.0001" solimp="2 1 0.01" solref="0.01 1" contype="1" conaffinity="1" name="r_gripper_finger"/>
                     <geom type="box" size=".015 .015 .0025" pos="0 -0.041 -0.0025" rgba="0 0 1 1" class="collision"
-                     friction="1 0.005 0.0001" solimp="2 1 0.01" solref="0.01 1" contype="1" conaffinity="1" name="r2"/>
+                     friction="5 0.005 0.0001" solimp="2 1 0.01" solref="0.01 1" contype="1" conaffinity="1" name="r2"/>
                   </body>
                   <body name="r_link8" pos="0 0 0.13503" quat="1.89468e-08 -1.89469e-08 -0.707108 0.707105" gravcomp="1">
                     <inertial pos="0.000277817 0.0467674 -0.0092103" quat="0.553273 0.439968 -0.46134 0.536174"
@@ -136,9 +136,9 @@
                     <joint name="r_joint8" axis="0 0 1" class="finger" range="-0.035 0"/>
                     <geom mesh="link8" material="gray_mat" class="visual"/>
                     <geom type="box" size=".012 .015 .0025" pos="0 0.015 -0.0025" rgba="1 0 0 .2" class="collision"
-                     friction="1 0.005 0.0001" solimp="2 1 0.01" solref="0.01 1" contype="1" conaffinity="1" />
+                     friction="5 0.005 0.0001" solimp="2 1 0.01" solref="0.01 1" contype="1" conaffinity="1" />
                     <geom type="box" size=".015 .015 .0025" pos="0 0.045 -0.0025" rgba="0 0 1 .2" class="collision"
-                     friction="1 0.005 0.0001" solimp="2 1 0.01" solref="0.01 1" contype="1" conaffinity="1" />
+                     friction="5 0.005 0.0001" solimp="2 1 0.01" solref="0.01 1" contype="1" conaffinity="1" />
                   </body>
                 </body>
               </body>

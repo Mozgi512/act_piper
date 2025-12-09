@@ -36,11 +36,17 @@ SIM_TASK_CONFIGS = {
         'episode_len': 400,
         'camera_names': ['top']
     },
+    'sim_coop_scripted':{
+        'dataset_dir': DATA_DIR + '/sim_coop_scripted',
+        'num_episodes': 100,
+        'episode_len': 400,
+        'camera_names': ['top']
+    },
 }
 
 ### Simulation envs fixed constants
 DT = 0.02
-BELT_MOVE_SPEED = 0.05  # m/s
+BELT_MOVE_SPEED = 0.03  # m/s
 JOINT_NAMES = ["waist", "shoulder", "elbow", "forearm_roll", "wrist_angle", "wrist_rotate"]
 #START_ARM_POSE = [2.2, 1.1, -0.5, 1.9, -2.1, -0.8, 0.02, -0.02, -2.2, 1.1, -0.5, -1.9, -2.1, 1, 0.02, -0.02]
 #START_ARM_POSE = [1.80,1.60,-0.90, 1.63,-1.79,-0.87,0.03,-0.03,-1.78,1.57,-0.90,-1.68,-1.73,0.99,0.03,-0.03]

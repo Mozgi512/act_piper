@@ -131,7 +131,7 @@ def load_data(dataset_dir, num_episodes, camera_names, batch_size_train, batch_s
 ### env utils
 
 def sample_box_pose():
-    x_range = [-0.2, 0.00]
+    x_range = [-0.5, -0.3]
     y_range = [0.30, 0.45]
     z_range = [0.01, 0.01]
 
@@ -140,6 +140,29 @@ def sample_box_pose():
 
     cube_quat = np.array([1, 0, 0, 0])
     return np.concatenate([cube_position, cube_quat])
+
+
+def sample_stick_pose():
+    x_range = [-0.3, -0.1]
+    y_range = [0.30, 0.45]
+    z_range = [0.01, 0.01]
+
+    ranges = np.vstack([x_range, y_range, z_range])
+    stick_position = np.random.uniform(ranges[:, 0], ranges[:, 1])
+
+    stick_quat = np.array([1, 0, 0, 0])
+    return np.concatenate([stick_position, stick_quat])
+
+def sample_socket_pose():
+    x_range = [-0.1, 0.1]
+    y_range = [0.30, 0.45]
+    z_range = [0.01, 0.01]
+
+    ranges = np.vstack([x_range, y_range, z_range])
+    socket_position = np.random.uniform(ranges[:, 0], ranges[:, 1])
+
+    socket_quat = np.array([1, 0, 0, 0])
+    return np.concatenate([socket_position, socket_quat])
 
 def sample_insertion_pose():
     # Peg
