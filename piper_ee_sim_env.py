@@ -156,7 +156,74 @@ class BimanualPiperEETask(base.Task):
 
     def get_reward(self, physics):
         raise NotImplementedError
+    
+class InsertionEETask(BimanualPiperEETask):
+    def __init__(self, random=None):
+        super().__init__(random=random)
+        self.max_reward = 4
 
+    def initialize_episode(self, physics):
+        """Sets the state of the environment at the start of each episode."""
+        self.initialize_robots(physics)
+        # randomize peg and socket position
+        peg_pose, socket_pose = sample_insertion_pose()
+        id2index = lambda j_id: 16 + (j_id - 16) * 7 # first 16 is robot qpos, 7 is pose dim # hacky
+
+        peg_start_id = physics.model.name2id('red_peg_joint', 'joint')
+        peg_start_idx = id2index(peg_start_id)
+        np.copyto(physics.data.qpos[peg_start_idx : peg_start_idx + 7], peg_pose)
+        # print(f"randomized cube position to {cube_position}")
+
+        socket_start_id = physics.model.name2id('blue_socket_joint', 'joint')
+        socket_start_idx = id2index(socket_start_id)
+        np.copyto(physics.data.qpos[socket_start_idx : socket_start_idx + 7], socket_pose)
+        # print(f"randomized cube position to {cube_position}")
+
+        super().initialize_episode(physics)
+
+    @staticmethod
+    def get_env_state(physics):
+        env_state = physics.data.qpos.copy()[16:]
+        return env_state
+
+    def get_reward(self, physics):
+        # return whether peg touches the pin
+        all_contact_pairs = []
+        for i_contact in range(physics.data.ncon):
+            id_geom_1 = physics.data.contact[i_contact].geom1
+            id_geom_2 = physics.data.contact[i_contact].geom2
+            name_geom_1 = physics.model.id2name(id_geom_1, 'geom')
+            name_geom_2 = physics.model.id2name(id_geom_2, 'geom')
+            contact_pair = (name_geom_1, name_geom_2)
+            all_contact_pairs.append(contact_pair)
+
+        touch_right_gripper = ("red_peg", "r_gripper_finger") in all_contact_pairs
+        touch_left_gripper = ("socket-1", "l_gripper_finger") in all_contact_pairs or \
+                             ("socket-2", "l_gripper_finger") in all_contact_pairs or \
+                             ("socket-3", "l_gripper_finger") in all_contact_pairs or \
+                             ("socket-4", "l_gripper_finger") in all_contact_pairs
+
+        peg_touch_table = ("red_peg", "table") in all_contact_pairs
+        socket_touch_table = ("socket-1", "table") in all_contact_pairs or \
+                             ("socket-2", "table") in all_contact_pairs or \
+                             ("socket-3", "table") in all_contact_pairs or \
+                             ("socket-4", "table") in all_contact_pairs
+        peg_touch_socket = ("red_peg", "socket-1") in all_contact_pairs or \
+                           ("red_peg", "socket-2") in all_contact_pairs or \
+                           ("red_peg", "socket-3") in all_contact_pairs or \
+                           ("red_peg", "socket-4") in all_contact_pairs
+        pin_touched = ("red_peg", "pin") in all_contact_pairs
+
+        reward = 0
+        if touch_left_gripper and touch_right_gripper: # touch both
+            reward = 1
+        if touch_left_gripper and touch_right_gripper and (not peg_touch_table) and (not socket_touch_table): # grasp both
+            reward = 2
+        if peg_touch_socket and (not peg_touch_table) and (not socket_touch_table): # peg and socket touching
+            reward = 3
+        if pin_touched: # successful insertion
+            reward = 4
+        return reward
 
 class TransferCubeEETask(BimanualPiperEETask):
     def __init__(self, random=None):
@@ -319,7 +386,7 @@ class MovingcubeEETask(BimanualPiperEETask):
 class CoopEETask(BimanualPiperEETask):
     def __init__(self, random=None):
         super().__init__(random=random)
-        self.max_reward = 2
+        self.max_reward = 3
 
     def before_step(self, action, physics):
         action_left = action[:8]
@@ -389,90 +456,22 @@ class CoopEETask(BimanualPiperEETask):
             contact_pair = (name_geom_1, name_geom_2)
             all_contact_pairs.append(contact_pair)
 
-        #touch_left_gripper = ("l_gripper_finger","red_box") in all_contact_pairs
-        touch_right_gripper = ("r_gripper_finger","green_box") in all_contact_pairs
-        touch_goal_area = ("goal_plate", "green_box") in all_contact_pairs
-        touch_table = ("cushion1", "green_box") in all_contact_pairs
+        touch_right_gripper = ("r_gripper_finger","blue_box") in all_contact_pairs
+        touch_left_gripper = ("l_gripper_finger","green_box") in all_contact_pairs
+        assembled = ("green_box", "blue_box") in all_contact_pairs
+        touch_goal_area = ("goal_plate", "blue_box") in all_contact_pairs
+        touch_table = ("cushion1", "red_box") in all_contact_pairs or ("cushion1", "green_box") in all_contact_pairs or ("cushion1", "blue_box") in all_contact_pairs
+
         reward = 0
-        if touch_right_gripper:
+        if touch_right_gripper or touch_left_gripper:
             reward = 1
-        if touch_goal_area:
+        if assembled :
             reward = 2
+        if touch_goal_area and assembled: 
+            reward = 3
         if touch_table:
             reward = 0
-        
-        #if touch_right_gripper and not touch_table: # lifted
-        #    reward = 2
-        #if touch_left_gripper: # attempted transfer
-        #    reward = 3
-        #if touch_left_gripper and not touch_table: # successful transfer
-        #    reward = 4
+
         return reward
 
-class InsertionEETask(BimanualPiperEETask):
-    def __init__(self, random=None):
-        super().__init__(random=random)
-        self.max_reward = 4
 
-    def initialize_episode(self, physics):
-        """Sets the state of the environment at the start of each episode."""
-        self.initialize_robots(physics)
-        # randomize peg and socket position
-        peg_pose, socket_pose = sample_insertion_pose()
-        id2index = lambda j_id: 16 + (j_id - 16) * 7 # first 16 is robot qpos, 7 is pose dim # hacky
-
-        peg_start_id = physics.model.name2id('red_peg_joint', 'joint')
-        peg_start_idx = id2index(peg_start_id)
-        np.copyto(physics.data.qpos[peg_start_idx : peg_start_idx + 7], peg_pose)
-        # print(f"randomized cube position to {cube_position}")
-
-        socket_start_id = physics.model.name2id('blue_socket_joint', 'joint')
-        socket_start_idx = id2index(socket_start_id)
-        np.copyto(physics.data.qpos[socket_start_idx : socket_start_idx + 7], socket_pose)
-        # print(f"randomized cube position to {cube_position}")
-
-        super().initialize_episode(physics)
-
-    @staticmethod
-    def get_env_state(physics):
-        env_state = physics.data.qpos.copy()[16:]
-        return env_state
-
-    def get_reward(self, physics):
-        # return whether peg touches the pin
-        all_contact_pairs = []
-        for i_contact in range(physics.data.ncon):
-            id_geom_1 = physics.data.contact[i_contact].geom1
-            id_geom_2 = physics.data.contact[i_contact].geom2
-            name_geom_1 = physics.model.id2name(id_geom_1, 'geom')
-            name_geom_2 = physics.model.id2name(id_geom_2, 'geom')
-            contact_pair = (name_geom_1, name_geom_2)
-            all_contact_pairs.append(contact_pair)
-
-        touch_right_gripper = ("red_peg", "r_gripper_finger") in all_contact_pairs
-        touch_left_gripper = ("socket-1", "l_gripper_finger") in all_contact_pairs or \
-                             ("socket-2", "l_gripper_finger") in all_contact_pairs or \
-                             ("socket-3", "l_gripper_finger") in all_contact_pairs or \
-                             ("socket-4", "l_gripper_finger") in all_contact_pairs
-
-        peg_touch_table = ("red_peg", "table") in all_contact_pairs
-        socket_touch_table = ("socket-1", "table") in all_contact_pairs or \
-                             ("socket-2", "table") in all_contact_pairs or \
-                             ("socket-3", "table") in all_contact_pairs or \
-                             ("socket-4", "table") in all_contact_pairs
-        peg_touch_socket = ("red_peg", "socket-1") in all_contact_pairs or \
-                           ("red_peg", "socket-2") in all_contact_pairs or \
-                           ("red_peg", "socket-3") in all_contact_pairs or \
-                           ("red_peg", "socket-4") in all_contact_pairs
-        pin_touched = ("red_peg", "pin") in all_contact_pairs
-
-        reward = 0
-        if touch_left_gripper and touch_right_gripper: # touch both
-            reward = 1
-        if touch_left_gripper and touch_right_gripper and (not peg_touch_table) and (not socket_touch_table): # grasp both
-            reward = 2
-        if peg_touch_socket and (not peg_touch_table) and (not socket_touch_table): # peg and socket touching
-            reward = 3
-        if pin_touched: # successful insertion
-            reward = 4
-        return reward

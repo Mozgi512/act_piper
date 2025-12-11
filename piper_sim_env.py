@@ -56,6 +56,13 @@ def make_sim_env(task_name):
         task = MovingCubeTask(random=False)
         env = control.Environment(physics, task, time_limit=20, control_timestep=DT,
                                   n_sub_steps=None, flat_observation=False)
+        
+    elif 'sim_coop' in task_name:
+        xml_path = os.path.join(XML_DIR, f'bimanual_piper_coop.xml')
+        physics = mujoco.Physics.from_xml_path(xml_path)
+        task = CoopTask(random=False)
+        env = control.Environment(physics, task, time_limit=20, control_timestep=DT,
+                                  n_sub_steps=None, flat_observation=False)
     else:
         raise NotImplementedError
     return env
@@ -63,12 +70,14 @@ def make_sim_env(task_name):
 class BimanualPiperTask(base.Task):
     def __init__(self, random=None):
         super().__init__(random=random)
+        self.belt_speed = 0  # デフォルトはベルトを停止
 
     def before_step(self, action, physics):
-        left_arm_action = action[:6]
-        right_arm_action = action[7:7+6]
+        # action: [left_arm(6), left_gripper(1), right_arm(6), right_gripper(1)] = 14要素
+        left_arm_action = action[0:6]
         normalized_left_gripper_action = action[6]
-        normalized_right_gripper_action = action[7+6]
+        right_arm_action = action[7:13]
+        normalized_right_gripper_action = action[13]
 
         left_gripper_action = PUPPET_GRIPPER_POSITION_UNNORMALIZE_FN(normalized_left_gripper_action)
         right_gripper_action = PUPPET_GRIPPER_POSITION_UNNORMALIZE_FN(normalized_right_gripper_action)
@@ -76,8 +85,8 @@ class BimanualPiperTask(base.Task):
         full_left_gripper_action = [left_gripper_action, -left_gripper_action]
         full_right_gripper_action = [right_gripper_action, -right_gripper_action]
 
-        # base env_action (length 16 actuators: 6 + 2 + 6 + 2)
-        env_action = np.concatenate([[BELT_MOVE_SPEED], left_arm_action, full_left_gripper_action, right_arm_action, full_right_gripper_action])
+        # env_action: [belt, left_arm(6), left_gripper(2), right_arm(6), right_gripper(2)] = 17要素
+        env_action = np.concatenate([[self.belt_speed], left_arm_action, full_left_gripper_action, right_arm_action, full_right_gripper_action])
 
         super().before_step(env_action, physics)
         return
@@ -90,23 +99,29 @@ class BimanualPiperTask(base.Task):
     @staticmethod
     def get_qpos(physics):
         qpos_raw = physics.data.qpos.copy()
-        left_qpos_raw = qpos_raw[:8]
-        right_qpos_raw = qpos_raw[8:16]
-        left_arm_qpos = left_qpos_raw[:6]
-        right_arm_qpos = right_qpos_raw[:6]
-        left_gripper_qpos = [PUPPET_GRIPPER_POSITION_NORMALIZE_FN(left_qpos_raw[6])]
-        right_gripper_qpos = [PUPPET_GRIPPER_POSITION_NORMALIZE_FN(right_qpos_raw[6])]
+        # qpos 構造: [left_arm(6), left_gripper(2), right_arm(6), right_gripper(2), belt(1), boxes...]
+        
+        left_arm_qpos = qpos_raw[0:6]       # qpos[0:6]
+        right_arm_qpos = qpos_raw[8:14]     # qpos[8:14]
+        
+        # gripper: qpos[6] を使う（対称制御なので片方だけ）
+        left_gripper_qpos = [PUPPET_GRIPPER_POSITION_NORMALIZE_FN(qpos_raw[6])]
+        right_gripper_qpos = [PUPPET_GRIPPER_POSITION_NORMALIZE_FN(qpos_raw[14])]
+        
+        # 出力順序: [left_arm(6), left_gripper(1), right_arm(6), right_gripper(1)] = 14要素
         return np.concatenate([left_arm_qpos, left_gripper_qpos, right_arm_qpos, right_gripper_qpos])
 
     @staticmethod
     def get_qvel(physics):
         qvel_raw = physics.data.qvel.copy()
-        left_qvel_raw = qvel_raw[:8]
-        right_qvel_raw = qvel_raw[8:16]
-        left_arm_qvel = left_qvel_raw[:6]
-        right_arm_qvel = right_qvel_raw[:6]
-        left_gripper_qvel = [PUPPET_GRIPPER_VELOCITY_NORMALIZE_FN(left_qvel_raw[6])]
-        right_gripper_qvel = [PUPPET_GRIPPER_VELOCITY_NORMALIZE_FN(right_qvel_raw[6])]
+        # qvel も同じ構造
+        
+        left_arm_qvel = qvel_raw[0:6]
+        right_arm_qvel = qvel_raw[8:14]
+        
+        left_gripper_qvel = [PUPPET_GRIPPER_VELOCITY_NORMALIZE_FN(qvel_raw[6])]
+        right_gripper_qvel = [PUPPET_GRIPPER_VELOCITY_NORMALIZE_FN(qvel_raw[14])]
+        
         return np.concatenate([left_arm_qvel, left_gripper_qvel, right_arm_qvel, right_gripper_qvel])
 
     @staticmethod
@@ -128,213 +143,6 @@ class BimanualPiperTask(base.Task):
     def get_reward(self, physics):
         # return whether left gripper is holding the box
         raise NotImplementedError
-
-
-class TransferCubeTask(BimanualPiperTask):
-    def __init__(self, random=None):
-        super().__init__(random=random)
-        self.max_reward = 4
-
-    def initialize_episode(self, physics):
-        """Sets the state of the environment at the start of each episode."""
-        # TODO Notice: this function does not randomize the env configuration. Instead, set BOX_POSE from outside
-        # reset qpos, control and box position
-        with physics.reset_context():      
-            """
-            for i in range(physics.model.njnt):
-                joint_name = physics.model.joint(i).name
-                qpos_start_index = physics.model.jnt_qposadr[i]
-                if i < physics.model.njnt - 1:
-                    qpos_end_index = physics.model.jnt_qposadr[i+1]
-                    qpos_len = qpos_end_index - qpos_start_index
-                else:
-                    qpos_len = physics.model.nq - qpos_start_index
-                qpos_indices = list(range(qpos_start_index, qpos_start_index + qpos_len))
-                print(f"qpos{qpos_indices} -> Joint '{joint_name}' (dof: {qpos_len})")
-            """
-            physics.named.data.qpos[:16] = START_ARM_POSE
-            np.copyto(physics.data.ctrl[:16], START_ARM_POSE)
-            assert BOX_POSE[0] is not None
-            physics.named.data.qpos[-7:] = BOX_POSE[0]
-            # print(f"{BOX_POSE=}")
-
-            for i in range(physics.model.nu):
-                actuator_name = physics.model.actuator(i).name
-                control_value = physics.data.ctrl[i]
-                print(f"ctrl[{i}] -> Actuator '{actuator_name}': {control_value:.4f}")
-                
-        super().initialize_episode(physics)
-
-    @staticmethod
-    def get_env_state(physics):
-        env_state = physics.data.qpos.copy()[16:]
-        return env_state
-
-    def get_reward(self, physics):
-        # return whether left gripper is holding the box
-        all_contact_pairs = []
-        for i_contact in range(physics.data.ncon):
-            id_geom_1 = physics.data.contact[i_contact].geom1
-            id_geom_2 = physics.data.contact[i_contact].geom2
-            name_geom_1 = physics.model.id2name(id_geom_1, 'geom')
-            name_geom_2 = physics.model.id2name(id_geom_2, 'geom')
-            contact_pair = (name_geom_1, name_geom_2)
-            all_contact_pairs.append(contact_pair)
-
-        touch_left_gripper = ("l_gripper_finger","red_box") in all_contact_pairs
-        touch_right_gripper = ("r_gripper_finger","red_box") in all_contact_pairs
-        touch_table = ("red_box", "table") in all_contact_pairs
-
-        reward = 0
-        if touch_right_gripper:
-            reward = 1
-        if touch_right_gripper and not touch_table: # lifted
-            reward = 2
-        if touch_left_gripper: # attempted transfer
-            reward = 3
-        if touch_left_gripper and not touch_table: # successful transfer
-            reward = 4
-        return reward
-    
-class MovingCubeTask(BimanualPiperTask):
-    def __init__(self, random=None):
-        super().__init__(random=random)
-        self.max_reward = 2
-
-        self.move_duration = 6.8 # seconds
-
-
-    def initialize_episode(self, physics):
-        """Sets the state of the environment at the start of each episode."""
-        # TODO Notice: this function does not randomize the env configuration. Instead, set BOX_POSE from outside
-        # reset qpos, control and box position
-        with physics.reset_context():      
-            """
-            for i in range(physics.model.njnt):
-                joint_name = physics.model.joint(i).name
-                qpos_start_index = physics.model.jnt_qposadr[i]
-                if i < physics.model.njnt - 1:
-                    qpos_end_index = physics.model.jnt_qposadr[i+1]
-                    qpos_len = qpos_end_index - qpos_start_index
-                else:
-                    qpos_len = physics.model.nq - qpos_start_index
-                qpos_indices = list(range(qpos_start_index, qpos_start_index + qpos_len))
-                print(f"qpos{qpos_indices} -> Joint '{joint_name}' (dof: {qpos_len})")
-            """
-            physics.named.data.qpos[:16] = START_ARM_POSE
-            np.copyto(physics.data.ctrl[:16], START_ARM_POSE)
-            assert BOX_POSE[0] is not None
-            physics.named.data.qpos[-7:] = BOX_POSE[0]
-            physics.named.data.ctrl['belt_speed'] = BELT_MOVE_SPEED
-
-            for i in range(physics.model.nu):
-                actuator_name = physics.model.actuator(i).name
-                control_value = physics.data.ctrl[i]
-                print(f"ctrl[{i}] -> Actuator '{actuator_name}': {control_value:.4f}")
-                
-        super().initialize_episode(physics)
-
-    @staticmethod
-    def get_env_state(physics):
-        env_state = physics.data.qpos.copy()[16:]
-        return env_state
-
-    def get_reward(self, physics):
-        # return whether left gripper is holding the box
-        all_contact_pairs = []
-        for i_contact in range(physics.data.ncon):
-            id_geom_1 = physics.data.contact[i_contact].geom1
-            id_geom_2 = physics.data.contact[i_contact].geom2
-            name_geom_1 = physics.model.id2name(id_geom_1, 'geom')
-            name_geom_2 = physics.model.id2name(id_geom_2, 'geom')
-            contact_pair = (name_geom_1, name_geom_2)
-            all_contact_pairs.append(contact_pair)
-
-        touch_right_gripper = ("r_gripper_finger","red_box") in all_contact_pairs
-        touch_goal_area = ("red_box", "goal_plate") in all_contact_pairs or ("goal_plate", "red_box") in all_contact_pairs
-        touch_table = ("red_box", "cushion1") in all_contact_pairs or ("cushion1", "red_box") in all_contact_pairs
-
-        reward = 0
-        if touch_right_gripper:
-            reward = 1
-        if touch_goal_area:
-            reward = 2
-        if touch_table:
-            reward = 0
-
-        return reward
-    
-class CoopTask(BimanualPiperTask):
-    def __init__(self, random=None):
-        super().__init__(random=random)
-        self.max_reward = 2
-
-        self.move_duration = 6.8 # seconds
-
-
-    def initialize_episode(self, physics):
-        """Sets the state of the environment at the start of each episode."""
-        # TODO Notice: this function does not randomize the env configuration. Instead, set BOX_POSE from outside
-        # reset qpos, control and box position
-        with physics.reset_context():      
-            """
-            for i in range(physics.model.njnt):
-                joint_name = physics.model.joint(i).name
-                qpos_start_index = physics.model.jnt_qposadr[i]
-                if i < physics.model.njnt - 1:
-                    qpos_end_index = physics.model.jnt_qposadr[i+1]
-                    qpos_len = qpos_end_index - qpos_start_index
-                else:
-                    qpos_len = physics.model.nq - qpos_start_index
-                qpos_indices = list(range(qpos_start_index, qpos_start_index + qpos_len))
-                print(f"qpos{qpos_indices} -> Joint '{joint_name}' (dof: {qpos_len})")
-            """
-            physics.named.data.qpos[:16] = START_ARM_POSE
-            np.copyto(physics.data.ctrl[:16], START_ARM_POSE)
-            assert REDBOX_POSE[0] is not None
-            physics.named.data.qpos[-21:-14] = REDBOX_POSE[0]
-            physics.named.data.qpos[-14:-7] = GREENBOX_POSE[0]
-            physics.named.data.qpos[-7:] = BLUEBOX_POSE[0]
-
-            physics.named.data.ctrl['belt_speed'] = BELT_MOVE_SPEED
-
-            for i in range(physics.model.nu):
-                actuator_name = physics.model.actuator(i).name
-                control_value = physics.data.ctrl[i]
-                print(f"ctrl[{i}] -> Actuator '{actuator_name}': {control_value:.4f}")
-                
-        super().initialize_episode(physics)
-
-    @staticmethod
-    def get_env_state(physics):
-        env_state = physics.data.qpos.copy()[16:]
-        return env_state
-
-    def get_reward(self, physics):
-        # return whether left gripper is holding the box
-        all_contact_pairs = []
-        for i_contact in range(physics.data.ncon):
-            id_geom_1 = physics.data.contact[i_contact].geom1
-            id_geom_2 = physics.data.contact[i_contact].geom2
-            name_geom_1 = physics.model.id2name(id_geom_1, 'geom')
-            name_geom_2 = physics.model.id2name(id_geom_2, 'geom')
-            contact_pair = (name_geom_1, name_geom_2)
-            all_contact_pairs.append(contact_pair)
-
-        touch_right_gripper = ("r_gripper_finger","red_box") in all_contact_pairs
-        touch_goal_area = ("red_box", "goal_plate") in all_contact_pairs or ("goal_plate", "red_box") in all_contact_pairs
-        touch_table = ("red_box", "cushion1") in all_contact_pairs or ("cushion1", "red_box") in all_contact_pairs
-
-        reward = 0
-        if touch_right_gripper:
-            reward = 1
-        if touch_goal_area:
-            reward = 2
-        if touch_table:
-            reward = 0
-
-        return reward
-
 
 class InsertionTask(BimanualPiperTask):
     def __init__(self, random=None):
@@ -397,6 +205,190 @@ class InsertionTask(BimanualPiperTask):
             reward = 4
         return reward
 
+class TransferCubeTask(BimanualPiperTask):
+    def __init__(self, random=None):
+        super().__init__(random=random)
+        self.max_reward = 4
+
+    def initialize_episode(self, physics):
+        """Sets the state of the environment at the start of each episode."""
+        # TODO Notice: this function does not randomize the env configuration. Instead, set BOX_POSE from outside
+        # reset qpos, control and box position
+        with physics.reset_context():
+            physics.named.data.qpos[:16] = START_ARM_POSE
+            
+            # ctrl: belt がないので直接コピー
+            np.copyto(physics.data.ctrl[:16], START_ARM_POSE)
+            
+            assert REDBOX_POSE[0] is not None
+            physics.named.data.qpos[-7:] = REDBOX_POSE[0]
+
+            for i in range(physics.model.nu):
+                actuator_name = physics.model.actuator(i).name
+                control_value = physics.data.ctrl[i]
+                print(f"ctrl[{i}] -> Actuator '{actuator_name}': {control_value:.4f}")
+                
+        super().initialize_episode(physics)
+
+    @staticmethod
+    def get_env_state(physics):
+        env_state = physics.data.qpos.copy()[16:]
+        return env_state
+
+    def get_reward(self, physics):
+        # return whether left gripper is holding the box
+        all_contact_pairs = []
+        for i_contact in range(physics.data.ncon):
+            id_geom_1 = physics.data.contact[i_contact].geom1
+            id_geom_2 = physics.data.contact[i_contact].geom2
+            name_geom_1 = physics.model.id2name(id_geom_1, 'geom')
+            name_geom_2 = physics.model.id2name(id_geom_2, 'geom')
+            contact_pair = (name_geom_1, name_geom_2)
+            all_contact_pairs.append(contact_pair)
+
+        touch_left_gripper = ("l_gripper_finger","red_box") in all_contact_pairs
+        touch_right_gripper = ("r_gripper_finger","red_box") in all_contact_pairs
+        touch_table = ("red_box", "table") in all_contact_pairs
+
+        reward = 0
+        if touch_right_gripper:
+            reward = 1
+        if touch_right_gripper and not touch_table: # lifted
+            reward = 2
+        if touch_left_gripper: # attempted transfer
+            reward = 3
+        if touch_left_gripper and not touch_table: # successful transfer
+            reward = 4
+        return reward
+    
+class MovingCubeTask(BimanualPiperTask):
+    def __init__(self, random=None):
+        super().__init__(random=random)
+        self.max_reward = 2
+        self.belt_speed = BELT_MOVE_SPEED  # このタスクではベルトを動かす
+        self.move_duration = 6.8 # seconds
+
+
+    def initialize_episode(self, physics):
+        """Sets the state of the environment at the start of each episode."""
+        # TODO Notice: this function does not randomize the env configuration. Instead, set BOX_POSE from outside
+        # reset qpos, control and box position
+        with physics.reset_context():
+            physics.named.data.qpos[:16] = START_ARM_POSE
+            
+            # ctrl への設定（belt を先頭に追加）
+            # ctrl 構造: [belt(1), left_arm(6), left_gripper(2), right_arm(6), right_gripper(2)]
+            ctrl_with_belt = np.concatenate([[self.belt_speed], START_ARM_POSE])
+            np.copyto(physics.data.ctrl, ctrl_with_belt)
+            
+            assert REDBOX_POSE[0] is not None
+            physics.named.data.qpos[-7:] = REDBOX_POSE[0]
+
+            for i in range(physics.model.nu):
+                actuator_name = physics.model.actuator(i).name
+                control_value = physics.data.ctrl[i]
+                print(f"ctrl[{i}] -> Actuator '{actuator_name}': {control_value:.4f}")
+                
+        super().initialize_episode(physics)
+
+    @staticmethod
+    def get_env_state(physics):
+        env_state = physics.data.qpos.copy()[16:]
+        return env_state
+
+    def get_reward(self, physics):
+        # return whether left gripper is holding the box
+        all_contact_pairs = []
+        for i_contact in range(physics.data.ncon):
+            id_geom_1 = physics.data.contact[i_contact].geom1
+            id_geom_2 = physics.data.contact[i_contact].geom2
+            name_geom_1 = physics.model.id2name(id_geom_1, 'geom')
+            name_geom_2 = physics.model.id2name(id_geom_2, 'geom')
+            contact_pair = (name_geom_1, name_geom_2)
+            all_contact_pairs.append(contact_pair)
+
+        touch_right_gripper = ("r_gripper_finger","red_box") in all_contact_pairs
+        touch_goal_area = ("red_box", "goal_plate") in all_contact_pairs or ("goal_plate", "red_box") in all_contact_pairs
+        touch_table = ("red_box", "cushion1") in all_contact_pairs or ("cushion1", "red_box") in all_contact_pairs
+
+        reward = 0
+        if touch_right_gripper:
+            reward = 1
+        if touch_goal_area:
+            reward = 2
+        if touch_table:
+            reward = 0
+
+        return reward
+    
+class CoopTask(BimanualPiperTask):
+    def __init__(self, random=None):
+        super().__init__(random=random)
+        self.max_reward = 3
+        self.belt_speed = BELT_MOVE_SPEED  # このタスクではベルトを動かす
+        self.move_duration = 6.8 # seconds
+
+
+    def initialize_episode(self, physics):
+        """Sets the state of the environment at the start of each episode."""
+        # TODO Notice: this function does not randomize the env configuration. Instead, set BOX_POSE from outside
+        # reset qpos, control and box position
+        with physics.reset_context():      
+            physics.named.data.qpos[0:16] = START_ARM_POSE
+            
+            # ctrl への設定（belt を先頭に追加）
+            # ctrl 構造: [belt(1), left_arm(6), left_gripper(2), right_arm(6), right_gripper(2)]
+            ctrl_with_belt = np.concatenate([[self.belt_speed], START_ARM_POSE])
+            np.copyto(physics.data.ctrl, ctrl_with_belt)
+            
+            assert REDBOX_POSE[0] is not None
+            physics.named.data.qpos[-21:-14] = REDBOX_POSE[0]
+            physics.named.data.qpos[-14:-7] = GREENBOX_POSE[0]
+            physics.named.data.qpos[-7:] = BLUEBOX_POSE[0]
+
+            for i in range(physics.model.nu):
+                actuator_name = physics.model.actuator(i).name
+                control_value = physics.data.ctrl[i]
+                print(f"ctrl[{i}] -> Actuator '{actuator_name}': {control_value:.4f}")
+                
+        super().initialize_episode(physics)
+
+    @staticmethod
+    def get_env_state(physics):
+        env_state = physics.data.qpos.copy()[17:17+21]
+        return env_state
+
+    def get_reward(self, physics):
+        # return whether left gripper is holding the box
+        all_contact_pairs = []
+        for i_contact in range(physics.data.ncon):
+            id_geom_1 = physics.data.contact[i_contact].geom1
+            id_geom_2 = physics.data.contact[i_contact].geom2
+            name_geom_1 = physics.model.id2name(id_geom_1, 'geom')
+            name_geom_2 = physics.model.id2name(id_geom_2, 'geom')
+            contact_pair = (name_geom_1, name_geom_2)
+            all_contact_pairs.append(contact_pair)
+
+        touch_right_gripper = ("r_gripper_finger","blue_box") in all_contact_pairs
+        touch_left_gripper = ("l_gripper_finger","green_box") in all_contact_pairs
+        assembled = ("green_box", "blue_box") in all_contact_pairs
+        touch_goal_area = ("goal_plate", "blue_box") in all_contact_pairs
+        touch_table = ("cushion1", "red_box") in all_contact_pairs or ("cushion1", "green_box") in all_contact_pairs or ("cushion1", "blue_box") in all_contact_pairs
+
+        reward = 0
+        if touch_right_gripper or touch_left_gripper:
+            reward = 1
+        if assembled :
+            reward = 2
+        if touch_goal_area and assembled: 
+            reward = 3
+        if touch_table:
+            reward = 0
+
+        return reward
+
+
+
 
 def get_action(master_bot_left, master_bot_right):
     action = np.zeros(14)
@@ -441,7 +433,70 @@ def test_sim_teleop():
         plt_img.set_data(ts.observation['images']['angle'])
         plt.pause(0.02)
 
-
 if __name__ == '__main__':
-    test_sim_teleop()
+    from utils import sample_redbox_pose, sample_greenbox_pose, sample_bluebox_pose
+    
+    REDBOX_POSE[0] = sample_redbox_pose()
+    GREENBOX_POSE[0] = sample_greenbox_pose()
+    BLUEBOX_POSE[0] = sample_bluebox_pose()
+    
+    env = make_sim_env('sim_coop')
+    # テスト用にベルトを停止
+    env._task.belt_speed = 0
+    
+    ts = env.reset()
+    physics = env.physics
 
+    # アクチュエータのゲイン確認
+    print("\n=== Actuator gains ===")
+    for i in range(physics.model.nu):
+        actuator_name = physics.model.actuator(i).name
+        kp = physics.model.actuator_gainprm[i, 0]
+        print(f"Actuator[{i}] '{actuator_name}': kp={kp}")
+
+    print("\n=== qpos 構造確認 ===")
+    print(f"qpos[0:6] (left_arm): {physics.data.qpos[0:6]}")
+    print(f"qpos[6] (left_gripper): {physics.data.qpos[6]}")
+    print(f"qpos[8:14] (right_arm): {physics.data.qpos[8:14]}")
+    print(f"qpos[14] (right_gripper): {physics.data.qpos[14]}")
+    
+    print("\n=== get_qpos 出力 ===")
+    qpos_out = BimanualPiperTask.get_qpos(physics)
+    print(f"Shape: {qpos_out.shape}")
+    print(f"Values: {qpos_out}")
+    
+    print("\n=== action と qpos の対応確認 ===")
+    # get_qpos で取得した値をそのまま action として使う
+    action = qpos_out.copy()
+    print(f"action[0:6] (left_arm): {action[0:6]}")
+    print(f"action[6] (left_gripper): {action[6]}")
+    print(f"action[7:13] (right_arm): {action[7:13]}")
+    print(f"action[13] (right_gripper): {action[13]}")
+    
+    # 複数ステップ実行して安定性を確認
+    print("\n=== 複数ステップでの qpos 追跡 ===")
+    for step in range(10):
+        ts = env.step(action)
+        qpos_after = BimanualPiperTask.get_qpos(physics)
+        diff = np.abs(qpos_out - qpos_after)
+        max_diff = diff.max()
+        max_idx = diff.argmax()
+        print(f"Step {step+1}: 最大差分 = {max_diff:.6f} (index={max_idx})")
+        if max_diff > 0.01:
+            print(f"  差分詳細: {diff}")
+    
+    qpos_after = BimanualPiperTask.get_qpos(physics)
+    print("\n=== 最終 step 後の qpos ===")
+    print(f"差分: {np.abs(qpos_out - qpos_after).max():.6f}")
+    if np.abs(qpos_out - qpos_after).max() < 0.01:
+        print("✓ OK: qpos が正しく維持されています")
+    else:
+        print("✗ NG: qpos が正しく維持されていません")
+        print("\n左アーム差分:")
+        left_diff = np.abs(qpos_out[0:6] - qpos_after[0:6])
+        for i, d in enumerate(left_diff):
+            print(f"  joint{i+1}: {d:.6f}")
+        print("\n右アーム差分:")
+        right_diff = np.abs(qpos_out[7:13] - qpos_after[7:13])
+        for i, d in enumerate(right_diff):
+            print(f"  joint{i+1}: {d:.6f}")

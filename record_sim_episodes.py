@@ -7,7 +7,7 @@ import h5py
 
 from piper_constants import PUPPET_GRIPPER_POSITION_NORMALIZE_FN, SIM_TASK_CONFIGS,BELT_MOVE_SPEED
 from piper_ee_sim_env import make_ee_sim_env
-from piper_sim_env import make_sim_env, BOX_POSE
+from piper_sim_env import make_sim_env, REDBOX_POSE, GREENBOX_POSE, BLUEBOX_POSE
 from scripted_policy import PickAndTransferPolicy, InsertionPolicy,PickMovingCubePolicy,CoopPolicy
 
 import IPython
@@ -96,6 +96,9 @@ def main(args):
             joint[6+7] = right_ctrl
 
         subtask_info = episode[0].observation['env_state'].copy() # box pose at step 0
+        
+
+        
         # clear unused variables
         del env
         del episode
@@ -108,7 +111,9 @@ def main(args):
         # setup the environment
         print('Replaying joint commands')
         env = make_sim_env(task_name)
-        BOX_POSE[0] = subtask_info # make sure the sim_env has the same object configurations as ee_sim_env
+        REDBOX_POSE[0] = subtask_info[0:7].copy()      # red box
+        GREENBOX_POSE[0] = subtask_info[7:14].copy()   # green box
+        BLUEBOX_POSE[0] = subtask_info[14:21].copy()   # blue box
         ts = env.reset()
 
         all_actions = [] # actionを記録するための空リスト

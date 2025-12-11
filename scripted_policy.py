@@ -173,7 +173,7 @@ class CoopPolicy(BasePolicy):
 
 
         gripper_pick_quat_left = Quaternion(init_mocap_pose_left[3:])
-        gripper_pick_quat_left = gripper_pick_quat_left * Quaternion(axis=[0.0, 1.0, 0.0], degrees=60)
+        gripper_pick_quat_left = gripper_pick_quat_left * Quaternion(axis=[0.0, 1.0, 0.0], degrees=30)
         gripper_assemble_quat_left = gripper_pick_quat_left * Quaternion(axis=[0.0, 1.0, 0.0], degrees=90)
 
 

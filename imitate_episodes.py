@@ -11,12 +11,12 @@ from einops import rearrange
 from piper_constants import DT
 from piper_constants import PUPPET_GRIPPER_JOINT_OPEN
 from utils import load_data # data functions
-from utils import sample_box_pose, sample_insertion_pose # robot functions
+from utils import sample_redbox_pose, sample_insertion_pose ,sample_greenbox_pose,sample_bluebox_pose# robot functions
 from utils import compute_dict_mean, set_seed, detach_dict # helper functions
 from policy import ACTPolicy, CNNMLPPolicy
 from visualize_episodes import save_videos
 
-from piper_sim_env import BOX_POSE
+from piper_sim_env import REDBOX_POSE, GREENBOX_POSE, BLUEBOX_POSE
 
 import IPython
 e = IPython.embed
@@ -207,6 +207,10 @@ def eval_bc(config, ckpt_name, save_episode=True):
             BOX_POSE[0] = np.concatenate(sample_insertion_pose()) # used in sim reset
         elif 'sim_moving_cube' in task_name:
             BOX_POSE[0] = sample_box_pose()
+        elif 'sim_coop' in task_name:
+            REDBOX_POSE[0] = sample_redbox_pose()      # red box
+            GREENBOX_POSE[0] = sample_greenbox_pose()   # green box
+            BLUEBOX_POSE[0] = sample_bluebox_pose()   # blue box
 
         ts = env.reset()
 
