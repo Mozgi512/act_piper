@@ -1,6 +1,10 @@
+import sys
+import os
+cwd = os.getcwd()
+sys.path.append(os.path.join(cwd, 'detr'))
+
 import torch
 import numpy as np
-import os
 import pickle
 import argparse
 import matplotlib.pyplot as plt
@@ -206,7 +210,9 @@ def eval_bc(config, ckpt_name, save_episode=True):
         elif 'sim_insertion' in task_name:
             BOX_POSE[0] = np.concatenate(sample_insertion_pose()) # used in sim reset
         elif 'sim_moving_cube' in task_name:
-            BOX_POSE[0] = sample_box_pose()
+            REDBOX_POSE[0] = sample_redbox_pose()      # red box
+            GREENBOX_POSE[0] = sample_greenbox_pose()   # green box
+            BLUEBOX_POSE[0] = sample_bluebox_pose()   # blue box
         elif 'sim_coop' in task_name:
             REDBOX_POSE[0] = sample_redbox_pose()      # red box
             GREENBOX_POSE[0] = sample_greenbox_pose()   # green box

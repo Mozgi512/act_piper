@@ -292,17 +292,11 @@ class TransferCubeEETask(BimanualPiperEETask):
 class MovingcubeEETask(BimanualPiperEETask):
     def __init__(self, random=None):
         super().__init__(random=random)
-        self.max_reward = 2
+        self.max_reward = 3
 
     def before_step(self, action, physics):
-        """
-        Moving Cubeタスク専用のアクション処理。
-        親クラスのbefore_stepをオーバーライドし、キューブの制御を追加します。
-        """
-        # アクションを左アーム(8), 右アーム(8), belt(7)に分割
         action_left = action[:8]
         action_right = action[8:16]
-        # --- 1. 左右アームのmocapとグリッパーを制御 (親クラスのロジックと同様) ---
         # left
         np.copyto(physics.data.mocap_pos[0], action_left[:3])
         np.copyto(physics.data.mocap_quat[0], action_left[3:7])
@@ -320,9 +314,16 @@ class MovingcubeEETask(BimanualPiperEETask):
         """Sets the state of the environment at the start of each episode."""
         self.initialize_robots(physics)
         # randomize box position
-        cube_pose = sample_box_pose()
+        redcube_pose = sample_redbox_pose()
+        greencube_pose = sample_greenbox_pose()
+        bluecube_pose = sample_bluebox_pose()
         box_start_idx = physics.model.name2id('red_box_joint', 'joint')
-        np.copyto(physics.data.qpos[box_start_idx : box_start_idx + 7], cube_pose)
+        #socket_start_idx = physics.model.name2id('red_box_joint', 'joint')
+        #stick_start_idx = physics.model.name2id('blue_box_joint', 'joint')
+        np.copyto(physics.data.qpos[box_start_idx : box_start_idx + 7], redcube_pose)
+        np.copyto(physics.data.qpos[box_start_idx + 7 : box_start_idx + 14], greencube_pose)
+        np.copyto(physics.data.qpos[box_start_idx + 14 : box_start_idx + 21], bluecube_pose)
+
         physics.named.data.ctrl['belt_speed'] = BELT_MOVE_SPEED
         # print(f"randomized cube position to {cube_position}")
 
@@ -347,7 +348,7 @@ class MovingcubeEETask(BimanualPiperEETask):
 
     @staticmethod
     def get_env_state(physics):
-        env_state = physics.data.qpos.copy()[17:]
+        env_state = physics.data.qpos.copy()[17:17+21]
         return env_state
 
     def get_reward(self, physics):
@@ -361,26 +362,22 @@ class MovingcubeEETask(BimanualPiperEETask):
             contact_pair = (name_geom_1, name_geom_2)
             all_contact_pairs.append(contact_pair)
 
-        #touch_left_gripper = ("l_gripper_finger","red_box") in all_contact_pairs
-        touch_right_gripper = ("r_gripper_finger","red_box") in all_contact_pairs
-        touch_goal_area = ("red_box", "goal_plate") in all_contact_pairs or ("goal_plate", "red_box") in all_contact_pairs
-        touch_table = ("red_box", "cushion1") in all_contact_pairs or ("cushion1", "red_box") in all_contact_pairs
-        #touch_table = ("red_box", "table") in all_contact_pairs
+        touch_right_gripper = ("r_gripper_finger","blue_box") in all_contact_pairs
+        touch_left_gripper = ("l_gripper_finger","green_box") in all_contact_pairs
+        green_touch_goal = ("goal_plate", "green_box") in all_contact_pairs
+        blue_touch_goal = ("goal_plate", "blue_box") in all_contact_pairs
+        touch_table = ("cushion1", "red_box") in all_contact_pairs or ("cushion1", "green_box") in all_contact_pairs or ("cushion1", "blue_box") in all_contact_pairs
 
         reward = 0
-        if touch_right_gripper:
+        if touch_right_gripper or touch_left_gripper:
             reward = 1
-        if touch_goal_area:
+        if green_touch_goal or blue_touch_goal:
             reward = 2
+        if green_touch_goal and blue_touch_goal: 
+            reward = 3
         if touch_table:
             reward = 0
-        
-        #if touch_right_gripper and not touch_table: # lifted
-        #    reward = 2
-        #if touch_left_gripper: # attempted transfer
-        #    reward = 3
-        #if touch_left_gripper and not touch_table: # successful transfer
-        #    reward = 4
+
         return reward
 
 class CoopEETask(BimanualPiperEETask):

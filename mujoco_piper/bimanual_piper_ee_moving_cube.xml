@@ -23,10 +23,22 @@
             <site pos="0 0 0" size="0.03 0.003 0.003" type="box" name="l_mocap_site3" rgba="1 0 0 1"/>
         </body>
 
-        <body name="box" pos="0 0 0.2">
+        <body name="red_box" pos="0 0.0 0.05">
             <joint name="red_box_joint" type="free" frictionloss="0.01" />
-            <inertial pos="0 0 0" mass="0.02" diaginertia="0.002 0.002 0.002" />
-            <geom condim="4" solimp="2 1 0.01" solref="0.01 1" friction="1 0.005 0.0001" pos="0 0 0" size="0.015 0.015 0.015" type="box" name="red_box" rgba="1 0 0 1" />
+            <inertial pos="0 0 0" mass="0.01" diaginertia="0.002 0.002 0.002" />
+            <geom condim="4" solimp="2 1 0.01" solref="0.01 1" friction="3 0.005 0.0001" pos="0 0 0" size="0.017 0.017 0.017" type="box" name="red_box" rgba="1 0 0 1" />
+        </body>
+
+        <body name="green_box" pos="0 0.0 0.05">
+            <joint name="green_box_joint" type="free" frictionloss="0.01" />
+            <inertial pos="0 0 0" mass="0.01" diaginertia="0.002 0.002 0.002" />
+            <geom condim="4" solimp="2 1 0.01" solref="0.01 1" friction="3 0.005 0.0001" pos="0 0 0" size="0.015 0.015 0.015" type="box" name="green_box" rgba="0 1 0 1" />
+        </body>
+
+        <body name="blue_box" pos="0 0.0 0.05">
+            <joint name="blue_box_joint" type="free" frictionloss="0.01" />
+            <inertial pos="0 0 0" mass="0.01" diaginertia="0.002 0.002 0.002" />
+            <geom condim="4" solimp="2 1 0.01" solref="0.01 1" friction="3 0.005 0.0001" pos="0 0 0" size="0.020 0.020 0.020" type="box" name="blue_box" rgba="0 0 1 1" />
         </body>
 
     </worldbody>

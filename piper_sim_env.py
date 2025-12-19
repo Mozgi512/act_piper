@@ -137,6 +137,8 @@ class BimanualPiperTask(base.Task):
         obs['images']['top'] = physics.render(height=480, width=640, camera_id='top')
         obs['images']['angle'] = physics.render(height=480, width=640, camera_id='angle')
         obs['images']['vis'] = physics.render(height=480, width=640, camera_id='front_close')
+        obs['images']['l_wrist'] = physics.render(height=480, width=640, camera_id='l_wrist')
+        obs['images']['r_wrist'] = physics.render(height=480, width=640, camera_id='r_wrist')
 
         return obs
 
@@ -264,7 +266,7 @@ class TransferCubeTask(BimanualPiperTask):
 class MovingCubeTask(BimanualPiperTask):
     def __init__(self, random=None):
         super().__init__(random=random)
-        self.max_reward = 2
+        self.max_reward = 3
         self.belt_speed = BELT_MOVE_SPEED  # このタスクではベルトを動かす
         self.move_duration = 6.8 # seconds
 
@@ -273,8 +275,8 @@ class MovingCubeTask(BimanualPiperTask):
         """Sets the state of the environment at the start of each episode."""
         # TODO Notice: this function does not randomize the env configuration. Instead, set BOX_POSE from outside
         # reset qpos, control and box position
-        with physics.reset_context():
-            physics.named.data.qpos[:16] = START_ARM_POSE
+        with physics.reset_context():      
+            physics.named.data.qpos[0:16] = START_ARM_POSE
             
             # ctrl への設定（belt を先頭に追加）
             # ctrl 構造: [belt(1), left_arm(6), left_gripper(2), right_arm(6), right_gripper(2)]
@@ -282,7 +284,9 @@ class MovingCubeTask(BimanualPiperTask):
             np.copyto(physics.data.ctrl, ctrl_with_belt)
             
             assert REDBOX_POSE[0] is not None
-            physics.named.data.qpos[-7:] = REDBOX_POSE[0]
+            physics.named.data.qpos[-21:-14] = REDBOX_POSE[0]
+            physics.named.data.qpos[-14:-7] = GREENBOX_POSE[0]
+            physics.named.data.qpos[-7:] = BLUEBOX_POSE[0]
 
             for i in range(physics.model.nu):
                 actuator_name = physics.model.actuator(i).name
@@ -293,7 +297,7 @@ class MovingCubeTask(BimanualPiperTask):
 
     @staticmethod
     def get_env_state(physics):
-        env_state = physics.data.qpos.copy()[16:]
+        env_state = physics.data.qpos.copy()[17:17+21]
         return env_state
 
     def get_reward(self, physics):
@@ -307,15 +311,19 @@ class MovingCubeTask(BimanualPiperTask):
             contact_pair = (name_geom_1, name_geom_2)
             all_contact_pairs.append(contact_pair)
 
-        touch_right_gripper = ("r_gripper_finger","red_box") in all_contact_pairs
-        touch_goal_area = ("red_box", "goal_plate") in all_contact_pairs or ("goal_plate", "red_box") in all_contact_pairs
-        touch_table = ("red_box", "cushion1") in all_contact_pairs or ("cushion1", "red_box") in all_contact_pairs
+        touch_right_gripper = ("r_gripper_finger","blue_box") in all_contact_pairs
+        touch_left_gripper = ("l_gripper_finger","green_box") in all_contact_pairs
+        green_touch_goal = ("goal_plate", "green_box") in all_contact_pairs
+        blue_touch_goal = ("goal_plate", "blue_box") in all_contact_pairs
+        touch_table = ("cushion1", "red_box") in all_contact_pairs or ("cushion1", "green_box") in all_contact_pairs or ("cushion1", "blue_box") in all_contact_pairs
 
         reward = 0
-        if touch_right_gripper:
+        if touch_right_gripper or touch_left_gripper:
             reward = 1
-        if touch_goal_area:
+        if green_touch_goal or blue_touch_goal:
             reward = 2
+        if green_touch_goal and blue_touch_goal: 
+            reward = 3
         if touch_table:
             reward = 0
 

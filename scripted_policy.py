@@ -119,43 +119,6 @@ class PickMovingCubePolicy(BasePolicy):
         init_mocap_pose_right = ts_first.observation['mocap_pose_right']
         init_mocap_pose_left = ts_first.observation['mocap_pose_left']
 
-        box_info = np.array(ts_first.observation['env_state'])
-        box_xyz = box_info[:3]
-        box_quat = box_info[3:]
-        box_target_xyz = box_xyz + np.array([BELT_MOVE_SPEED*3+0.02, 0, 0])
-
-        # print(f"Generate trajectory for {box_xyz=}")
-
-        gripper_pick_quat = Quaternion(init_mocap_pose_right[3:])
-        gripper_pick_quat = gripper_pick_quat * Quaternion(axis=[0.0, 1.0, 0.0], degrees=-60)
-
-        gripper_place_quat = Quaternion(axis=[0, 0.0, 1.0], degrees=0)
-
-        meet_xyz = np.array([0, 0.1, 0.025])
-
-        self.left_trajectory = [
-            {"t": 0, "xyz": init_mocap_pose_left[:3], "quat": init_mocap_pose_left[3:], "gripper": 1}, # sleep
-            {"t": 400, "xyz": init_mocap_pose_left[:3], "quat": init_mocap_pose_left[3:], "gripper": 1}, # stay
-        ]
-
-        self.right_trajectory = [
-            {"t": 0, "xyz": init_mocap_pose_right[:3], "quat": init_mocap_pose_right[3:], "gripper": 1}, # sleep
-            {"t": 90, "xyz": box_target_xyz + np.array([0, 0, 0.08]), "quat": gripper_pick_quat.elements, "gripper": 1}, # approach the cube
-            {"t": 150, "xyz": box_target_xyz + np.array([0, 0, 0.02]), "quat": gripper_pick_quat.elements, "gripper": 1}, # go down
-            {"t": 170, "xyz": box_target_xyz + np.array([0, 0, 0.02]), "quat": gripper_pick_quat.elements, "gripper": 0}, # close gripper
-            {"t": 200, "xyz": meet_xyz + np.array([0, 0, 0.08]), "quat": gripper_pick_quat.elements, "gripper": 0}, # approach meet position
-            {"t": 220, "xyz": meet_xyz, "quat": gripper_pick_quat.elements, "gripper": 0}, # move to meet position
-            {"t": 310, "xyz": meet_xyz, "quat": gripper_pick_quat.elements, "gripper": 1}, # open gripper
-            {"t": 360, "xyz": meet_xyz + np.array([0.1, 0, 0]), "quat": gripper_pick_quat.elements, "gripper": 1}, # move to right
-            {"t": 400, "xyz": meet_xyz + np.array([0.1, 0, 0]), "quat": gripper_pick_quat.elements, "gripper": 1}, # stay
-        ]
-
-class CoopPolicy(BasePolicy):
-
-    def generate_trajectory(self, ts_first):
-        init_mocap_pose_right = ts_first.observation['mocap_pose_right']
-        init_mocap_pose_left = ts_first.observation['mocap_pose_left']
-
         works_info = np.array(ts_first.observation['env_state'])
         redbox_xyz = works_info[0:3]
         redbox_quat = works_info[3:7]
@@ -163,7 +126,7 @@ class CoopPolicy(BasePolicy):
         greenbox_quat = works_info[10:14]
         bluebox_xyz = works_info[14:17]
         bluebox_quat = works_info[17:21]
-        redbox_target_xyz = redbox_xyz + np.array([BELT_MOVE_SPEED*8+0.02, 0, 0])
+        redbox_target_xyz = redbox_xyz + np.array([BELT_MOVE_SPEED*10, 0, 0])
         greenbox_target_xyz = greenbox_xyz + np.array([BELT_MOVE_SPEED*3+0.01, 0, 0])
         bluebox_target_xyz = bluebox_xyz + np.array([BELT_MOVE_SPEED*3+0.01, 0, 0])
 
@@ -185,14 +148,111 @@ class CoopPolicy(BasePolicy):
             {"t": 90, "xyz": greenbox_target_xyz + np.array([0, 0, 0.08]), "quat": gripper_pick_quat_left.elements, "gripper": 1}, # approach the cube
             {"t": 140, "xyz": greenbox_target_xyz + np.array([0, 0, 0.01]), "quat": gripper_pick_quat_left.elements, "gripper": 1}, # go down
             {"t": 170, "xyz": greenbox_target_xyz + np.array([0, 0, 0.01]), "quat": gripper_pick_quat_left.elements, "gripper": 0}, # close gripper
-            {"t": 200, "xyz": assemble_xyz + np.array([0, 0, 0.1]), "quat": gripper_pick_quat_left.elements, "gripper": 0}, # approach meet position
+            {"t": 190, "xyz": greenbox_target_xyz + np.array([0, 0, 0.05]), "quat": gripper_pick_quat_left.elements, "gripper": 0}, # go up
+            {"t": 280, "xyz": place_xyz + np.array([-0.05, 0, 0.05]), "quat": gripper_pick_quat_left.elements, "gripper": 0}, # approach place position
+            {"t": 300, "xyz": place_xyz + np.array([-0.05, 0, 0]), "quat": gripper_pick_quat_left.elements, "gripper": 0}, # move to meet position
+            {"t": 320, "xyz": place_xyz + np.array([-0.05, 0, 0]), "quat": gripper_pick_quat_left.elements, "gripper": 1}, # open gripper
+            {"t": 340, "xyz": place_xyz + np.array([-0.05, 0, 0.05]), "quat": gripper_pick_quat_left.elements, "gripper": 1}, # exit
+            {"t": 430, "xyz": redbox_target_xyz + np.array([0, 0, 0.08]), "quat": gripper_pick_quat_left.elements, "gripper": 1}, # approach the cube
+            {"t": 480, "xyz": redbox_target_xyz + np.array([0, 0, 0.01]), "quat": gripper_pick_quat_left.elements, "gripper": 1}, # go down
+            {"t": 510, "xyz": redbox_target_xyz + np.array([0, 0, 0.01]), "quat": gripper_pick_quat_left.elements, "gripper": 0}, # close gripper
+            {"t": 530, "xyz": redbox_target_xyz + np.array([0, 0, 0.05]), "quat": gripper_pick_quat_left.elements, "gripper": 0}, # go up
+            {"t": 620, "xyz": place_xyz + np.array([-0.05, 0, 0.05]), "quat": gripper_pick_quat_left.elements, "gripper": 0}, # approach place position
+            {"t": 640, "xyz": place_xyz + np.array([-0.05, 0, 0]), "quat": gripper_pick_quat_left.elements, "gripper": 0}, # move to meet position
+            {"t": 660, "xyz": place_xyz + np.array([-0.05, 0, 0]), "quat": gripper_pick_quat_left.elements, "gripper": 1}, # open gripper
+        ]
+        self.right_trajectory = [
+            {"t": 0, "xyz": init_mocap_pose_right[:3], "quat": init_mocap_pose_right[3:], "gripper": 1}, # sleep
+            {"t": 90, "xyz": bluebox_target_xyz + np.array([0, 0, 0.08]), "quat": gripper_pick_quat_right.elements, "gripper": 1}, # approach the cube
+            {"t": 140, "xyz": bluebox_target_xyz + np.array([0, 0, 0.01]), "quat": gripper_pick_quat_right.elements, "gripper": 1}, # go down
+            {"t": 170, "xyz": bluebox_target_xyz + np.array([0, 0, 0.01]), "quat": gripper_pick_quat_right.elements, "gripper": 0}, # close gripper
+            {"t": 190, "xyz": bluebox_target_xyz + np.array([0, 0, 0.05]), "quat": gripper_pick_quat_right.elements, "gripper": 0}, # go up
+            {"t": 280, "xyz": place_xyz + np.array([0.05, 0, 0.05]), "quat": gripper_pick_quat_right.elements, "gripper": 0}, # approach meet position
+            {"t": 300, "xyz": place_xyz + np.array([0.05, 0, 0]), "quat": gripper_pick_quat_right.elements, "gripper": 0}, # move to meet position
+            {"t": 320, "xyz": place_xyz + np.array([0.05, 0, 0]), "quat": gripper_pick_quat_right.elements, "gripper": 1},  # open gripper
+            {"t": 340, "xyz": place_xyz + np.array([0.05, 0, 0.05]), "quat": gripper_pick_quat_right.elements, "gripper": 1}, # exit
+            {"t": 360, "xyz": place_xyz + np.array([0.05, 0, 0.05]), "quat": gripper_pick_quat_right.elements, "gripper": 1}, # wait
+
+
+
+            {"t": 390, "xyz": place_xyz + np.array([-0.05, 0, 0.08]), "quat": gripper_pick_quat_right.elements, "gripper": 1}, # approach the cube
+            {"t": 440, "xyz": place_xyz + np.array([-0.05, 0, 0.01]), "quat": gripper_pick_quat_right.elements, "gripper": 1}, # go down
+            {"t": 470, "xyz": place_xyz + np.array([-0.05, 0, 0.01]), "quat": gripper_pick_quat_right.elements, "gripper": 0}, # close gripper
+            {"t": 490, "xyz": place_xyz + np.array([-0.05, 0, 0.05]), "quat": gripper_pick_quat_right.elements, "gripper": 0}, # go up
+
+            {"t": 520, "xyz": place_xyz + np.array([0.05, 0, 0.08]), "quat": gripper_pick_quat_right.elements, "gripper": 0}, # approach meet position
+            {"t": 540, "xyz": place_xyz + np.array([0.05, 0, 0.04]), "quat": gripper_pick_quat_right.elements, "gripper": 0}, # move to meet position
+            {"t": 560, "xyz": place_xyz + np.array([0.05, 0, 0.04]), "quat": gripper_pick_quat_right.elements, "gripper": 1},  # open gripper
+            {"t": 580, "xyz": place_xyz + np.array([0.05, 0, 0.1]), "quat": gripper_pick_quat_right.elements, "gripper": 1}, # exit
+
+            {"t": 660, "xyz": place_xyz + np.array([0.05, 0, 0.1]), "quat": gripper_pick_quat_right.elements, "gripper": 1}, # stay
+
+        ]
+
+class CoopPolicy(BasePolicy):
+
+    def generate_trajectory(self, ts_first):
+        init_mocap_pose_right = ts_first.observation['mocap_pose_right']
+        init_mocap_pose_left = ts_first.observation['mocap_pose_left']
+
+        works_info = np.array(ts_first.observation['env_state'])
+        redbox_xyz = works_info[0:3]
+        redbox_quat = works_info[3:7]
+        greenbox_xyz = works_info[7:10]
+        greenbox_quat = works_info[10:14]
+        bluebox_xyz = works_info[14:17]
+        bluebox_quat = works_info[17:21]
+        redbox_target_xyz = redbox_xyz + np.array([BELT_MOVE_SPEED*7+0.02, 0, 0])
+        redbox_coop_target_xyz = redbox_xyz + np.array([BELT_MOVE_SPEED*10, 0, 0])
+        greenbox_target_xyz = greenbox_xyz + np.array([BELT_MOVE_SPEED*3+0.01, 0, 0])
+        bluebox_target_xyz = bluebox_xyz + np.array([BELT_MOVE_SPEED*3+0.01, 0, 0])
+
+        gripper_pick_quat_right = Quaternion(init_mocap_pose_right[3:])
+        gripper_pick_quat_right = gripper_pick_quat_right * Quaternion(axis=[0.0, 1.0, 0.0], degrees=-30)
+        gripper_assemble_quat_right = gripper_pick_quat_right * Quaternion(axis=[0.0, 1.0, 0.0], degrees=-90)
+
+
+        gripper_pick_quat_left = Quaternion(init_mocap_pose_left[3:])
+        gripper_pick_quat_left = gripper_pick_quat_left * Quaternion(axis=[0.0, 1.0, 0.0], degrees=30)
+        gripper_assemble_quat_left = gripper_pick_quat_left * Quaternion(axis=[0.0, 1.0, 0.0], degrees=90)
+
+
+        assemble_xyz = np.array([0.02, 0.25, 0.15])
+        place_xyz = np.array([0, 0.1, 0.025])
+
+        self.left_trajectory = [
+            {"t": 0, "xyz": init_mocap_pose_left[:3], "quat": init_mocap_pose_left[3:], "gripper": 1}, # sleep
+            {"t": 90, "xyz": greenbox_target_xyz + np.array([0, 0, 0.08]), "quat": gripper_pick_quat_left.elements, "gripper": 1}, # approach the cube
+            {"t": 140, "xyz": greenbox_target_xyz + np.array([0, 0, 0.01]), "quat": gripper_pick_quat_left.elements, "gripper": 1}, # go down
+            {"t": 170, "xyz": greenbox_target_xyz + np.array([0, 0, 0.01]), "quat": gripper_pick_quat_left.elements, "gripper": 0}, # close gripper
+            {"t": 200, "xyz": assemble_xyz + np.array([-0.03, 0, 0.05]), "quat": gripper_pick_quat_left.elements, "gripper": 0}, # go up
             {"t": 220, "xyz": assemble_xyz + np.array([0, 0, 0.03]), "quat": gripper_pick_quat_left.elements, "gripper": 0}, # move to meet position
             {"t": 240, "xyz": assemble_xyz + np.array([0, 0, 0.03]), "quat": gripper_pick_quat_left.elements, "gripper": 1}, # open gripper
-            {"t": 260, "xyz": assemble_xyz + np.array([0, 0, 0.1]), "quat": gripper_pick_quat_left.elements, "gripper": 1}, # exit
-            {"t": 400, "xyz": assemble_xyz + np.array([0, 0, 0.1]), "quat": gripper_pick_quat_left.elements, "gripper": 1}, # exit
+            #mix
+            {"t": 260, "xyz": assemble_xyz + np.array([-0.05, 0, 0.1]), "quat": gripper_pick_quat_left.elements, "gripper": 1}, # exit
+            {"t": 290, "xyz": redbox_target_xyz + np.array([0, 0, 0.08]), "quat": gripper_pick_quat_left.elements, "gripper": 1}, # approach the cube
+            {"t": 340, "xyz": redbox_target_xyz + np.array([0, 0, 0.01]), "quat": gripper_pick_quat_left.elements, "gripper": 1}, # go down
+            {"t": 370, "xyz": redbox_target_xyz + np.array([0, 0, 0.01]), "quat": gripper_pick_quat_left.elements, "gripper": 0}, # close gripper
+            {"t": 390, "xyz": redbox_target_xyz + np.array([0, 0, 0.05]), "quat": gripper_pick_quat_left.elements, "gripper": 0}, # go up
+            {"t": 480, "xyz": place_xyz + np.array([-0.05, 0, 0.05]), "quat": gripper_pick_quat_left.elements, "gripper": 0}, # approach place position
+            {"t": 500, "xyz": place_xyz + np.array([-0.05, 0, 0]), "quat": gripper_pick_quat_left.elements, "gripper": 0}, # move to meet position
+            {"t": 520, "xyz": place_xyz + np.array([-0.05, 0, 0]), "quat": gripper_pick_quat_left.elements, "gripper": 1}, # open gripper
+            {"t": 540, "xyz": place_xyz + np.array([-0.05, 0, 0.05]), "quat": gripper_pick_quat_left.elements, "gripper": 1}, # exit
 
-            #{"t": 340, "xyz": redbox_target_xyz + np.array([0, 0, 0.08]), "quat": gripper_pick_quat_left.elements, "gripper": 1}, # move to right
-            #{"t": 400, "xyz": redbox_target_xyz + np.array([0, 0, 0.01]), "quat": gripper_pick_quat_left.elements, "gripper": 1}, # stay
+
+            #coop
+            #{"t": 260, "xyz": assemble_xyz + np.array([0, 0, 0.1]), "quat": gripper_pick_quat_left.elements, "gripper": 1}, # exit
+            #{"t": 380, "xyz": assemble_xyz + np.array([0, 0, 0.1]), "quat": gripper_pick_quat_left.elements, "gripper": 1}, # stay
+            #{"t": 440, "xyz": redbox_coop_target_xyz + np.array([0, 0, 0.08]), "quat": gripper_pick_quat_left.elements, "gripper": 1}, # approach the cube
+            #{"t": 490, "xyz": redbox_coop_target_xyz + np.array([0, 0, 0.01]), "quat": gripper_pick_quat_left.elements, "gripper": 1}, # go down
+            #{"t": 520, "xyz": redbox_coop_target_xyz + np.array([0, 0, 0.01]), "quat": gripper_pick_quat_left.elements, "gripper": 0}, # close gripper
+            #{"t": 540, "xyz": redbox_coop_target_xyz + np.array([0, 0, 0.05]), "quat": gripper_pick_quat_left.elements, "gripper": 0}, # go up
+            #{"t": 630, "xyz": place_xyz + np.array([-0.05, 0, 0.05]), "quat": gripper_pick_quat_left.elements, "gripper": 0}, # approach place position
+            #{"t": 650, "xyz": place_xyz + np.array([-0.05, 0, 0]), "quat": gripper_pick_quat_left.elements, "gripper": 0}, # move to meet position
+            #{"t": 670, "xyz": place_xyz + np.array([-0.05, 0, 0]), "quat": gripper_pick_quat_left.elements, "gripper": 1}, # open gripper
+            #{"t": 690, "xyz": place_xyz + np.array([-0.05, 0, 0.05]), "quat": gripper_pick_quat_left.elements, "gripper": 1}, # exit
+
+
         ]
         self.right_trajectory = [
             {"t": 0, "xyz": init_mocap_pose_right[:3], "quat": init_mocap_pose_right[3:], "gripper": 1}, # sleep
@@ -201,9 +261,13 @@ class CoopPolicy(BasePolicy):
             {"t": 170, "xyz": bluebox_target_xyz + np.array([0, 0, 0.015]), "quat": gripper_pick_quat_right.elements, "gripper": 0}, # close gripper
             {"t": 200, "xyz": assemble_xyz + np.array([0, 0, -0.01]), "quat": gripper_pick_quat_right.elements, "gripper": 0}, # approach meet position
             {"t": 220, "xyz": assemble_xyz + np.array([0, 0, -0.01]), "quat": gripper_pick_quat_right.elements, "gripper": 0}, # move to meet position
-            {"t": 260, "xyz": assemble_xyz + np.array([0, 0, -0.01]), "quat": gripper_pick_quat_right.elements, "gripper": 0},   #wait
-            {"t": 340, "xyz": place_xyz + np.array([0.02, 0, 0]), "quat": gripper_pick_quat_right.elements, "gripper": 0}, # move to right
-            {"t": 400, "xyz": place_xyz + np.array([0.02, 0, 0]), "quat": gripper_pick_quat_right.elements, "gripper": 1}, # stay
+            {"t": 250, "xyz": assemble_xyz + np.array([0, 0, -0.01]), "quat": gripper_pick_quat_right.elements, "gripper": 0},   #wait
+            {"t": 340, "xyz": place_xyz + np.array([0.02, 0, 0.05]), "quat": gripper_pick_quat_right.elements, "gripper": 0}, # move to goal
+            {"t": 360, "xyz": place_xyz + np.array([0.02, 0, 0]), "quat": gripper_pick_quat_right.elements, "gripper": 0}, # go down
+            {"t": 380, "xyz": place_xyz + np.array([0.02, 0, 0]), "quat": gripper_pick_quat_right.elements, "gripper": 1}, # place
+            {"t": 400, "xyz": place_xyz + np.array([0.02, 0, 0.1]), "quat": gripper_pick_quat_right.elements, "gripper": 1}, # stay
+            {"t": 540, "xyz": place_xyz + np.array([0.02, 0, 0.1]), "quat": gripper_pick_quat_right.elements, "gripper": 1}, # stay
+
         ]
 
 

@@ -33,14 +33,14 @@ SIM_TASK_CONFIGS = {
     'sim_moving_cube_scripted':{
         'dataset_dir': DATA_DIR + '/sim_moving_cube_scripted',
         'num_episodes': 100,
-        'episode_len': 400,
+        'episode_len': 660,
         'camera_names': ['top']
     },
     'sim_coop_scripted':{
         'dataset_dir': DATA_DIR + '/sim_coop_scripted',
         'num_episodes': 100,
-        'episode_len': 400,
-        'camera_names': ['top']
+        'episode_len': 540,
+        'camera_names': ['top','angle','l_wrist']
     },
 }
 
