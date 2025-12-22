@@ -61,21 +61,26 @@ def main(args):
         enc_layers = 4
         dec_layers = 7
         nheads = 8
-        policy_config = {'lr': args['lr'],
-                         'num_queries': args['chunk_size'],
-                         'kl_weight': args['kl_weight'],
-                         'hidden_dim': args['hidden_dim'],
-                         'dim_feedforward': args['dim_feedforward'],
-                         'lr_backbone': lr_backbone,
-                         'backbone': backbone,
-                         'enc_layers': enc_layers,
-                         'dec_layers': dec_layers,
-                         'nheads': nheads,
-                         'camera_names': camera_names,
-                         }
+        policy_config = {
+            'lr': args['lr'],
+            'num_queries': args['chunk_size'],
+            'kl_weight': args['kl_weight'],
+            'hidden_dim': args['hidden_dim'],
+            'dim_feedforward': args['dim_feedforward'],
+            'lr_backbone': lr_backbone,
+            'backbone': backbone,
+            'enc_layers': enc_layers,
+            'dec_layers': dec_layers,
+            'nheads': nheads,
+            'camera_names': camera_names,
+            'state_dim': state_dim,  # この行を追加
+        }
     elif policy_class == 'CNNMLP':
-        policy_config = {'lr': args['lr'], 'lr_backbone': lr_backbone, 'backbone' : backbone, 'num_queries': 1,
-                         'camera_names': camera_names,}
+        policy_config = {
+            'lr': args['lr'],
+            'camera_names': camera_names,
+            'state_dim': state_dim,  # この行も追加
+        }
     else:
         raise NotImplementedError
 
@@ -149,6 +154,9 @@ def get_image(ts, camera_names):
     curr_images = []
     for cam_name in camera_names:
         curr_image = rearrange(ts.observation['images'][cam_name], 'h w c -> c h w')
+        # 左半分にトリミング（学習時と同じ処理）
+        _, h, w = curr_image.shape
+        curr_image = curr_image[:, :, :w//2]  # 左半分のみ
         curr_images.append(curr_image)
     curr_image = np.stack(curr_images, axis=0)
     curr_image = torch.from_numpy(curr_image / 255.0).float().cuda().unsqueeze(0)
