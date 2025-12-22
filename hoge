@@ -1,14 +1,64 @@
-python3 record_sim_episodes.py --task_name sim_moving_cube_scripted --dataset_dir piper_scripted_dataset/sim_moving_cube_scripted --num_episodes 50 --onscreen_render
+python3 record_sim_episodes.py --task_name sim_coop_scripted --dataset_dir piper_scripted_dataset/material --num_episodes 2 --onscreen_render
 
 python3 imitate_episodes.py \
 --task_name sim_coop_scripted \
 --ckpt_dir piper_scripted_ckpt \
 --policy_class ACT --kl_weight 10 --chunk_size 100 --hidden_dim 512 --batch_size 8 --dim_feedforward 3200 \
---num_epochs 10000  --lr 1e-5 \
+--num_epochs 2000  --lr 1e-5 \
 --seed 0
 
 python3 visualize_episodes.py --dataset_dir piper_scripted_dataset/sim_moving_cube_scripted --episode_idx 0
 
 
 /media/act/7e8d2b64-6008-4b58-86d7-ed522230ebae/home/act/act_store
+
+
+python3 visualize_episodes.py --dataset_dir piper_scripted_dataset/sim_coop_scripted --episode_idx 1
+
+
+python3 independent_record_sim_episodes.py --task_name sim_moving_cube_scripted --dataset_dir piper_scripted_dataset/independent_left --num_episodes 50 --onscreen_render
+
+python3 independent_visualize_episodes.py --dataset_dir piper_scripted_dataset/independent_left --episode_idx 0
+
+python3 independent_imitate_episodes.py \
+--task_name sim_moving_cube_scripted \
+--ckpt_dir piper_scripted_ckpt/independent_left \
+--policy_class ACT --kl_weight 10 --chunk_size 100 --hidden_dim 512 --batch_size 8 --dim_feedforward 3200 \
+--num_epochs 2000  --lr 1e-5 \
+--seed 0
+
+
+Traceback (most recent call last):
+  File "independent_imitate_episodes.py", line 456, in <module>
+    main(vars(parser.parse_args()))
+  File "independent_imitate_episodes.py", line 119, in main
+    best_ckpt_info = train_bc(train_dataloader, val_dataloader, config)
+  File "independent_imitate_episodes.py", line 366, in train_bc
+    for batch_idx, data in enumerate(val_dataloader):
+  File "/home/act/anaconda3/envs/aloha/lib/python3.8/site-packages/torch/utils/data/dataloader.py", line 630, in __next__
+    data = self._next_data()
+  File "/home/act/anaconda3/envs/aloha/lib/python3.8/site-packages/torch/utils/data/dataloader.py", line 1344, in _next_data
+    return self._process_data(data)
+  File "/home/act/anaconda3/envs/aloha/lib/python3.8/site-packages/torch/utils/data/dataloader.py", line 1370, in _process_data
+    data.reraise()
+  File "/home/act/anaconda3/envs/aloha/lib/python3.8/site-packages/torch/_utils.py", line 706, in reraise
+    raise exception
+RuntimeError: Caught RuntimeError in DataLoader worker process 0.
+Original Traceback (most recent call last):
+  File "/home/act/anaconda3/envs/aloha/lib/python3.8/site-packages/torch/utils/data/_utils/worker.py", line 309, in _worker_loop
+    data = fetcher.fetch(index)  # type: ignore[possibly-undefined]
+  File "/home/act/anaconda3/envs/aloha/lib/python3.8/site-packages/torch/utils/data/_utils/fetch.py", line 55, in fetch
+    return self.collate_fn(data)
+  File "/home/act/anaconda3/envs/aloha/lib/python3.8/site-packages/torch/utils/data/_utils/collate.py", line 317, in default_collate
+    return collate(batch, collate_fn_map=default_collate_fn_map)
+  File "/home/act/anaconda3/envs/aloha/lib/python3.8/site-packages/torch/utils/data/_utils/collate.py", line 174, in collate
+    return [collate(samples, collate_fn_map=collate_fn_map) for samples in transposed]  # Backwards compatibility.
+  File "/home/act/anaconda3/envs/aloha/lib/python3.8/site-packages/torch/utils/data/_utils/collate.py", line 174, in <listcomp>
+    return [collate(samples, collate_fn_map=collate_fn_map) for samples in transposed]  # Backwards compatibility.
+  File "/home/act/anaconda3/envs/aloha/lib/python3.8/site-packages/torch/utils/data/_utils/collate.py", line 142, in collate
+    return collate_fn_map[elem_type](batch, collate_fn_map=collate_fn_map)
+  File "/home/act/anaconda3/envs/aloha/lib/python3.8/site-packages/torch/utils/data/_utils/collate.py", line 213, in collate_tensor_fn
+    out = elem.new(storage).resize_(len(batch), *list(elem.size()))
+RuntimeError: Trying to resize storage that is not resizable
+
 
