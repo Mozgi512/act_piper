@@ -1,0 +1,13 @@
+*.hdf5
+*.mp4
+*.ckpt
+*__pycache__/
+
+
+assets/
+dataset/
+eval_logs/
+
+piper_scripted_ckpt/
+piper_scripted_dataset/
+*dataset/
