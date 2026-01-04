@@ -27,6 +27,9 @@ e = IPython.embed
 
 # 右腕の開始姿勢（7次元）
 RIGHT_ARM_START_POSE = np.array([-2.2, 1.1, -0.5, -1.9, -2.1, 1.0, 0])
+# 左腕の開始姿勢（7次元）
+LEFT_ARM_START_POSE = np.array([2.2, 1.1, -0.5, 1.9, -2.1, -1.0, 0])
+
 
 def main(args):
     set_seed(1)
@@ -39,6 +42,7 @@ def main(args):
     batch_size_train = args['batch_size']
     batch_size_val = args['batch_size']
     num_epochs = args['num_epochs']
+    arm = args['arm']
 
     # get task parameters
     is_sim = task_name[:4] == 'sim_'
@@ -74,12 +78,14 @@ def main(args):
             'nheads': nheads,
             'camera_names': camera_names,
             'state_dim': state_dim,  # この行を追加
+            'arm': arm,
         }
     elif policy_class == 'CNNMLP':
         policy_config = {
             'lr': args['lr'],
             'camera_names': camera_names,
             'state_dim': state_dim,  # この行も追加
+            'arm': arm,
         }
     else:
         raise NotImplementedError
@@ -97,7 +103,8 @@ def main(args):
         'seed': args['seed'],
         'temporal_agg': args['temporal_agg'],
         'camera_names': camera_names,
-        'real_robot': not is_sim
+        'real_robot': not is_sim,
+        'arm': arm
     }
 
     if is_eval:
@@ -150,13 +157,16 @@ def make_optimizer(policy_class, policy):
     return optimizer
 
 
-def get_image(ts, camera_names):
+def get_image(ts, camera_names, arm):
     curr_images = []
     for cam_name in camera_names:
         curr_image = rearrange(ts.observation['images'][cam_name], 'h w c -> c h w')
         # 左半分にトリミング（学習時と同じ処理）
         _, h, w = curr_image.shape
-        curr_image = curr_image[:, :, :w//2]  # 左半分のみ
+        if arm == 'left':
+            curr_image = curr_image[:, :, :w//2]  # 左半分のみ
+        else:
+            curr_image = curr_image[:, :, w//2:]  # 右半分のみ
         curr_images.append(curr_image)
     curr_image = np.stack(curr_images, axis=0)
     curr_image = torch.from_numpy(curr_image / 255.0).float().cuda().unsqueeze(0)
@@ -175,6 +185,7 @@ def eval_bc(config, ckpt_name, save_episode=True):
     max_timesteps = config['episode_len']
     task_name = config['task_name']
     temporal_agg = config['temporal_agg']
+    arm = config['arm']
     onscreen_cam = 'top'
 
     # load policy and stats
@@ -261,12 +272,15 @@ def eval_bc(config, ckpt_name, save_episode=True):
                     image_list.append(obs['images'])
                 else:
                     image_list.append({'main': obs['image']})
-                # 左腕のみを取得（7次元）
-                qpos_numpy = np.array(obs['qpos'][:7])
+                # 指定されたアームの情報を取得
+                if arm == 'left':
+                    qpos_numpy = np.array(obs['qpos'][:7])
+                else:
+                    qpos_numpy = np.array(obs['qpos'][7:14])
                 qpos = pre_process(qpos_numpy)
                 qpos = torch.from_numpy(qpos).float().cuda().unsqueeze(0)
                 qpos_history[:, t] = qpos
-                curr_image = get_image(ts, camera_names)
+                curr_image = get_image(ts, camera_names, arm)
 
                 ### query policy
                 if config['policy_class'] == "ACT":
@@ -293,8 +307,11 @@ def eval_bc(config, ckpt_name, save_episode=True):
                 raw_action = raw_action.squeeze(0).cpu().numpy()
                 action = post_process(raw_action)
                 
-                # 左腕のアクション（7次元）と右腕の開始姿勢を結合して14次元にする
-                target_qpos = np.concatenate([action, RIGHT_ARM_START_POSE])
+                # アクションと他方のアームの開始姿勢を結合して14次元にする
+                if arm == 'left':
+                    target_qpos = np.concatenate([action, RIGHT_ARM_START_POSE])
+                else:
+                    target_qpos = np.concatenate([LEFT_ARM_START_POSE, action])
 
                 actions.append(action)
 
@@ -342,9 +359,19 @@ def eval_bc(config, ckpt_name, save_episode=True):
     return success_rate, avg_return
 
 
-def forward_pass(data, policy):
+def forward_pass(data, policy, arm):
     image_data, qpos_data, action_data, is_pad = data
     image_data, qpos_data, action_data, is_pad = image_data.cuda(), qpos_data.cuda(), action_data.cuda(), is_pad.cuda()
+    
+    # データが14次元（両腕）の場合、指定されたアーム分だけ抽出
+    if qpos_data.shape[1] == 14:
+        if arm == 'left':
+            qpos_data = qpos_data[:, :7]
+            action_data = action_data[:, :7]
+        else:
+            qpos_data = qpos_data[:, 7:14]
+            action_data = action_data[:, 7:14]
+            
     return policy(qpos_data, image_data, action_data, is_pad) # TODO remove None
 
 
@@ -354,6 +381,7 @@ def train_bc(train_dataloader, val_dataloader, config):
     seed = config['seed']
     policy_class = config['policy_class']
     policy_config = config['policy_config']
+    arm = config.get('arm', 'left')
 
     set_seed(seed)
 
@@ -372,7 +400,7 @@ def train_bc(train_dataloader, val_dataloader, config):
             policy.eval()
             epoch_dicts = []
             for batch_idx, data in enumerate(val_dataloader):
-                forward_dict = forward_pass(data, policy)
+                forward_dict = forward_pass(data, policy, arm)
                 epoch_dicts.append(forward_dict)
             epoch_summary = compute_dict_mean(epoch_dicts)
             validation_history.append(epoch_summary)
@@ -391,7 +419,7 @@ def train_bc(train_dataloader, val_dataloader, config):
         policy.train()
         optimizer.zero_grad()
         for batch_idx, data in enumerate(train_dataloader):
-            forward_dict = forward_pass(data, policy)
+            forward_dict = forward_pass(data, policy, arm)
             # backward
             loss = forward_dict['loss']
             loss.backward()
@@ -453,6 +481,7 @@ if __name__ == '__main__':
     parser.add_argument('--seed', action='store', type=int, help='seed', required=True)
     parser.add_argument('--num_epochs', action='store', type=int, help='num_epochs', required=True)
     parser.add_argument('--lr', action='store', type=float, help='lr', required=True)
+    parser.add_argument('--arm', action='store', type=str, help='arm', default='left', choices=['left', 'right'])
 
     # for ACT
     parser.add_argument('--kl_weight', action='store', type=int, help='KL Weight', required=False)

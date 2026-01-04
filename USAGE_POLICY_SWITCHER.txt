@@ -1,0 +1,86 @@
+# ACT Piper - Usage Instructions
+
+このドキュメントでは、独立した腕の制御学習およびポリシー切り替え機能の使い方について説明します。
+
+## 1. データの収集 (Data Simulation)
+
+独立した腕（片腕ずつ）のデータを収集するには `independent_record_sim_episodes.py` を使用します。
+デフォルトでは左腕のデータセットディレクトリに保存されますが、`--right_arm_support` フラグで右腕用に切り替え可能です。
+
+### 実行例
+
+**左腕のデータ生成:**
+```bash
+python independent_record_sim_episodes.py \
+    --task_name sim_moving_cube_scripted \
+    --dataset_dir <DATASET_DIR>/independent_left \
+    --num_episodes 50
+```
+
+**右腕のデータ生成:**
+```bash
+python independent_record_sim_episodes.py \
+    --task_name sim_moving_cube_scripted \
+    --dataset_dir <DATASET_DIR>/independent_right \
+    --num_episodes 50 \
+    --arm right
+```
+
+## 2. トレーニング (Training)
+
+独立した腕のポリシーを学習するには `independent_imitate_episodes.py` を使用します。
+`--arm` 引数でどちらの腕を学習するか指定します。
+
+### 実行例
+
+**左腕ポリシーの学習:**
+```bash
+python independent_imitate_episodes.py \
+    --task_name sim_moving_cube_scripted \
+    --ckpt_dir <CKPT_DIR>/policy_left \
+    --policy_class ACT \
+    --kl_weight 10 --chunk_size 100 --hidden_dim 512 --batch_size 8 --dim_feedforward 3200 \
+    --num_epochs 2000  --lr 1e-5 \
+    --seed 0 \
+    --arm left
+```
+
+**右腕ポリシーの学習:**
+```bash
+python independent_imitate_episodes.py \
+    --task_name sim_moving_cube_scripted \
+    --ckpt_dir <CKPT_DIR>/policy_right \
+    --policy_class ACT \
+    --kl_weight 10 --chunk_size 100 --hidden_dim 512 --batch_size 8 --dim_feedforward 3200 \
+    --num_epochs 2000  --lr 1e-5 \
+    --seed 0 \
+    --arm right
+```
+
+## 3. ポリシー切り替え実行 (Policy Switcher)
+
+学習済みのポリシー（双腕用、左腕用、右腕用）を読み込み、実行中に切り替えるには `policy_switcher.py` を使用します。
+
+### 実行例
+
+```bash
+python policy_switcher.py \
+    --task_name sim_coop_scripted \
+    --ckpt_dual scripted_ckpt/cooperation \
+    --ckpt_left scripted_ckpt/independent_left \
+    --ckpt_right piper_scripted_ckpt/independent_right \
+    --policy_class ACT \
+    --kl_weight 10 --chunk_size 100 --hidden_dim 512 --dim_feedforward 3200
+```
+
+### 操作方法 (キーボード入力)
+
+シミュレーション画面が表示されている状態でコンソール上でキーを入力します。
+
+- **`1`**: 独立モード (Independent Mode)
+  - 左腕ポリシーと右腕ポリシーが独立して各腕を制御します。
+- **`2`**: 双腕モード (Dual Arm Mode)
+  - 単一の双腕ポリシーが両腕を協調制御します。
+- **`q`**: 終了
+
+*注意: 実行には `aloha` 環境が有効化されている必要があります (`conda activate aloha`)。*

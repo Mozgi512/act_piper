@@ -16,16 +16,56 @@ python3 visualize_episodes.py --dataset_dir piper_scripted_dataset/sim_moving_cu
 python3 visualize_episodes.py --dataset_dir piper_scripted_dataset/sim_coop_scripted --episode_idx 1
 
 
-python3 independent_record_sim_episodes.py --task_name sim_moving_cube_scripted --dataset_dir piper_scripted_dataset/independent_left --num_episodes 50 --onscreen_render
+python3 independent_record_sim_episodes.py --task_name sim_moving_cube_scripted --dataset_dir piper_scripted_dataset/independent_right --num_episodes 50 --arm right --onscreen_render
 
 python3 independent_visualize_episodes.py --dataset_dir piper_scripted_dataset/independent_left --episode_idx 0
 
 python3 independent_imitate_episodes.py \
 --task_name sim_moving_cube_scripted \
---ckpt_dir piper_scripted_ckpt/independent_left \
+--ckpt_dir piper_scripted_ckpt/independent_right \
 --policy_class ACT --kl_weight 10 --chunk_size 100 --hidden_dim 512 --batch_size 8 --dim_feedforward 3200 \
 --num_epochs 2000  --lr 1e-5 \
---seed 0
+--seed 0 --arm right
+
+(aloha) act@act-Z790-S01:~/act_piper$ python3 independent_imitate_episodes.py --task_name sim_moving_cube_scripted --ckpt_dir piper_scripted_ckpt/independent_right --policy_class ACT --kl_weight 10 --chunk_size 100 --hidden_dim 512 --batch_size 8 --dim_feedforward 3200 --num_epochs 2000  --lr 1e-5 --seed 0 --arm right
+
+Data from: /home/act/act_piper/piper_scripted_dataset/independent_right
+
+usage: DETR training and evaluation script [-h] [--lr LR]
+                                           [--lr_backbone LR_BACKBONE]
+                                           [--batch_size BATCH_SIZE]
+                                           [--weight_decay WEIGHT_DECAY]
+                                           [--epochs EPOCHS]
+                                           [--lr_drop LR_DROP]
+                                           [--clip_max_norm CLIP_MAX_NORM]
+                                           [--backbone BACKBONE] [--dilation]
+                                           [--position_embedding {sine,learned}]
+                                           [--camera_names CAMERA_NAMES]
+                                           [--enc_layers ENC_LAYERS]
+                                           [--dec_layers DEC_LAYERS]
+                                           [--dim_feedforward DIM_FEEDFORWARD]
+                                           [--hidden_dim HIDDEN_DIM]
+                                           [--dropout DROPOUT]
+                                           [--nheads NHEADS]
+                                           [--num_queries NUM_QUERIES]
+                                           [--pre_norm] [--masks] [--eval]
+                                           [--onscreen_render] --ckpt_dir
+                                           CKPT_DIR --policy_class
+                                           POLICY_CLASS --task_name TASK_NAME
+                                           --seed SEED --num_epochs NUM_EPOCHS
+                                           [--kl_weight KL_WEIGHT]
+                                           [--chunk_size CHUNK_SIZE]
+                                           [--temporal_agg]
+DETR training and evaluation script: error: unrecognized arguments: --arm right
 
 
+(aloha) act@act-Z790-S01:~/act_piper$ python3 independent_imitate_episodes.py --task_name sim_moving_cube_scripted --ckpt_dir piper_scripted_ckpt/independent_right --policy_class ACT --kl_weight 10 --chunk_size 100 --hidden_dim 512 --batch_size 8 --dim_feedforward 3200 --num_epochs 2000  --lr 1e-5 --seed 0 --arm right
 
+Data from: /home/act/act_piper/piper_scripted_dataset/independent_right
+
+usage: DETR training and evaluation script [-h] [--lr LR] [--lr_backbone LR_BACKBONE] [--batch_size BATCH_SIZE] [--weight_decay WEIGHT_DECAY] [--epochs EPOCHS] [--lr_drop LR_DROP]
+                                           [--clip_max_norm CLIP_MAX_NORM] [--backbone BACKBONE] [--dilation] [--position_embedding {sine,learned}] [--camera_names CAMERA_NAMES]
+                                           [--enc_layers ENC_LAYERS] [--dec_layers DEC_LAYERS] [--dim_feedforward DIM_FEEDFORWARD] [--hidden_dim HIDDEN_DIM] [--dropout DROPOUT] [--nheads NHEADS]
+                                           [--num_queries NUM_QUERIES] [--pre_norm] [--masks] [--eval] [--onscreen_render] --ckpt_dir CKPT_DIR --policy_class POLICY_CLASS --task_name TASK_NAME --seed
+                                           SEED --num_epochs NUM_EPOCHS [--kl_weight KL_WEIGHT] [--chunk_size CHUNK_SIZE] [--temporal_agg]
+DETR training and evaluation script: error: the following arguments are required: --ckpt_dir, --policy_class, --task_name, --seed, --num_epochs
