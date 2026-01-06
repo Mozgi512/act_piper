@@ -66,8 +66,8 @@ python independent_imitate_episodes.py \
 ```bash
 python policy_switcher.py \
     --task_name sim_coop_scripted \
-    --ckpt_dual scripted_ckpt/cooperation \
-    --ckpt_left scripted_ckpt/independent_left \
+    --ckpt_dual piper_scripted_ckpt/cooperation \
+    --ckpt_left piper_scripted_ckpt/independent_left \
     --ckpt_right piper_scripted_ckpt/independent_right \
     --policy_class ACT \
     --kl_weight 10 --chunk_size 100 --hidden_dim 512 --dim_feedforward 3200

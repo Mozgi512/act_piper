@@ -203,6 +203,15 @@ def main(args):
     current_action_chunk_dual = None
     current_action_chunk_left = None
     current_action_chunk_right = None
+    
+    # Initialize Temporal Aggregation Logic
+    temporal_agg = not args.no_temporal_agg
+    if temporal_agg:
+        num_queries = args.chunk_size
+        all_time_actions_dual = torch.zeros([max_timesteps, max_timesteps+num_queries, 14]).cuda()
+        all_time_actions_left = torch.zeros([max_timesteps, max_timesteps+num_queries, 7]).cuda()
+        all_time_actions_right = torch.zeros([max_timesteps, max_timesteps+num_queries, 7]).cuda()
+
 
     try:
         t = 0
@@ -231,11 +240,17 @@ def main(args):
             qpos_numpy = np.array(obs['qpos'])
             
             with torch.inference_mode():
-                # If we need to plan (start of chunk or just switched)
-                # Matches t % query_frequency == 0 logic if t starts at 0
-                if step_in_chunk == 0 or step_in_chunk >= chunk_size:
-                    step_in_chunk = 0 # Reset
-                    
+                # If we need to plan
+                should_plan = False
+                if temporal_agg:
+                    should_plan = True
+                elif step_in_chunk == 0 or step_in_chunk >= chunk_size:
+                    should_plan = True
+
+                if should_plan:
+                    if not temporal_agg:
+                        step_in_chunk = 0 # Reset only if not agg
+
                     if current_mode == MODE_DUAL:
                          qpos = pre_process_dual(qpos_numpy)
                          qpos = torch.from_numpy(qpos).float().cuda().unsqueeze(0)
@@ -243,10 +258,25 @@ def main(args):
                          
                          if args.policy_class == 'ACT':
                              action_chunk = policy_dual(qpos, curr_image) # [1, chunk_size, 14]
-                             current_action_chunk_dual = action_chunk.squeeze(0).cpu().numpy()
+                             if temporal_agg:
+                                 all_time_actions_dual[[t], t:t+num_queries] = action_chunk
+                             else:
+                                 current_action_chunk_dual = action_chunk.squeeze(0).cpu().numpy()
                          else:
                              action = policy_dual(qpos, curr_image)
-                             current_action_chunk_dual = action.cpu().numpy() 
+                             if temporal_agg:
+                                 all_time_actions_dual[[t], t:t+num_queries] = action # CNNMLP outputs 1 step but shaped [1, 1, 14] maybe? No ACT outputs chunk.
+                                 # CNNMLP usually outputs [1, 14], let's assume it supports chunking or we handle it. 
+                                 # In original code: policy_config = {..., 'num_queries': 1, ...} for CNNMLP
+                                 # So action is [1, 14]. 
+                                 # Wait, existing code says: action = policy_dual(qpos, curr_image) -> current_action_chunk_dual = action.cpu().numpy() 
+                                 # Then raw_action = current_action_chunk_dual[0]. 
+                                 # If temporal_agg is used with CNNMLP it effectively averages 1 value? Usually temporal_agg is for ACT.
+                                 # Let's support ACT mainly for temporal agg as per original script.
+                                 pass 
+                             else:
+                                 current_action_chunk_dual = action.cpu().numpy() 
+
                     else:
                         # Left
                          qpos_left_numpy = qpos_numpy[:7]
@@ -256,10 +286,14 @@ def main(args):
                          
                          if args.policy_class == 'ACT':
                              action_chunk_l = policy_left(qpos_left, curr_image_left)
-                             current_action_chunk_left = action_chunk_l.squeeze(0).cpu().numpy()
+                             if temporal_agg:
+                                 all_time_actions_left[[t], t:t+num_queries] = action_chunk_l
+                             else:
+                                 current_action_chunk_left = action_chunk_l.squeeze(0).cpu().numpy()
                          else:
                              action_l = policy_left(qpos_left, curr_image_left)
-                             current_action_chunk_left = action_l.cpu().numpy()
+                             if not temporal_agg:
+                                 current_action_chunk_left = action_l.cpu().numpy()
                         
                         # Right
                          qpos_right_numpy = qpos_numpy[7:14]
@@ -269,28 +303,79 @@ def main(args):
                          
                          if args.policy_class == 'ACT':
                              action_chunk_r = policy_right(qpos_right, curr_image_right)
-                             current_action_chunk_right = action_chunk_r.squeeze(0).cpu().numpy()
+                             if temporal_agg:
+                                 all_time_actions_right[[t], t:t+num_queries] = action_chunk_r
+                             else:
+                                 current_action_chunk_right = action_chunk_r.squeeze(0).cpu().numpy()
                          else:
                              action_r = policy_right(qpos_right, curr_image_right)
-                             current_action_chunk_right = action_r.cpu().numpy()
+                             if not temporal_agg:
+                                 current_action_chunk_right = action_r.cpu().numpy()
                              
                 
                 # Execute current step of the plan
                 if current_mode == MODE_DUAL:
                     if args.policy_class == 'ACT':
-                        raw_action = current_action_chunk_dual[step_in_chunk]
+                        if temporal_agg:
+                            actions_for_curr_step = all_time_actions_dual[:, t]
+                            actions_populated = torch.all(actions_for_curr_step != 0, axis=1)
+                            actions_for_curr_step = actions_for_curr_step[actions_populated]
+                            k = 0.01
+                            exp_weights = np.exp(-k * np.arange(len(actions_for_curr_step)))
+                            exp_weights = exp_weights / exp_weights.sum()
+                            exp_weights = torch.from_numpy(exp_weights).cuda().unsqueeze(dim=1)
+                            raw_action = (actions_for_curr_step * exp_weights).sum(dim=0, keepdim=True)
+                            raw_action = raw_action.squeeze(0).cpu().numpy()
+                        else:
+                            raw_action = current_action_chunk_dual[step_in_chunk]
                     else:
-                        raw_action = current_action_chunk_dual[0]
+                        # CNNMLP
+                        if temporal_agg:
+                             # Fallback or simple forward for CNNMLP (usually no agg needed or simple 1 step)
+                             # Original script 'imitate_episodes' handles CNNMLP by just: raw_action = policy(qpos, curr_image)
+                             if should_plan: # already computed action
+                                 raw_action = action.squeeze(0).cpu().numpy()
+                        else:
+                            raw_action = current_action_chunk_dual[0]
                     
                     action = post_process_dual(raw_action)
                     target_qpos = action
                 else:
+                    # Independent Mode
                     if args.policy_class == 'ACT':
-                        raw_action_l = current_action_chunk_left[step_in_chunk]
-                        raw_action_r = current_action_chunk_right[step_in_chunk]
+                        if temporal_agg:
+                            # LEFT
+                            actions_for_curr_step_l = all_time_actions_left[:, t]
+                            actions_populated_l = torch.all(actions_for_curr_step_l != 0, axis=1)
+                            actions_for_curr_step_l = actions_for_curr_step_l[actions_populated_l]
+                            k = 0.01
+                            exp_weights_l = np.exp(-k * np.arange(len(actions_for_curr_step_l)))
+                            exp_weights_l = exp_weights_l / exp_weights_l.sum()
+                            exp_weights_l = torch.from_numpy(exp_weights_l).cuda().unsqueeze(dim=1)
+                            raw_action_l = (actions_for_curr_step_l * exp_weights_l).sum(dim=0, keepdim=True)
+                            raw_action_l = raw_action_l.squeeze(0).cpu().numpy()
+
+                            # RIGHT
+                            actions_for_curr_step_r = all_time_actions_right[:, t]
+                            actions_populated_r = torch.all(actions_for_curr_step_r != 0, axis=1)
+                            actions_for_curr_step_r = actions_for_curr_step_r[actions_populated_r]
+                            exp_weights_r = np.exp(-k * np.arange(len(actions_for_curr_step_r)))
+                            exp_weights_r = exp_weights_r / exp_weights_r.sum()
+                            exp_weights_r = torch.from_numpy(exp_weights_r).cuda().unsqueeze(dim=1)
+                            raw_action_r = (actions_for_curr_step_r * exp_weights_r).sum(dim=0, keepdim=True)
+                            raw_action_r = raw_action_r.squeeze(0).cpu().numpy()
+                        else:
+                            raw_action_l = current_action_chunk_left[step_in_chunk]
+                            raw_action_r = current_action_chunk_right[step_in_chunk]
                     else:
-                        raw_action_l = current_action_chunk_left[0]
-                        raw_action_r = current_action_chunk_right[0]
+                        # CNNMLP
+                        if temporal_agg:
+                            if should_plan:
+                                raw_action_l = action_l.squeeze(0).cpu().numpy()
+                                raw_action_r = action_r.squeeze(0).cpu().numpy()
+                        else:
+                            raw_action_l = current_action_chunk_left[0]
+                            raw_action_r = current_action_chunk_right[0]
                         
                     action_left = post_process_left(raw_action_l)
                     action_right = post_process_right(raw_action_r)
@@ -326,6 +411,7 @@ if __name__ == '__main__':
     parser.add_argument('--dim_feedforward', action='store', type=int, default=3200)
     parser.add_argument('--lr', action='store', type=float, default=1e-5)
     
+    parser.add_argument('--no_temporal_agg', action='store_true')
     parser.add_argument('--onscreen_render', action='store_true', default=True)
     
     args = parser.parse_args()
