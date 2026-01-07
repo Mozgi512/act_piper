@@ -23,7 +23,7 @@ from piper_constants import PUPPET_GRIPPER_JOINT_OPEN
 from utils import load_data
 from utils import sample_redbox_pose, sample_insertion_pose, sample_greenbox_pose, sample_bluebox_pose
 from utils import compute_dict_mean, set_seed, detach_dict
-from policy import ACTPolicy, CNNMLPPolicy
+from policy import ACTPolicy
 
 # Import Sim Env
 from piper_sim_env import REDBOX_POSE, GREENBOX_POSE, BLUEBOX_POSE
@@ -31,7 +31,7 @@ from piper_sim_env import make_sim_env
 
 # Constants
 MODE_INDEPENDENT = '1'
-MODE_DUAL = '2'
+MODE_COOP = '2'
 
 def is_data():
     return select.select([sys.stdin], [], [], 0) == ([sys.stdin], [], [])
@@ -44,8 +44,6 @@ def get_key():
 def make_policy(policy_class, policy_config):
     if policy_class == 'ACT':
         policy = ACTPolicy(policy_config)
-    elif policy_class == 'CNNMLP':
-        policy = CNNMLPPolicy(policy_config)
     else:
         raise NotImplementedError
     return policy
@@ -101,11 +99,7 @@ def load_policy_and_stats(ckpt_dir, policy_class, args, override_state_dim=None,
     if override_arm:
         policy_config['arm'] = override_arm
 
-    if policy_class == 'CNNMLP':
-         policy_config = {'lr': args.lr, 'lr_backbone': lr_backbone, 'backbone' : backbone, 'num_queries': 1,
-                          'camera_names': camera_names, 'state_dim': state_dim}
-         if override_arm:
-            policy_config['arm'] = override_arm
+
 
     stats_path = os.path.join(ckpt_dir, f'dataset_stats.pkl')
     with open(stats_path, 'rb') as f:
@@ -130,11 +124,6 @@ def main(args):
     ckpt_right = args.ckpt_right
     policy_class = args.policy_class
     onscreen_render = args.onscreen_render
-    
-    is_sim = task_name[:4] == 'sim_'
-    if not is_sim:
-        print("Real robot support not implemented in this switcher yet.")
-        return
 
     from piper_constants import SIM_TASK_CONFIGS
     task_config = SIM_TASK_CONFIGS[task_name]
@@ -186,12 +175,12 @@ def main(args):
     tty.setcbreak(sys.stdin.fileno())
     
     # Default to Independent logic or Dual logic depending on request?
-    # User changed it to MODE_DUAL in Step 162. Keeping MODE_DUAL.
-    current_mode = MODE_DUAL
+    # User changed it to MODE_COOP in Step 162. Keeping MODE_COOP.
+    current_mode = MODE_COOP
     
     print("\n\nReady!")
     print("Press '1' for Independent Mode")
-    print("Press '2' for Dual Mode")
+    print("Press '2' for Cooperative Mode")
     print("Press 'q' to quit")
     
     chunk_size = args.chunk_size
@@ -223,10 +212,10 @@ def main(args):
                     step_in_chunk = 0 # Force replan on switch
                     print(f"[Step {t}] Switched to INDEPENDENT mode")
             elif key == '2':
-                if current_mode != MODE_DUAL:
-                    current_mode = MODE_DUAL
+                if current_mode != MODE_COOP:
+                    current_mode = MODE_COOP
                     step_in_chunk = 0 # Force replan on switch
-                    print(f"[Step {t}] Switched to DUAL arm mode")
+                    print(f"[Step {t}] Switched to COOPERATIVE mode")
             elif key == 'q':
                 break
                 
@@ -251,31 +240,16 @@ def main(args):
                     if not temporal_agg:
                         step_in_chunk = 0 # Reset only if not agg
 
-                    if current_mode == MODE_DUAL:
+                    if current_mode == MODE_COOP:
                          qpos = pre_process_dual(qpos_numpy)
                          qpos = torch.from_numpy(qpos).float().cuda().unsqueeze(0)
                          curr_image = get_image_dual(ts, camera_names)
                          
-                         if args.policy_class == 'ACT':
-                             action_chunk = policy_dual(qpos, curr_image) # [1, chunk_size, 14]
-                             if temporal_agg:
-                                 all_time_actions_dual[[t], t:t+num_queries] = action_chunk
-                             else:
-                                 current_action_chunk_dual = action_chunk.squeeze(0).cpu().numpy()
+                         action_chunk = policy_dual(qpos, curr_image) # [1, chunk_size, 14]
+                         if temporal_agg:
+                             all_time_actions_dual[[t], t:t+num_queries] = action_chunk
                          else:
-                             action = policy_dual(qpos, curr_image)
-                             if temporal_agg:
-                                 all_time_actions_dual[[t], t:t+num_queries] = action # CNNMLP outputs 1 step but shaped [1, 1, 14] maybe? No ACT outputs chunk.
-                                 # CNNMLP usually outputs [1, 14], let's assume it supports chunking or we handle it. 
-                                 # In original code: policy_config = {..., 'num_queries': 1, ...} for CNNMLP
-                                 # So action is [1, 14]. 
-                                 # Wait, existing code says: action = policy_dual(qpos, curr_image) -> current_action_chunk_dual = action.cpu().numpy() 
-                                 # Then raw_action = current_action_chunk_dual[0]. 
-                                 # If temporal_agg is used with CNNMLP it effectively averages 1 value? Usually temporal_agg is for ACT.
-                                 # Let's support ACT mainly for temporal agg as per original script.
-                                 pass 
-                             else:
-                                 current_action_chunk_dual = action.cpu().numpy() 
+                             current_action_chunk_dual = action_chunk.squeeze(0).cpu().numpy()
 
                     else:
                         # Left
@@ -284,16 +258,11 @@ def main(args):
                          qpos_left = torch.from_numpy(qpos_left).float().cuda().unsqueeze(0)
                          curr_image_left = get_image_independent(ts, camera_names, 'left')
                          
-                         if args.policy_class == 'ACT':
-                             action_chunk_l = policy_left(qpos_left, curr_image_left)
-                             if temporal_agg:
-                                 all_time_actions_left[[t], t:t+num_queries] = action_chunk_l
-                             else:
-                                 current_action_chunk_left = action_chunk_l.squeeze(0).cpu().numpy()
+                         action_chunk_l = policy_left(qpos_left, curr_image_left)
+                         if temporal_agg:
+                             all_time_actions_left[[t], t:t+num_queries] = action_chunk_l
                          else:
-                             action_l = policy_left(qpos_left, curr_image_left)
-                             if not temporal_agg:
-                                 current_action_chunk_left = action_l.cpu().numpy()
+                             current_action_chunk_left = action_chunk_l.squeeze(0).cpu().numpy()
                         
                         # Right
                          qpos_right_numpy = qpos_numpy[7:14]
@@ -307,75 +276,51 @@ def main(args):
                                  all_time_actions_right[[t], t:t+num_queries] = action_chunk_r
                              else:
                                  current_action_chunk_right = action_chunk_r.squeeze(0).cpu().numpy()
-                         else:
-                             action_r = policy_right(qpos_right, curr_image_right)
-                             if not temporal_agg:
-                                 current_action_chunk_right = action_r.cpu().numpy()
                              
                 
                 # Execute current step of the plan
-                if current_mode == MODE_DUAL:
-                    if args.policy_class == 'ACT':
-                        if temporal_agg:
-                            actions_for_curr_step = all_time_actions_dual[:, t]
-                            actions_populated = torch.all(actions_for_curr_step != 0, axis=1)
-                            actions_for_curr_step = actions_for_curr_step[actions_populated]
-                            k = 0.01
-                            exp_weights = np.exp(-k * np.arange(len(actions_for_curr_step)))
-                            exp_weights = exp_weights / exp_weights.sum()
-                            exp_weights = torch.from_numpy(exp_weights).cuda().unsqueeze(dim=1)
-                            raw_action = (actions_for_curr_step * exp_weights).sum(dim=0, keepdim=True)
-                            raw_action = raw_action.squeeze(0).cpu().numpy()
-                        else:
-                            raw_action = current_action_chunk_dual[step_in_chunk]
+                if current_mode == MODE_COOP:
+                    if temporal_agg:
+                        actions_for_curr_step = all_time_actions_dual[:, t]
+                        actions_populated = torch.all(actions_for_curr_step != 0, axis=1)
+                        actions_for_curr_step = actions_for_curr_step[actions_populated]
+                        k = 0.01
+                        exp_weights = np.exp(-k * np.arange(len(actions_for_curr_step)))
+                        exp_weights = exp_weights / exp_weights.sum()
+                        exp_weights = torch.from_numpy(exp_weights).cuda().unsqueeze(dim=1)
+                        raw_action = (actions_for_curr_step * exp_weights).sum(dim=0, keepdim=True)
+                        raw_action = raw_action.squeeze(0).cpu().numpy()
                     else:
-                        # CNNMLP
-                        if temporal_agg:
-                             # Fallback or simple forward for CNNMLP (usually no agg needed or simple 1 step)
-                             # Original script 'imitate_episodes' handles CNNMLP by just: raw_action = policy(qpos, curr_image)
-                             if should_plan: # already computed action
-                                 raw_action = action.squeeze(0).cpu().numpy()
-                        else:
-                            raw_action = current_action_chunk_dual[0]
+                        raw_action = current_action_chunk_dual[step_in_chunk]
                     
                     action = post_process_dual(raw_action)
                     target_qpos = action
                 else:
                     # Independent Mode
-                    if args.policy_class == 'ACT':
-                        if temporal_agg:
-                            # LEFT
-                            actions_for_curr_step_l = all_time_actions_left[:, t]
-                            actions_populated_l = torch.all(actions_for_curr_step_l != 0, axis=1)
-                            actions_for_curr_step_l = actions_for_curr_step_l[actions_populated_l]
-                            k = 0.01
-                            exp_weights_l = np.exp(-k * np.arange(len(actions_for_curr_step_l)))
-                            exp_weights_l = exp_weights_l / exp_weights_l.sum()
-                            exp_weights_l = torch.from_numpy(exp_weights_l).cuda().unsqueeze(dim=1)
-                            raw_action_l = (actions_for_curr_step_l * exp_weights_l).sum(dim=0, keepdim=True)
-                            raw_action_l = raw_action_l.squeeze(0).cpu().numpy()
+                    if temporal_agg:
+                        # LEFT
+                        actions_for_curr_step_l = all_time_actions_left[:, t]
+                        actions_populated_l = torch.all(actions_for_curr_step_l != 0, axis=1)
+                        actions_for_curr_step_l = actions_for_curr_step_l[actions_populated_l]
+                        k = 0.01
+                        exp_weights_l = np.exp(-k * np.arange(len(actions_for_curr_step_l)))
+                        exp_weights_l = exp_weights_l / exp_weights_l.sum()
+                        exp_weights_l = torch.from_numpy(exp_weights_l).cuda().unsqueeze(dim=1)
+                        raw_action_l = (actions_for_curr_step_l * exp_weights_l).sum(dim=0, keepdim=True)
+                        raw_action_l = raw_action_l.squeeze(0).cpu().numpy()
 
-                            # RIGHT
-                            actions_for_curr_step_r = all_time_actions_right[:, t]
-                            actions_populated_r = torch.all(actions_for_curr_step_r != 0, axis=1)
-                            actions_for_curr_step_r = actions_for_curr_step_r[actions_populated_r]
-                            exp_weights_r = np.exp(-k * np.arange(len(actions_for_curr_step_r)))
-                            exp_weights_r = exp_weights_r / exp_weights_r.sum()
-                            exp_weights_r = torch.from_numpy(exp_weights_r).cuda().unsqueeze(dim=1)
-                            raw_action_r = (actions_for_curr_step_r * exp_weights_r).sum(dim=0, keepdim=True)
-                            raw_action_r = raw_action_r.squeeze(0).cpu().numpy()
-                        else:
-                            raw_action_l = current_action_chunk_left[step_in_chunk]
-                            raw_action_r = current_action_chunk_right[step_in_chunk]
+                        # RIGHT
+                        actions_for_curr_step_r = all_time_actions_right[:, t]
+                        actions_populated_r = torch.all(actions_for_curr_step_r != 0, axis=1)
+                        actions_for_curr_step_r = actions_for_curr_step_r[actions_populated_r]
+                        exp_weights_r = np.exp(-k * np.arange(len(actions_for_curr_step_r)))
+                        exp_weights_r = exp_weights_r / exp_weights_r.sum()
+                        exp_weights_r = torch.from_numpy(exp_weights_r).cuda().unsqueeze(dim=1)
+                        raw_action_r = (actions_for_curr_step_r * exp_weights_r).sum(dim=0, keepdim=True)
+                        raw_action_r = raw_action_r.squeeze(0).cpu().numpy()
                     else:
-                        # CNNMLP
-                        if temporal_agg:
-                            if should_plan:
-                                raw_action_l = action_l.squeeze(0).cpu().numpy()
-                                raw_action_r = action_r.squeeze(0).cpu().numpy()
-                        else:
-                            raw_action_l = current_action_chunk_left[0]
-                            raw_action_r = current_action_chunk_right[0]
+                        raw_action_l = current_action_chunk_left[step_in_chunk]
+                        raw_action_r = current_action_chunk_right[step_in_chunk]
                         
                     action_left = post_process_left(raw_action_l)
                     action_right = post_process_right(raw_action_r)

@@ -1,32 +1,28 @@
-# ACT Piper - Usage Instructions
-
-このドキュメントでは、独立した腕の制御学習およびポリシー切り替え機能の使い方について説明します。
-
-## 1. データの収集 (Data Simulation)
-
-独立した腕（片腕ずつ）のデータを収集するには `independent_record_sim_episodes.py` を使用します。
-デフォルトでは左腕のデータセットディレクトリに保存されますが、`--right_arm_support` フラグで右腕用に切り替え可能です。
-
-### 実行例
-
 **左腕のデータ生成:**
 ```bash
-python independent_record_sim_episodes.py \
-    --task_name sim_moving_cube_scripted \
+python3 independent_record_sim_episodes.py \
+    --task_name sim_independent_scripted \
     --dataset_dir <DATASET_DIR>/independent_left \
     --num_episodes 50
 ```
-
 **右腕のデータ生成:**
 ```bash
-python independent_record_sim_episodes.py \
-    --task_name sim_moving_cube_scripted \
+python3 independent_record_sim_episodes.py \
+    --task_name sim_independent_scripted \
     --dataset_dir <DATASET_DIR>/independent_right \
     --num_episodes 50 \
     --arm right
 ```
+同時に生成する場合は
+```bash
+python3 independent_record_sim_episodes.py \
+    --task_name sim_independent_scripted \
+    --dataset_dir piper_scripted_dataset/independent \
+    --num_episodes 100 \
+    --arm both \
+    --onscreen_render
+```
 
-## 2. トレーニング (Training)
 
 独立した腕のポリシーを学習するには `independent_imitate_episodes.py` を使用します。
 `--arm` 引数でどちらの腕を学習するか指定します。
@@ -35,9 +31,9 @@ python independent_record_sim_episodes.py \
 
 **左腕ポリシーの学習:**
 ```bash
-python independent_imitate_episodes.py \
+python3 independent_imitate_episodes.py \
     --task_name sim_moving_cube_scripted \
-    --ckpt_dir <CKPT_DIR>/policy_left \
+    --ckpt_dir piper_scripted_ckpt/independent_left \
     --policy_class ACT \
     --kl_weight 10 --chunk_size 100 --hidden_dim 512 --batch_size 8 --dim_feedforward 3200 \
     --num_epochs 2000  --lr 1e-5 \
@@ -47,9 +43,9 @@ python independent_imitate_episodes.py \
 
 **右腕ポリシーの学習:**
 ```bash
-python independent_imitate_episodes.py \
+python3 independent_imitate_episodes.py \
     --task_name sim_moving_cube_scripted \
-    --ckpt_dir <CKPT_DIR>/policy_right \
+    --ckpt_dir piper_scripted_ckpt/independent_right \
     --policy_class ACT \
     --kl_weight 10 --chunk_size 100 --hidden_dim 512 --batch_size 8 --dim_feedforward 3200 \
     --num_epochs 2000  --lr 1e-5 \

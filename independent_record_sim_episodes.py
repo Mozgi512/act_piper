@@ -56,7 +56,8 @@ def main(args):
         policy_cls = PickMovingCubePolicy
     elif task_name == 'sim_coop_scripted':
         policy_cls = CoopPolicy
-    
+    elif task_name == 'sim_independent_scripted':
+        policy_cls = PickMovingCubePolicy
     else:
         raise NotImplementedError
 
@@ -78,10 +79,8 @@ def main(args):
 
         for step in range(episode_len):
             action = policy(ts)
-
             #print(f"Step {step:01d} | EE Command: {action}")
             all_actions.append(action)
-        
             ts = env.step(action)
             episode.append(ts)
             if onscreen_render:
@@ -123,7 +122,7 @@ def main(args):
         del policy
 
         #actions_array = np.array(all_actions)
-        np.savetxt("joint_traj.csv", joint_traj, delimiter=",", fmt="%.5f")
+        #np.savetxt("joint_traj.csv", joint_traj, delimiter=",", fmt="%.5f")
 
 
         # setup the environment
@@ -165,7 +164,7 @@ def main(args):
         plt.close()
         joint_traj1 = [ts.observation['qpos'] for ts in episode_replay]
         #actions_array = np.array(all_actions)
-        np.savetxt("joint_traj1.csv", joint_traj1, delimiter=",", fmt="%.5f")
+        #np.savetxt("joint_traj1.csv", joint_traj1, delimiter=",", fmt="%.5f")
 
         """
         For each timestep:

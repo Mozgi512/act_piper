@@ -53,6 +53,15 @@ def main(args):
         from aloha_scripts.constants import TASK_CONFIGS
         task_config = TASK_CONFIGS[task_name]
     dataset_dir = task_config['dataset_dir']
+    # 既存のディレクトリがない場合、armに応じたサフィックスを追加してチェック
+    if not os.path.exists(dataset_dir):
+        if os.path.exists(dataset_dir + f'_{arm}'):
+             dataset_dir = dataset_dir + f'_{arm}'
+        elif os.path.exists(dataset_dir + f'_left') and arm == 'left':
+             dataset_dir = dataset_dir + '_left'
+        elif os.path.exists(dataset_dir + f'_right') and arm == 'right':
+             dataset_dir = dataset_dir + '_right'
+
     num_episodes = task_config['num_episodes']
     episode_len = task_config['episode_len']
     camera_names = task_config['camera_names']
@@ -239,7 +248,10 @@ def eval_bc(config, ckpt_name, save_episode=True):
             REDBOX_POSE[0] = sample_redbox_pose()      # red box
             GREENBOX_POSE[0] = sample_greenbox_pose()   # green box
             BLUEBOX_POSE[0] = sample_bluebox_pose()   # blue box
-
+        elif 'sim_independent' in task_name:
+            REDBOX_POSE[0] = sample_redbox_pose()      # red box
+            GREENBOX_POSE[0] = sample_greenbox_pose()   # green box
+            BLUEBOX_POSE[0] = sample_bluebox_pose()   # blue box
         ts = env.reset()
 
         ### onscreen render

@@ -16,23 +16,9 @@ SIM_TASK_CONFIGS = {
         'episode_len': 400,
         'camera_names': ['top']
     },
-
-    'sim_insertion_scripted': {
-        'dataset_dir': DATA_DIR + '/sim_insertion_scripted',
-        'num_episodes': 50,
-        'episode_len': 400,
-        'camera_names': ['top']
-    },
-
-    'sim_insertion_human': {
-        'dataset_dir': DATA_DIR + '/sim_insertion_human',
-        'num_episodes': 50,
-        'episode_len': 500,
-        'camera_names': ['top']
-    },
     'sim_moving_cube_scripted':{
         #'dataset_dir': DATA_DIR + '/sim_moving_cube_scripted',
-        'dataset_dir': DATA_DIR + '/independent_right',
+        'dataset_dir': DATA_DIR + '/independent',
         'num_episodes': 50,
         'episode_len': 360,
         'camera_names': ['top']
@@ -41,6 +27,13 @@ SIM_TASK_CONFIGS = {
         'dataset_dir': DATA_DIR + '/sim_coop_scripted',
         'num_episodes': 50,
         'episode_len': 540,
+        'camera_names': ['top']
+    },
+    'sim_independent_scripted':{
+        #'dataset_dir': DATA_DIR + '/sim_moving_cube_scripted',
+        'dataset_dir': DATA_DIR + '/sim_independent',
+        'num_episodes': 100,
+        'episode_len': 360,
         'camera_names': ['top']
     },
 }

@@ -143,7 +143,7 @@ def sample_redbox_pose():
 
 
 def sample_greenbox_pose():
-    x_range = [-0.3, -0.1]
+    x_range = [-0.25, -0.1]
     y_range = [0.30, 0.45]
     z_range = [0.01, 0.01]
 
@@ -154,7 +154,7 @@ def sample_greenbox_pose():
     return np.concatenate([stick_position, stick_quat])
 
 def sample_bluebox_pose():
-    x_range = [-0.1, 0.1]
+    x_range = [0.0, 0.15]
     y_range = [0.30, 0.45]
     z_range = [0.01, 0.01]
 
