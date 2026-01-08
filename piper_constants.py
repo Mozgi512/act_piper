@@ -24,8 +24,8 @@ SIM_TASK_CONFIGS = {
         'camera_names': ['top']
     },
     'sim_coop_scripted':{
-        'dataset_dir': DATA_DIR + '/sim_coop_scripted',
-        'num_episodes': 50,
+        'dataset_dir': DATA_DIR + '/cooperation',
+        'num_episodes': 100,
         'episode_len': 540,
         'camera_names': ['top']
     },
