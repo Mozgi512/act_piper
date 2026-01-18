@@ -28,7 +28,8 @@ from policy import ACTPolicy
 # Import Sim Env
 from piper_sim_env import REDBOX_POSE, GREENBOX_POSE, BLUEBOX_POSE
 from piper_sim_env import make_sim_env
-
+from piper_ee_sim_env import make_ee_sim_env
+from utils import apply_rgb_mask_to_strip
 # Constants
 MODE_INDEPENDENT = '1'
 MODE_COOP = '2'
@@ -65,7 +66,16 @@ def get_image_independent(ts, camera_names, arm):
         if arm == 'left':
             curr_image = curr_image[:, :, :w//2]
         else:
-            curr_image = curr_image[:, :, w//2:]
+            # Shift left by 40 pixels
+            offset = 40
+            start = w//2 - offset
+            end = w - offset
+            curr_image = curr_image[:, :, start:end]
+            
+            # Apply RGB mask
+            # curr_image is (H, W, C) so we can pass directly
+            curr_image = apply_rgb_mask_to_strip(curr_image, strip_width=offset)
+            
         curr_images.append(curr_image)
     curr_image = np.stack(curr_images, axis=0)
     curr_image = torch.from_numpy(curr_image / 255.0).float().cuda().unsqueeze(0)

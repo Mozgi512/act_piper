@@ -36,6 +36,12 @@ SIM_TASK_CONFIGS = {
         'episode_len': 360,
         'camera_names': ['top']
     },
+    'sim_independent_phase2_scripted':{
+        'dataset_dir': DATA_DIR + '/sim_independent_2phases',
+        'num_episodes': 200,
+        'episode_len': 360,
+        'camera_names': ['top']
+    },
     'sim_many_cubes':{
         'dataset_dir': DATA_DIR + '/sim_many_cubes',
         'num_episodes': 100,

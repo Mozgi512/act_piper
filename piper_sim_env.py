@@ -20,6 +20,7 @@ e = IPython.embed
 REDBOX_POSE = [None] # to be changed from outside
 BLUEBOX_POSE = [None]
 GREENBOX_POSE = [None]
+MANYCUBES_POSES = [None]
 
 def make_sim_env(task_name):
     """
@@ -51,10 +52,17 @@ def make_sim_env(task_name):
         task = InsertionTask(random=False)
         env = control.Environment(physics, task, time_limit=20, control_timestep=DT,
                                   n_sub_steps=None, flat_observation=False)
-    elif 'sim_moving_cube' in task_name:
-        xml_path = os.path.join(XML_DIR, f'bimanual_piper_moving_cube.xml')
+    elif 'sim_moving_cube' in task_name or 'sim_independent' in task_name:
+        is_phase2 = 'phase2' in task_name
+        xml_path = os.path.join(XML_DIR, f'bimanual_piper_many_cubes.xml')
         physics = mujoco.Physics.from_xml_path(xml_path)
-        task = MovingCubeTask(random=False)
+        task = ManyCubesTask(random=False, init_phase=2 if is_phase2 else 1)
+        env = control.Environment(physics, task, time_limit=20, control_timestep=DT,
+                                  n_sub_steps=None, flat_observation=False)
+    elif 'sim_coop' in task_name:
+        xml_path = os.path.join(XML_DIR, f'bimanual_piper_many_cubes.xml')
+        physics = mujoco.Physics.from_xml_path(xml_path)
+        task = ManyCubesTask(random=False)
         env = control.Environment(physics, task, time_limit=20, control_timestep=DT,
                                   n_sub_steps=None, flat_observation=False)
         
@@ -410,11 +418,12 @@ class CoopTask(BimanualPiperTask):
 
 
 class ManyCubesTask(BimanualPiperTask):
-    def __init__(self, random=None, randomize_cube_colors=False):
+    def __init__(self, random=None, randomize_cube_colors=False, init_phase=1):
         super().__init__(random=random)
         self.max_reward = 0
         self.belt_speed = BELT_MOVE_SPEED
         self.randomize_cube_colors = randomize_cube_colors
+        self.init_phase = init_phase
 
     def initialize_episode(self, physics):
         """Sets the state of the environment at the start of each episode."""
@@ -443,39 +452,50 @@ class ManyCubesTask(BimanualPiperTask):
             # i=6..0 -> Queue behind Red
             
             poses = {}
-            # Sample first 3
-            poses[9] = sample_bluebox_pose()
-            poses[8] = sample_greenbox_pose()
-            poses[7] = sample_redbox_pose()
             
-            # Queue spacing (approx distance between centers of R-G-B ranges is ~0.22)
+            if self.init_phase == 2:
+                # Phase 2: G/B at goal, R and Queue at ORIGINAL positions
+                
+                if MANYCUBES_POSES[0] is not None:
+                    # Injected poses
+                    poses = MANYCUBES_POSES[0]
+                else:
+                    # Sample new poses
+                    # Green (8) at goal + noise
+                    # noise_range: 2cm
+                    noise_g = np.random.uniform(-0.02, 0.02, size=2)
+                    poses[8] = np.array([0 + noise_g[0], 0.1 + noise_g[1], 0.025, 1, 0, 0, 0])
+                    # Blue (9) at goal + noise
+                    noise_b = np.random.uniform(-0.02, 0.02, size=2)
+                    poses[9] = np.array([0.08 + noise_b[0], 0.1 + noise_b[1], 0.025, 1, 0, 0, 0])
+                    # Red (7) at original
+                    poses[7] = sample_redbox_pose()+np.array([0.2, 0, 0,0,0,0,0])
+                ref_x = poses[7][0]
+                
+            else:
+                # Phase 1: Normal
+                poses[9] = sample_bluebox_pose()
+                poses[8] = sample_greenbox_pose()
+                poses[7] = sample_redbox_pose()
+                ref_x = poses[7][0]
+            
             queue_spacing = 0.22
-            ref_x = poses[7][0] # Red X
             
             for i in range(10):
                 if i in poses:
                     cube_pose = poses[i]
                 else:
-                    # i=6 -> 1 step behind 7
+                    # i=6 -> 1 step behind 7 (Original)
                     step = 7 - i
-                    cube_x = ref_x - step * queue_spacing + np.random.uniform(-0.01, 0.01)
-                    cube_y = np.random.uniform(0.30, 0.45) # Match general Y range
-                    cube_z = 0.05 # poses[7][2] is usually 0.01? sample_redbox_pose returns z~0.01, but here we used 0.05 before.
-                    # sample_redbox_pose returns [x,y,z, qw,qx,qy,qz]. z is usually sampled ~0.01 (on table).
-                    # But we are dropping them? Or placing on belt?
-                    # Previous code used z=0.05. 
-                    # sample_redbox_pose returns z=0.01.
-                    # Let's trust sample_redbox_pose for z (0.01) but maybe belt is higher?
-                    # Belt z is -0.02 (body pos) + geom size (0.02) = top surface 0.0?
-                    # The cubes used to be at 0.05.
-                    # Let's keep Z consistent with sampled or previous?
-                    # sample_redbox_pose returns z=0.01. 
-                    # Let's just use what sample_... returns for 7,8,9.
-                    # For queue, use 0.01 to match.
+                    # Original pos would be: ref_x - step * spacing
+                    orig_x = ref_x - step * queue_spacing 
+                    
+                    cube_x = orig_x + np.random.uniform(-0.01, 0.01)
+                        
+                    cube_y = np.random.uniform(0.30, 0.45) 
                     
                     cube_quat = np.array([1, 0, 0, 0])
-                    # Note: poses[7] has 7 dims (pos+quat).
-                    cube_pose = np.concatenate([[cube_x, cube_y, 0.02], cube_quat]) # 0.02 safe?
+                    cube_pose = np.concatenate([[cube_x, cube_y, 0.02], cube_quat])
 
                 start_idx = physics.model.name2id(f'cube_{i}_joint', 'joint')
                 qpos_adr = physics.model.jnt_qposadr[start_idx]
@@ -501,12 +521,9 @@ class ManyCubesTask(BimanualPiperTask):
     @staticmethod
     def get_env_state(physics):
         # return state of 10 cubes (each 7 dims) -> 70 dims
-        # qpos structure: robot (16) + belt (1) + 10 cubes (7*10)
-        # Note: BimanualPiperTask.get_qpos uses physics.data.qpos.copy() which includes everything.
-        # But here we want just the env state (cubes).
-        # In MovingCubeTask it was [17:17+21].
-        # Here it is [17:17+70].
-        env_state = physics.data.qpos.copy()[17:17+70]
+        # qpos structure: robot (16) + belt (1) + belt_extension (1) + 10 cubes (7*10)
+        # Total non-cube joints = 18.
+        env_state = physics.data.qpos.copy()[18:18+70]
         return env_state
 
     def get_reward(self, physics):

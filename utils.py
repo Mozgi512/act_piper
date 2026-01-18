@@ -4,6 +4,41 @@ import os
 import h5py
 from torch.utils.data import TensorDataset, DataLoader
 
+import cv2
+
+def apply_rgb_mask_to_strip(image, strip_width=40):
+    """
+    Applies a color mask to the leftmost `strip_width` pixels of the image.
+    Preserves Red, Green, and Blue colors; blacks out everything else.
+    Image is expected to be (H, W, 3) numpy array (uint8).
+    """
+    if image.shape[1] < strip_width:
+        return image
+        
+    strip = image[:, :strip_width, :]
+    
+    lower_red = np.array([100, 0, 0])
+    upper_red = np.array([255, 100, 100])
+    
+    lower_green = np.array([0, 100, 0])
+    upper_green = np.array([100, 255, 100])
+    
+    # Floor blue max is ~102, so use 150 to be safe
+    lower_blue = np.array([0, 0, 150])
+    upper_blue = np.array([100, 100, 255])
+    
+    mask_r = cv2.inRange(strip, lower_red, upper_red)
+    mask_g = cv2.inRange(strip, lower_green, upper_green)
+    mask_b = cv2.inRange(strip, lower_blue, upper_blue)
+    
+    combined_mask = cv2.bitwise_or(mask_r, mask_g)
+    combined_mask = cv2.bitwise_or(combined_mask, mask_b)
+    
+    masked_strip = cv2.bitwise_and(strip, strip, mask=combined_mask)
+    
+    image[:, :strip_width, :] = masked_strip
+    return image
+
 import IPython
 e = IPython.embed
 

@@ -15,7 +15,7 @@ from einops import rearrange
 from piper_constants import DT
 from piper_constants import PUPPET_GRIPPER_JOINT_OPEN
 from utils import load_data # data functions
-from utils import sample_redbox_pose, sample_insertion_pose ,sample_greenbox_pose,sample_bluebox_pose# robot functions
+from utils import sample_redbox_pose, sample_insertion_pose ,sample_greenbox_pose,sample_bluebox_pose, apply_rgb_mask_to_strip # robot functions
 from utils import compute_dict_mean, set_seed, detach_dict # helper functions
 from policy import ACTPolicy, CNNMLPPolicy
 from visualize_episodes import save_videos
@@ -175,7 +175,20 @@ def get_image(ts, camera_names, arm):
         if arm == 'left':
             curr_image = curr_image[:, :, :w//2]  # 左半分のみ
         else:
-            curr_image = curr_image[:, :, w//2:]  # 右半分のみ
+            offset = 40
+            start = w//2 - offset
+            end = w - offset
+            curr_image = curr_image[:, :, start:end]
+            
+            # Apply RGB mask (need to convert to numpy, mask, then back or just use the numpy version before rearrange?)
+            # curr_image here is (C, H, W) numpy because of rearrange above: 'h w c -> c h w'
+            # Wait, apply_rgb_mask_to_strip expects (H, W, 3).
+            # Let's fix the logic. The helper expects HWC.
+            # Convert CHW -> HWC, Mask, -> CHW
+            curr_image = np.moveaxis(curr_image, 0, -1) # C H W -> H W C
+            curr_image = apply_rgb_mask_to_strip(curr_image, strip_width=offset)
+            curr_image = np.moveaxis(curr_image, -1, 0) # H W C -> C H W
+            
         curr_images.append(curr_image)
     curr_image = np.stack(curr_images, axis=0)
     curr_image = torch.from_numpy(curr_image / 255.0).float().cuda().unsqueeze(0)
@@ -234,6 +247,7 @@ def eval_bc(config, ckpt_name, save_episode=True):
     episode_returns = []
     highest_rewards = []
     for rollout_id in range(num_rollouts):
+        np.random.seed(rollout_id) # Force deterministic seed to match training data generation
         rollout_id += 0
         ### set task
         if 'sim_transfer_cube' in task_name:

@@ -47,16 +47,17 @@ def make_ee_sim_env(task_name):
         task = InsertionEETask(random=False)
         env = control.Environment(physics, task, time_limit=20, control_timestep=DT,
                                   n_sub_steps=None, flat_observation=False)
-    elif 'sim_moving_cube' in task_name:
-        xml_path = os.path.join(XML_DIR, f'bimanual_piper_ee_moving_cube.xml')
+    elif 'sim_moving_cube' in task_name or 'sim_independent' in task_name:
+        is_phase2 = 'phase2' in task_name
+        xml_path = os.path.join(XML_DIR, f'bimanual_piper_ee_many_cubes.xml')
         physics = mujoco.Physics.from_xml_path(xml_path)
-        task = MovingcubeEETask(random=False)
+        task = ManyCubesEETask(random=False, init_phase=2 if is_phase2 else 1)
         env = control.Environment(physics, task, time_limit=20, control_timestep=DT,
                                   n_sub_steps=None, flat_observation=False)
     elif 'sim_coop' in task_name:
-        xml_path = os.path.join(XML_DIR, f'bimanual_piper_ee_coop.xml')
+        xml_path = os.path.join(XML_DIR, f'bimanual_piper_ee_many_cubes.xml')
         physics = mujoco.Physics.from_xml_path(xml_path)
-        task = CoopEETask(random=False)
+        task = ManyCubesEETask(random=False)
         env = control.Environment(physics, task, time_limit=20, control_timestep=DT,
                                   n_sub_steps=None, flat_observation=False)
     elif 'sim_independent' in task_name:
@@ -485,10 +486,11 @@ class CoopEETask(BimanualPiperEETask):
 
 
 class ManyCubesEETask(BimanualPiperEETask):
-    def __init__(self, random=None, randomize_cube_colors=False):
+    def __init__(self, random=None, randomize_cube_colors=False, init_phase=1):
         super().__init__(random=random)
         self.max_reward = 0
         self.randomize_cube_colors = randomize_cube_colors
+        self.init_phase = init_phase
 
     def before_step(self, action, physics):
         action_left = action[:8]
@@ -518,12 +520,25 @@ class ManyCubesEETask(BimanualPiperEETask):
         ]
         
         poses = {}
-        poses[9] = sample_bluebox_pose()
-        poses[8] = sample_greenbox_pose()
-        poses[7] = sample_redbox_pose()
+        
+        if self.init_phase == 2:
+            # Phase 2: G/B at goal, R at ORIGINAL
+            # Green (8) at goal + noise
+            noise_g = np.random.uniform(-0.02, 0.02, size=2)
+            poses[8] = np.array([0 + noise_g[0], 0.1 + noise_g[1], 0.025, 1, 0, 0, 0])
+            # Blue (9) at goal + noise
+            noise_b = np.random.uniform(-0.02, 0.02, size=2)
+            poses[9] = np.array([0.08 + noise_b[0], 0.1 + noise_b[1], 0.025, 1, 0, 0, 0])
+            
+            poses[7] = sample_redbox_pose()+np.array([0.2, 0, 0,0,0,0,0])
+            ref_x = poses[7][0]
+        else:
+            poses[9] = sample_bluebox_pose()
+            poses[8] = sample_greenbox_pose()
+            poses[7] = sample_redbox_pose()
+            ref_x = poses[7][0]
         
         queue_spacing = 0.22
-        ref_x = poses[7][0] 
         
         for i in range(10):
             if i in poses:
@@ -531,15 +546,19 @@ class ManyCubesEETask(BimanualPiperEETask):
             else:
                 # i=6 -> 1 step behind 7
                 step = 7 - i
-                cube_x = ref_x - step * queue_spacing + np.random.uniform(-0.01, 0.01)
+                orig_x = ref_x - step * queue_spacing
+                
+                cube_x = orig_x + np.random.uniform(-0.01, 0.01)
+
                 cube_y = np.random.uniform(0.30, 0.45) 
-                cube_z = 0.02 # Safe height
+                cube_z = 0.02 
                 
                 cube_quat = np.array([1, 0, 0, 0])
                 cube_pose = np.concatenate([[cube_x, cube_y, cube_z], cube_quat])
             
-            box_start_idx = physics.model.name2id(f'cube_{i}_joint', 'joint')
-            np.copyto(physics.data.qpos[box_start_idx : box_start_idx + 7], cube_pose)
+            joint_id = physics.model.name2id(f'cube_{i}_joint', 'joint')
+            qpos_adr = physics.model.jnt_qposadr[joint_id]
+            np.copyto(physics.data.qpos[qpos_adr : qpos_adr + 7], cube_pose)
 
             # Color logic
             if self.randomize_cube_colors:
@@ -558,8 +577,8 @@ class ManyCubesEETask(BimanualPiperEETask):
     @staticmethod
     def get_env_state(physics):
         # return state of 10 cubes (each 7 dims) -> 70 dims
-        # qpos structure: robot (16) + belt (1) + 10 cubes (7*10)
-        env_state = physics.data.qpos.copy()[17:17+70]
+        # qpos structure: robot (16) + belt (1) + belt_extension (1) + 10 cubes (7*10)
+        env_state = physics.data.qpos.copy()[18:18+70]
         return env_state
 
     def get_reward(self, physics):

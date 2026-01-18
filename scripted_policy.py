@@ -113,19 +113,26 @@ class PickAndTransferPolicy(BasePolicy):
             {"t": 400, "xyz": meet_xyz + np.array([0.1, 0, 0]), "quat": gripper_pick_quat.elements, "gripper": 1}, # stay
         ]
 
-class PickMovingCubePolicy(BasePolicy):
+class IndependentPolicy(BasePolicy):
 
     def generate_trajectory(self, ts_first):
         init_mocap_pose_right = ts_first.observation['mocap_pose_right']
         init_mocap_pose_left = ts_first.observation['mocap_pose_left']
 
         works_info = np.array(ts_first.observation['env_state'])
-        redbox_xyz = works_info[0:3]
-        redbox_quat = works_info[3:7]
-        greenbox_xyz = works_info[7:10]
-        greenbox_quat = works_info[10:14]
-        bluebox_xyz = works_info[14:17]
-        bluebox_quat = works_info[17:21]
+        # ManyCubesTask: 10 cubes. Red=7, Green=8, Blue=9.
+        # Each cube 7 dims. 
+        # Red (7): 7*7=49 -> [49:56]
+        # Green (8): 8*7=56 -> [56:63]
+        # Blue (9): 9*7=63 -> [63:70]
+        
+        redbox_xyz = works_info[49:52]
+        redbox_quat = works_info[52:56]
+        greenbox_xyz = works_info[56:59]
+        greenbox_quat = works_info[59:63]
+        bluebox_xyz = works_info[63:66]
+        bluebox_quat = works_info[66:70]
+        
         redbox_target_xyz = redbox_xyz + np.array([BELT_MOVE_SPEED*10, 0, 0])
         greenbox_target_xyz = greenbox_xyz + np.array([BELT_MOVE_SPEED*3+0.01, 0, 0])
         bluebox_target_xyz = bluebox_xyz + np.array([BELT_MOVE_SPEED*3+0.01, 0, 0])
@@ -150,10 +157,10 @@ class PickMovingCubePolicy(BasePolicy):
             {"t": 140, "xyz": greenbox_target_xyz + np.array([0, 0, 0.01]), "quat": gripper_pick_quat_left.elements, "gripper": 1}, # go down
             {"t": 170, "xyz": greenbox_target_xyz + np.array([0, 0, 0.01]), "quat": gripper_pick_quat_left.elements, "gripper": 0}, # close gripper
             {"t": 190, "xyz": greenbox_target_xyz + np.array([0, 0, 0.05]), "quat": gripper_pick_quat_left.elements, "gripper": 0}, # go up
-            {"t": 260, "xyz": place_xyz + np.array([-0.05, 0, 0.05]), "quat": gripper_pick_quat_left.elements, "gripper": 0}, # approach place position
-            {"t": 280, "xyz": place_xyz + np.array([-0.05, 0, 0]), "quat": gripper_pick_quat_left.elements, "gripper": 0}, # move to meet position
-            {"t": 300, "xyz": place_xyz + np.array([-0.05, 0, 0]), "quat": gripper_pick_quat_left.elements, "gripper": 1}, # open gripper
-            {"t": 320, "xyz": place_xyz + np.array([-0.05, 0, 0.05]), "quat": gripper_pick_quat_left.elements, "gripper": 1}, # exit
+            {"t": 260, "xyz": place_xyz + np.array([0, 0, 0.05]), "quat": gripper_pick_quat_left.elements, "gripper": 0}, # approach place position
+            {"t": 280, "xyz": place_xyz + np.array([0, 0, 0]), "quat": gripper_pick_quat_left.elements, "gripper": 0}, # move to meet position
+            {"t": 300, "xyz": place_xyz + np.array([0, 0, 0]), "quat": gripper_pick_quat_left.elements, "gripper": 1}, # open gripper
+            {"t": 320, "xyz": place_xyz + np.array([0, 0, 0.05]), "quat": gripper_pick_quat_left.elements, "gripper": 1}, # exit
             {"t": 360, "xyz": init_mocap_pose_left[:3], "quat": init_mocap_pose_left[3:], "gripper": 1}
             #{"t": 360, "xyz": place_xyz + np.array([-0.05, 0, 0.05]), "quat": gripper_pick_quat_left.elements, "gripper": 1}, # wait
             #{"t": 430, "xyz": redbox_target_xyz + np.array([0, 0, 0.08]), "quat": gripper_pick_quat_left.elements, "gripper": 1}, # approach the cube
@@ -170,10 +177,10 @@ class PickMovingCubePolicy(BasePolicy):
             {"t": 140, "xyz": bluebox_target_xyz + np.array([0, 0, 0.01]), "quat": gripper_pick_quat_right.elements, "gripper": 1}, # go down
             {"t": 170, "xyz": bluebox_target_xyz + np.array([0, 0, 0.01]), "quat": gripper_pick_quat_right.elements, "gripper": 0}, # close gripper
             {"t": 190, "xyz": bluebox_target_xyz + np.array([0, 0, 0.05]), "quat": gripper_pick_quat_right.elements, "gripper": 0}, # go up
-            {"t": 260, "xyz": place_xyz + np.array([0.05, 0, 0.05]), "quat": gripper_pick_quat_right.elements, "gripper": 0}, # approach meet position
-            {"t": 280, "xyz": place_xyz + np.array([0.05, 0, 0]), "quat": gripper_pick_quat_right.elements, "gripper": 0}, # move to meet position
-            {"t": 300, "xyz": place_xyz + np.array([0.05, 0, 0]), "quat": gripper_pick_quat_right.elements, "gripper": 1},  # open gripper
-            {"t": 320, "xyz": place_xyz + np.array([0.05, 0, 0.05]), "quat": gripper_pick_quat_right.elements, "gripper": 1}, # exit
+            {"t": 260, "xyz": place_xyz + np.array([0.08, 0, 0.05]), "quat": gripper_pick_quat_right.elements, "gripper": 0}, # approach meet position
+            {"t": 280, "xyz": place_xyz + np.array([0.08, 0, 0]), "quat": gripper_pick_quat_right.elements, "gripper": 0}, # move to meet position
+            {"t": 300, "xyz": place_xyz + np.array([0.08, 0, 0]), "quat": gripper_pick_quat_right.elements, "gripper": 1},  # open gripper
+            {"t": 320, "xyz": place_xyz + np.array([0.08, 0, 0.05]), "quat": gripper_pick_quat_right.elements, "gripper": 1}, # exit
             {"t": 360, "xyz": init_mocap_pose_right[:3], "quat": init_mocap_pose_right[3:], "gripper": 1}, # wait
 
 
@@ -236,6 +243,65 @@ class PickMovingCubePolicy(BasePolicy):
 
         ]
         '''
+
+class IndependentPhase2Policy(BasePolicy):
+
+    def generate_trajectory(self, ts_first):
+        init_mocap_pose_right = ts_first.observation['mocap_pose_right']
+        init_mocap_pose_left = ts_first.observation['mocap_pose_left']
+
+        works_info = np.array(ts_first.observation['env_state'])
+        # ManyCubesTask: 10 cubes. Red=7, Green=8, Blue=9.
+        redbox_xyz = works_info[49:52]
+        redbox_quat = works_info[52:56]
+        greenbox_xyz = works_info[56:59]
+        bluebox_xyz = works_info[63:66]
+        
+        # Red target: Moving at belt speed.
+        # Starting from ORIGINAL position (approx -0.4).
+        # To reach pickup zone (-0.1), needs ~0.3m -> 10s -> 500 steps?
+        # Using the logic from IndependentPolicy (commented): BELT_MOVE_SPEED*10
+        redbox_target_xyz = redbox_xyz + np.array([BELT_MOVE_SPEED*3+0.01, 0, 0])
+
+        gripper_pick_quat_right = Quaternion(init_mocap_pose_right[3:])
+        gripper_pick_quat_right = gripper_pick_quat_right * Quaternion(axis=[0.0, 1.0, 0.0], degrees=-30)
+
+        gripper_pick_quat_left = Quaternion(init_mocap_pose_left[3:])
+        gripper_pick_quat_left = gripper_pick_quat_left * Quaternion(axis=[0.0, 1.0, 0.0], degrees=30)
+        
+        place_xyz = np.array([0, 0.1, 0.025])
+        
+        self.left_trajectory = [
+            {"t": 0, "xyz": init_mocap_pose_left[:3], "quat": init_mocap_pose_left[3:], "gripper": 1}, # initial pos
+            {"t": 90, "xyz": redbox_target_xyz + np.array([0, 0, 0.08]), "quat": gripper_pick_quat_left.elements, "gripper": 1}, # approach cubic
+            {"t": 140, "xyz": redbox_target_xyz + np.array([0, 0, 0.01]), "quat": gripper_pick_quat_left.elements, "gripper": 1}, # go down
+            {"t": 170, "xyz": redbox_target_xyz + np.array([0, 0, 0.01]), "quat": gripper_pick_quat_left.elements, "gripper": 0}, # close gripper
+            {"t": 190, "xyz": redbox_target_xyz + np.array([0, 0, 0.05]), "quat": gripper_pick_quat_left.elements, "gripper": 0}, # go up
+            {"t": 260, "xyz": place_xyz + np.array([-0.08, 0, 0.05]), "quat": gripper_pick_quat_left.elements, "gripper": 0}, 
+            {"t": 280, "xyz": place_xyz + np.array([-0.08, 0, 0]), "quat": gripper_pick_quat_left.elements, "gripper": 0}, 
+            {"t": 300, "xyz": place_xyz + np.array([-0.08, 0, 0]), "quat": gripper_pick_quat_left.elements, "gripper": 1}, 
+            {"t": 320, "xyz": place_xyz + np.array([-0.08, 0, 0.05]), "quat": gripper_pick_quat_left.elements, "gripper": 1}, # exit
+            {"t": 360, "xyz": init_mocap_pose_left[:3], "quat": init_mocap_pose_left[3:], "gripper": 1},
+
+
+        ]
+        
+        self.right_trajectory = [
+            {"t": 0, "xyz": init_mocap_pose_right[:3], "quat": init_mocap_pose_right[3:], "gripper": 1}, 
+            # Pick Green at [-0.05]
+            {"t": 60, "xyz": greenbox_xyz + np.array([0, 0, 0.08]), "quat": gripper_pick_quat_right.elements, "gripper": 1}, 
+            {"t": 110, "xyz": greenbox_xyz + np.array([0, 0, 0.00]), "quat": gripper_pick_quat_right.elements, "gripper": 1}, 
+            {"t": 140, "xyz": greenbox_xyz + np.array([0, 0, 0.00]), "quat": gripper_pick_quat_right.elements, "gripper": 0}, 
+            {"t": 160, "xyz": greenbox_xyz + np.array([0, 0, 0.08]), "quat": gripper_pick_quat_right.elements, "gripper": 0}, 
+            
+            # Place on Blue at [+0.05] + height (0.045)
+            {"t": 200, "xyz": bluebox_xyz + np.array([0, 0, 0.08]), "quat": gripper_pick_quat_right.elements, "gripper": 0},
+            {"t": 220, "xyz": bluebox_xyz + np.array([0, 0, 0.045]), "quat": gripper_pick_quat_right.elements, "gripper": 0}, 
+            {"t": 240, "xyz": bluebox_xyz + np.array([0, 0, 0.045]), "quat": gripper_pick_quat_right.elements, "gripper": 1}, 
+            {"t": 260, "xyz": bluebox_xyz + np.array([0, 0, 0.10]), "quat": gripper_pick_quat_right.elements, "gripper": 1}, 
+            {"t": 300, "xyz": init_mocap_pose_right[:3], "quat": init_mocap_pose_right[3:], "gripper": 1}, 
+            {"t": 360, "xyz": init_mocap_pose_right[:3], "quat": init_mocap_pose_right[3:], "gripper": 1}, 
+        ]
 
 class CoopPolicy(BasePolicy):
 
@@ -370,6 +436,8 @@ def test_policy(task_name):
         env = make_ee_sim_env('sim_insertion')
     elif 'sim_moving_cube' in task_name:
         env = make_ee_sim_env('sim_moving_cube')
+    elif 'sim_independent_phase2' in task_name:
+        env = make_ee_sim_env(task_name)
     elif 'sim_coop' in task_name:
         env = make_ee_sim_env('sim_coop')
     else:
@@ -389,8 +457,10 @@ def test_policy(task_name):
             policy = PickAndTransferPolicy(inject_noise)
         elif 'sim_insertion' in task_name:
             policy = InsertionPolicy(inject_noise)
-        elif 'sim_moving_cube' in task_name:
-            policy = PickMovingCubePolicy(inject_noise)
+        elif 'sim_independent_phase2' in task_name:
+            policy = IndependentPhase2Policy(inject_noise)
+        elif 'sim_moving_cube' in task_name or 'sim_independent' in task_name:
+            policy = IndependentPolicy(inject_noise)
         elif 'sim_coop' in task_name:
             policy = CoopPolicy(inject_noise)
         else:
@@ -437,5 +507,6 @@ def test_policy(task_name):
 
 
 if __name__ == '__main__':
-    test_task_name = 'sim_coop_scripted'
+    test_policy('sim_independent_phase2_scripted')
+    test_task_name = 'sim_coop_scripted' # Kept for the second call, as per instruction's literal output
     test_policy(test_task_name)

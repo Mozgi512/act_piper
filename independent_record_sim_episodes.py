@@ -7,8 +7,9 @@ import h5py
 
 from piper_constants import PUPPET_GRIPPER_POSITION_NORMALIZE_FN, SIM_TASK_CONFIGS,BELT_MOVE_SPEED
 from piper_ee_sim_env import make_ee_sim_env
-from piper_sim_env import make_sim_env, REDBOX_POSE, GREENBOX_POSE, BLUEBOX_POSE
-from scripted_policy import PickAndTransferPolicy, InsertionPolicy,PickMovingCubePolicy,CoopPolicy
+from piper_sim_env import make_sim_env, REDBOX_POSE, GREENBOX_POSE, BLUEBOX_POSE, MANYCUBES_POSES
+from scripted_policy import PickAndTransferPolicy, InsertionPolicy,IndependentPolicy,CoopPolicy, IndependentPhase2Policy
+from utils import apply_rgb_mask_to_strip
 
 import IPython
 e = IPython.embed
@@ -48,21 +49,22 @@ def main(args):
 
     episode_len = SIM_TASK_CONFIGS[task_name]['episode_len']
     camera_names = SIM_TASK_CONFIGS[task_name]['camera_names']
-    if task_name == 'sim_transfer_cube_scripted':
+    if 'sim_transfer_cube' in task_name:
         policy_cls = PickAndTransferPolicy
-    elif task_name == 'sim_insertion_scripted':
+    elif 'sim_insertion' in task_name:
         policy_cls = InsertionPolicy
-    elif task_name == 'sim_moving_cube_scripted':
-        policy_cls = PickMovingCubePolicy
-    elif task_name == 'sim_coop_scripted':
+    elif 'sim_independent_phase2' in task_name:
+        policy_cls = IndependentPhase2Policy
+    elif 'sim_moving_cube' in task_name or 'sim_independent' in task_name:
+        policy_cls = IndependentPolicy
+    elif 'sim_coop' in task_name:
         policy_cls = CoopPolicy
-    elif task_name == 'sim_independent_scripted':
-        policy_cls = PickMovingCubePolicy
     else:
         raise NotImplementedError
 
     success = []
     for episode_idx in range(num_episodes):
+        np.random.seed(episode_idx) # Force deterministic seed
         print(f'{episode_idx=}')
         print('Rollout out EE space scripted policy')
         # setup the environment
@@ -104,12 +106,12 @@ def main(args):
                 left_ctrl = PUPPET_GRIPPER_POSITION_NORMALIZE_FN(ctrl[0])
                 joint[6] = left_ctrl
             elif arm == 'right':
-                right_ctrl = PUPPET_GRIPPER_POSITION_NORMALIZE_FN(ctrl[0])
+                right_ctrl = PUPPET_GRIPPER_POSITION_NORMALIZE_FN(ctrl[1])
                 joint[13] = right_ctrl
             elif arm == 'both':
                 left_ctrl = PUPPET_GRIPPER_POSITION_NORMALIZE_FN(ctrl[0])
                 joint[6] = left_ctrl
-                right_ctrl = PUPPET_GRIPPER_POSITION_NORMALIZE_FN(ctrl[0])
+                right_ctrl = PUPPET_GRIPPER_POSITION_NORMALIZE_FN(ctrl[1])
                 joint[13] = right_ctrl
 
         subtask_info = episode[0].observation['env_state'].copy() # box pose at step 0
@@ -128,9 +130,17 @@ def main(args):
         # setup the environment
         print('Replaying joint commands')
         env = make_sim_env(task_name)
-        REDBOX_POSE[0] = subtask_info[0:7].copy()      # red box
-        GREENBOX_POSE[0] = subtask_info[7:14].copy()   # green box
-        BLUEBOX_POSE[0] = subtask_info[14:21].copy()   # blue box
+        if 'sim_many_cubes' in task_name or 'sim_independent_phase2' in task_name:
+             # subtask_info contains 70 dims (10 cubes * 7)
+             poses_dict = {}
+             for i in range(10):
+                 poses_dict[i] = subtask_info[i*7 : (i+1)*7].copy()
+             MANYCUBES_POSES[0] = poses_dict
+        elif 'sim_transfer_cube' in task_name or 'sim_moving_cube' in task_name or 'sim_coop' in task_name or 'sim_independent' in task_name:
+             REDBOX_POSE[0] = subtask_info[0:7].copy()      # red box
+             GREENBOX_POSE[0] = subtask_info[7:14].copy()   # green box
+             BLUEBOX_POSE[0] = subtask_info[14:21].copy()   # blue box
+             
         ts = env.reset()
 
         all_actions = [] # actionを記録するための空リスト
@@ -229,8 +239,17 @@ def main(args):
                 data_dict['/observations/qvel'].append(ts.observation['qvel'][7:14])
                 data_dict['/action'].append(action[7:14])
                 for cam_name in camera_names:
-                    # 右半分のみをトリミング (幅640の右半分320ピクセル)
-                    img_right_half = ts.observation['images'][cam_name][:, 320:, :]
+                    # 右半分をトリミング (少し左にずらす: 40px)
+                    # 元: 320: -> 新: 280:600
+                    offset = 40
+                    start = 320 - offset
+                    end = 640 - offset
+                    img_right_half = ts.observation['images'][cam_name][:, start:end, :]
+                    
+                    # Apply RGB mask to the leftmost 40px (which corresponds to the overlap area)
+                    if offset > 0:
+                        img_right_half = apply_rgb_mask_to_strip(img_right_half, strip_width=offset)
+                        
                     data_dict[f'/observations/images/{cam_name}'].append(img_right_half)
             elif arm == 'both':
                 # Left
@@ -247,7 +266,15 @@ def main(args):
                     img_left_half = ts.observation['images'][cam_name][:, :320, :]
                     data_dict_left[f'/observations/images/{cam_name}'].append(img_left_half)
                     # Right Image
-                    img_right_half = ts.observation['images'][cam_name][:, 320:, :]
+                    offset = 40
+                    start = 320 - offset
+                    end = 640 - offset
+                    img_right_half = ts.observation['images'][cam_name][:, start:end, :]
+                    
+                    # Apply RGB mask
+                    if offset > 0:
+                        img_right_half = apply_rgb_mask_to_strip(img_right_half, strip_width=offset)
+
                     data_dict_right[f'/observations/images/{cam_name}'].append(img_right_half)
 
         # HDF5 Saving
