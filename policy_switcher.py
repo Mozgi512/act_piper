@@ -167,6 +167,9 @@ def main(args):
             REDBOX_POSE[0] = sample_redbox_pose()
             GREENBOX_POSE[0] = sample_greenbox_pose()
             BLUEBOX_POSE[0] = sample_bluebox_pose()
+        elif 'sim_many_cubes' in task_name:
+            # ManyCubesTask randomizes internally, so we don't need to set global poses here.
+            pass
         return env.reset()
 
     ts = reset_with_new_pose()

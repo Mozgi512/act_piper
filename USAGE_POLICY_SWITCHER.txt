@@ -13,7 +13,7 @@ python3 independent_record_sim_episodes.py \
     --num_episodes 50 \
     --arm right
 ```
-同時に生成する場合は
+同時に生成する
 ```bash
 python3 independent_record_sim_episodes.py \
     --task_name sim_independent_scripted \
@@ -61,7 +61,7 @@ python3 independent_imitate_episodes.py \
 
 ```bash
 python policy_switcher.py \
-    --task_name sim_coop_scripted \
+    --task_name sim_many_cubes \
     --ckpt_dual piper_scripted_ckpt/cooperation \
     --ckpt_left piper_scripted_ckpt/independent_left \
     --ckpt_right piper_scripted_ckpt/independent_right \

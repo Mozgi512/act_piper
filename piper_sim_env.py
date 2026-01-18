@@ -12,6 +12,7 @@ from piper_constants import PUPPET_GRIPPER_POSITION_UNNORMALIZE_FN
 from piper_constants import MASTER_GRIPPER_POSITION_NORMALIZE_FN
 from piper_constants import PUPPET_GRIPPER_POSITION_NORMALIZE_FN
 from piper_constants import PUPPET_GRIPPER_VELOCITY_NORMALIZE_FN
+from utils import sample_cube_pose, sample_redbox_pose, sample_greenbox_pose, sample_bluebox_pose
 
 import IPython
 e = IPython.embed
@@ -67,6 +68,12 @@ def make_sim_env(task_name):
         xml_path = os.path.join(XML_DIR, f'bimanual_piper_coop.xml')
         physics = mujoco.Physics.from_xml_path(xml_path)
         task = MovingCubeTask(random=False)
+        env = control.Environment(physics, task, time_limit=20, control_timestep=DT,
+                                  n_sub_steps=None, flat_observation=False)
+    elif 'sim_many_cubes' in task_name:
+        xml_path = os.path.join(XML_DIR, f'bimanual_piper_many_cubes.xml')
+        physics = mujoco.Physics.from_xml_path(xml_path)
+        task = ManyCubesTask(random=False)
         env = control.Environment(physics, task, time_limit=20, control_timestep=DT,
                                   n_sub_steps=None, flat_observation=False)
     else:
@@ -402,6 +409,108 @@ class CoopTask(BimanualPiperTask):
         return reward
 
 
+class ManyCubesTask(BimanualPiperTask):
+    def __init__(self, random=None, randomize_cube_colors=False):
+        super().__init__(random=random)
+        self.max_reward = 0
+        self.belt_speed = BELT_MOVE_SPEED
+        self.randomize_cube_colors = randomize_cube_colors
+
+    def initialize_episode(self, physics):
+        """Sets the state of the environment at the start of each episode."""
+        with physics.reset_context():
+            physics.named.data.qpos[0:16] = START_ARM_POSE
+            
+            ctrl_with_belt = np.concatenate([[self.belt_speed], START_ARM_POSE])
+            np.copyto(physics.data.ctrl, ctrl_with_belt)
+            
+            # Start position and spacing for queue
+            start_x = 0.2
+            spacing = -0.15 
+            
+            # Colors: R, G, B
+            colors = [
+                np.array([1, 0, 0, 1]), # R
+                np.array([0, 1, 0, 1]), # G
+                np.array([0, 0, 1, 1])  # B
+            ]
+            
+            # Request: B, G, R from right. 
+            # Rightmost is max index (i=9) in our loop.
+            # i=9 -> Blue (Coop Range)
+            # i=8 -> Green (Coop Range)
+            # i=7 -> Red (Coop Range)
+            # i=6..0 -> Queue behind Red
+            
+            poses = {}
+            # Sample first 3
+            poses[9] = sample_bluebox_pose()
+            poses[8] = sample_greenbox_pose()
+            poses[7] = sample_redbox_pose()
+            
+            # Queue spacing (approx distance between centers of R-G-B ranges is ~0.22)
+            queue_spacing = 0.22
+            ref_x = poses[7][0] # Red X
+            
+            for i in range(10):
+                if i in poses:
+                    cube_pose = poses[i]
+                else:
+                    # i=6 -> 1 step behind 7
+                    step = 7 - i
+                    cube_x = ref_x - step * queue_spacing + np.random.uniform(-0.01, 0.01)
+                    cube_y = np.random.uniform(0.30, 0.45) # Match general Y range
+                    cube_z = 0.05 # poses[7][2] is usually 0.01? sample_redbox_pose returns z~0.01, but here we used 0.05 before.
+                    # sample_redbox_pose returns [x,y,z, qw,qx,qy,qz]. z is usually sampled ~0.01 (on table).
+                    # But we are dropping them? Or placing on belt?
+                    # Previous code used z=0.05. 
+                    # sample_redbox_pose returns z=0.01.
+                    # Let's trust sample_redbox_pose for z (0.01) but maybe belt is higher?
+                    # Belt z is -0.02 (body pos) + geom size (0.02) = top surface 0.0?
+                    # The cubes used to be at 0.05.
+                    # Let's keep Z consistent with sampled or previous?
+                    # sample_redbox_pose returns z=0.01. 
+                    # Let's just use what sample_... returns for 7,8,9.
+                    # For queue, use 0.01 to match.
+                    
+                    cube_quat = np.array([1, 0, 0, 0])
+                    # Note: poses[7] has 7 dims (pos+quat).
+                    cube_pose = np.concatenate([[cube_x, cube_y, 0.02], cube_quat]) # 0.02 safe?
+
+                start_idx = physics.model.name2id(f'cube_{i}_joint', 'joint')
+                qpos_adr = physics.model.jnt_qposadr[start_idx]
+                np.copyto(physics.data.qpos[qpos_adr : qpos_adr + 7], cube_pose)
+                
+                # Color logic
+                if self.randomize_cube_colors:
+                    color = colors[np.random.randint(0, 3)]
+                else:
+                    color_idx = (i + 2) % 3
+                    color = colors[color_idx]
+
+                geom_id = physics.model.name2id(f'cube_{i}', 'geom')
+                physics.model.geom_rgba[geom_id] = color
+
+            for i in range(physics.model.nu):
+                actuator_name = physics.model.actuator(i).name
+                control_value = physics.data.ctrl[i]
+                # print(f"ctrl[{i}] -> Actuator '{actuator_name}': {control_value:.4f}")
+                
+        super().initialize_episode(physics)
+
+    @staticmethod
+    def get_env_state(physics):
+        # return state of 10 cubes (each 7 dims) -> 70 dims
+        # qpos structure: robot (16) + belt (1) + 10 cubes (7*10)
+        # Note: BimanualPiperTask.get_qpos uses physics.data.qpos.copy() which includes everything.
+        # But here we want just the env state (cubes).
+        # In MovingCubeTask it was [17:17+21].
+        # Here it is [17:17+70].
+        env_state = physics.data.qpos.copy()[17:17+70]
+        return env_state
+
+    def get_reward(self, physics):
+        return 0
 
 
 def get_action(master_bot_left, master_bot_right):
@@ -448,7 +557,7 @@ def test_sim_teleop():
         plt.pause(0.02)
 
 if __name__ == '__main__':
-    from utils import sample_redbox_pose, sample_greenbox_pose, sample_bluebox_pose
+    from utils import sample_redbox_pose, sample_greenbox_pose, sample_bluebox_pose, sample_cube_pose
     
     REDBOX_POSE[0] = sample_redbox_pose()
     GREENBOX_POSE[0] = sample_greenbox_pose()

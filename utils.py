@@ -210,3 +210,12 @@ def detach_dict(d):
 def set_seed(seed):
     torch.manual_seed(seed)
     np.random.seed(seed)
+
+def sample_cube_pose(x_range, y_range):
+    z_range = [0.01, 0.01]
+
+    ranges = np.vstack([x_range, y_range, z_range])
+    cube_position = np.random.uniform(ranges[:, 0], ranges[:, 1])
+
+    cube_quat = np.array([1, 0, 0, 0])
+    return np.concatenate([cube_position, cube_quat])

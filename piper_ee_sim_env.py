@@ -8,7 +8,7 @@ from piper_constants import PUPPET_GRIPPER_POSITION_UNNORMALIZE_FN
 from piper_constants import PUPPET_GRIPPER_POSITION_NORMALIZE_FN
 from piper_constants import PUPPET_GRIPPER_VELOCITY_NORMALIZE_FN
 
-from utils import sample_redbox_pose, sample_insertion_pose,sample_bluebox_pose,sample_greenbox_pose
+from utils import sample_redbox_pose, sample_insertion_pose,sample_bluebox_pose,sample_greenbox_pose,sample_cube_pose
 from dm_control import mujoco
 from dm_control.rl import control
 from dm_control.suite import base
@@ -65,6 +65,12 @@ def make_ee_sim_env(task_name):
         task = MovingcubeEETask(random=False)
         env = control.Environment(physics, task, time_limit=20, control_timestep=DT,
                                   n_sub_steps=None, flat_observation=False)
+    elif 'sim_many_cubes' in task_name:
+        xml_path = os.path.join(XML_DIR, f'bimanual_piper_ee_many_cubes.xml')
+        physics = mujoco.Physics.from_xml_path(xml_path)
+        task = ManyCubesEETask(random=False)
+        env = control.Environment(physics, task, time_limit=20, control_timestep=DT,
+                                  n_sub_steps=None, flat_observation=False)
     else:
         raise NotImplementedError
     return env
@@ -100,10 +106,10 @@ class BimanualPiperEETask(base.Task):
         # (2) get env._physics.named.data.xpos['vx300s_left/gripper_link']
         #     get env._physics.named.data.xquat['vx300s_left/gripper_link']
         #     repeat the same for right side
-        np.copyto(physics.data.mocap_pos[0], [-0.3, 0.25, 0.3])
+        np.copyto(physics.data.mocap_pos[0], [-0.1, 0.1, 0.2])
         np.copyto(physics.data.mocap_quat[0], [1, 0, 0, 0])
         # right
-        np.copyto(physics.data.mocap_pos[1], np.array([0.3, 0.25, 0.3]))
+        np.copyto(physics.data.mocap_pos[1], np.array([0.1, 0.1, 0.2]))
         np.copyto(physics.data.mocap_quat[1],  [1, 0, 0, 0])
 
         # reset gripper control
@@ -477,4 +483,85 @@ class CoopEETask(BimanualPiperEETask):
 
         return reward
 
+
+class ManyCubesEETask(BimanualPiperEETask):
+    def __init__(self, random=None, randomize_cube_colors=False):
+        super().__init__(random=random)
+        self.max_reward = 0
+        self.randomize_cube_colors = randomize_cube_colors
+
+    def before_step(self, action, physics):
+        action_left = action[:8]
+        action_right = action[8:16]
+        # left
+        np.copyto(physics.data.mocap_pos[0], action_left[:3])
+        np.copyto(physics.data.mocap_quat[0], action_left[3:7])
+        # right
+        np.copyto(physics.data.mocap_pos[1], action_right[:3])
+        np.copyto(physics.data.mocap_quat[1], action_right[3:7])
+        # gripper
+        g_left_ctrl = PUPPET_GRIPPER_POSITION_UNNORMALIZE_FN(action_left[7])
+        g_right_ctrl = PUPPET_GRIPPER_POSITION_UNNORMALIZE_FN(action_right[7])
+        np.copyto(physics.data.ctrl[1:3], np.array([g_left_ctrl, g_right_ctrl]))
+
+    def initialize_episode(self, physics):
+        """Sets the state of the environment at the start of each episode."""
+        self.initialize_robots(physics)
+        # randomize 10 cubes position
+        # range mostly on the belt
+        
+        # Colors: R, G, B
+        colors = [
+            np.array([1, 0, 0, 1]), # R
+            np.array([0, 1, 0, 1]), # G
+            np.array([0, 0, 1, 1])  # B
+        ]
+        
+        poses = {}
+        poses[9] = sample_bluebox_pose()
+        poses[8] = sample_greenbox_pose()
+        poses[7] = sample_redbox_pose()
+        
+        queue_spacing = 0.22
+        ref_x = poses[7][0] 
+        
+        for i in range(10):
+            if i in poses:
+                cube_pose = poses[i]
+            else:
+                # i=6 -> 1 step behind 7
+                step = 7 - i
+                cube_x = ref_x - step * queue_spacing + np.random.uniform(-0.01, 0.01)
+                cube_y = np.random.uniform(0.30, 0.45) 
+                cube_z = 0.02 # Safe height
+                
+                cube_quat = np.array([1, 0, 0, 0])
+                cube_pose = np.concatenate([[cube_x, cube_y, cube_z], cube_quat])
+            
+            box_start_idx = physics.model.name2id(f'cube_{i}_joint', 'joint')
+            np.copyto(physics.data.qpos[box_start_idx : box_start_idx + 7], cube_pose)
+
+            # Color logic
+            if self.randomize_cube_colors:
+                color = colors[np.random.randint(0, 3)]
+            else:
+                color_idx = (i + 2) % 3
+                color = colors[color_idx]
+
+            geom_id = physics.model.name2id(f'cube_{i}', 'geom')
+            physics.model.geom_rgba[geom_id] = color
+
+        physics.named.data.ctrl['belt_speed'] = BELT_MOVE_SPEED
+
+        super().initialize_episode(physics)
+
+    @staticmethod
+    def get_env_state(physics):
+        # return state of 10 cubes (each 7 dims) -> 70 dims
+        # qpos structure: robot (16) + belt (1) + 10 cubes (7*10)
+        env_state = physics.data.qpos.copy()[17:17+70]
+        return env_state
+
+    def get_reward(self, physics):
+        return 0
 
