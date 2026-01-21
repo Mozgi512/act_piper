@@ -60,13 +60,6 @@ def make_sim_env(task_name):
         env = control.Environment(physics, task, time_limit=20, control_timestep=DT,
                                   n_sub_steps=None, flat_observation=False)
     elif 'sim_coop' in task_name:
-        xml_path = os.path.join(XML_DIR, f'bimanual_piper_many_cubes.xml')
-        physics = mujoco.Physics.from_xml_path(xml_path)
-        task = ManyCubesTask(random=False)
-        env = control.Environment(physics, task, time_limit=20, control_timestep=DT,
-                                  n_sub_steps=None, flat_observation=False)
-        
-    elif 'sim_coop' in task_name:
         xml_path = os.path.join(XML_DIR, f'bimanual_piper_coop.xml')
         physics = mujoco.Physics.from_xml_path(xml_path)
         task = CoopTask(random=False)

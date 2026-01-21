@@ -61,21 +61,24 @@ def get_image_dual(ts, camera_names):
 def get_image_independent(ts, camera_names, arm):
     curr_images = []
     for cam_name in camera_names:
-        curr_image = rearrange(ts.observation['images'][cam_name], 'h w c -> c h w')
-        _, h, w = curr_image.shape
+        # Original: H W C
+        curr_image = ts.observation['images'][cam_name]
+        h, w, _ = curr_image.shape
+        
         if arm == 'left':
-            curr_image = curr_image[:, :, :w//2]
+            curr_image = curr_image[:, :w//2, :]
         else:
             # Shift left by 40 pixels
             offset = 40
             start = w//2 - offset
             end = w - offset
-            curr_image = curr_image[:, :, start:end]
+            curr_image = curr_image[:, start:end, :]
             
             # Apply RGB mask
-            # curr_image is (H, W, C) so we can pass directly
+            # curr_image is (H, W, C) which is what the function expects
             curr_image = apply_rgb_mask_to_strip(curr_image, strip_width=offset)
             
+        curr_image = rearrange(curr_image, 'h w c -> c h w')
         curr_images.append(curr_image)
     curr_image = np.stack(curr_images, axis=0)
     curr_image = torch.from_numpy(curr_image / 255.0).float().cuda().unsqueeze(0)

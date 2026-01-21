@@ -1,12 +1,11 @@
-
-
+[Step 171] Switched to INDEPENDENT mode
 Traceback (most recent call last):
-  File "test_phase_transition.py", line 107, in <module>
-    test_transition()
-  File "test_phase_transition.py", line 91, in test_transition
-    action = policy2(ts2)
-  File "/home/act/act_piper/scripted_policy.py", line 48, in __call__
-    self.generate_trajectory(ts)
-  File "/home/act/act_piper/scripted_policy.py", line 250, in generate_trajectory
-    init_mocap_pose_right = ts_first.observation['mocap_pose_right']
-KeyError: 'mocap_pose_right'
+  File "policy_switcher.py", line 376, in <module>
+    main(args)
+  File "policy_switcher.py", line 284, in main
+    curr_image_right = get_image_independent(ts, camera_names, 'right')
+  File "policy_switcher.py", line 77, in get_image_independent
+    curr_image = apply_rgb_mask_to_strip(curr_image, strip_width=offset)
+  File "/home/act/act_piper/utils.py", line 30, in apply_rgb_mask_to_strip
+    mask_r = cv2.inRange(strip, lower_red, upper_red)
+cv2.error: OpenCV(4.11.0) /io/opencv/modules/core/src/arithm.cpp:2051: error: (-209:Sizes of input arguments do not match) The lower boundary is neither an array of the same size and same type as src, nor a scalar in function 'inRange'
