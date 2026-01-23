@@ -167,7 +167,7 @@ def load_data(dataset_dir, num_episodes, camera_names, batch_size_train, batch_s
 
 def sample_redbox_pose():
     x_range = [-0.5, -0.3]
-    y_range = [0.30, 0.45]
+    y_range = [0.30, 0.4]
     z_range = [0.01, 0.01]
 
     ranges = np.vstack([x_range, y_range, z_range])
@@ -179,7 +179,7 @@ def sample_redbox_pose():
 
 def sample_greenbox_pose():
     x_range = [-0.25, -0.1]
-    y_range = [0.30, 0.45]
+    y_range = [0.30, 0.4]
     z_range = [0.01, 0.01]
 
     ranges = np.vstack([x_range, y_range, z_range])
@@ -190,7 +190,7 @@ def sample_greenbox_pose():
 
 def sample_bluebox_pose():
     x_range = [0.0, 0.15]
-    y_range = [0.30, 0.45]
+    y_range = [0.30, 0.4]
     z_range = [0.01, 0.01]
 
     ranges = np.vstack([x_range, y_range, z_range])

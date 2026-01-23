@@ -31,9 +31,9 @@ SIM_TASK_CONFIGS = {
     },
     'sim_independent_scripted':{
         #'dataset_dir': DATA_DIR + '/sim_moving_cube_scripted',
-        'dataset_dir': DATA_DIR + '/sim_independent',
+        'dataset_dir': DATA_DIR + '/independent_full',
         'num_episodes': 100,
-        'episode_len': 360,
+        'episode_len': 740,
         'camera_names': ['top']
     },
     'sim_independent_phase2_scripted':{

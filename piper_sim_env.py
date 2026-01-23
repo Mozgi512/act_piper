@@ -52,7 +52,7 @@ def make_sim_env(task_name):
         task = InsertionTask(random=False)
         env = control.Environment(physics, task, time_limit=20, control_timestep=DT,
                                   n_sub_steps=None, flat_observation=False)
-    elif 'sim_moving_cube' in task_name or 'sim_independent' in task_name:
+    elif 'sim_independent' in task_name:
         is_phase2 = 'phase2' in task_name
         xml_path = os.path.join(XML_DIR, f'bimanual_piper_many_cubes.xml')
         physics = mujoco.Physics.from_xml_path(xml_path)
@@ -60,15 +60,10 @@ def make_sim_env(task_name):
         env = control.Environment(physics, task, time_limit=20, control_timestep=DT,
                                   n_sub_steps=None, flat_observation=False)
     elif 'sim_coop' in task_name:
-        xml_path = os.path.join(XML_DIR, f'bimanual_piper_coop.xml')
+        is_phase2 = 'phase2' in task_name
+        xml_path = os.path.join(XML_DIR, f'bimanual_piper_many_cubes.xml')
         physics = mujoco.Physics.from_xml_path(xml_path)
-        task = CoopTask(random=False)
-        env = control.Environment(physics, task, time_limit=20, control_timestep=DT,
-                                  n_sub_steps=None, flat_observation=False)
-    elif 'sim_independent' in task_name:
-        xml_path = os.path.join(XML_DIR, f'bimanual_piper_coop.xml')
-        physics = mujoco.Physics.from_xml_path(xml_path)
-        task = MovingCubeTask(random=False)
+        task = ManyCubesTask(random=False, init_phase=2 if is_phase2 else 1)
         env = control.Environment(physics, task, time_limit=20, control_timestep=DT,
                                   n_sub_steps=None, flat_observation=False)
     elif 'sim_many_cubes' in task_name:
@@ -467,9 +462,20 @@ class ManyCubesTask(BimanualPiperTask):
                 
             else:
                 # Phase 1: Normal
-                poses[9] = sample_bluebox_pose()
-                poses[8] = sample_greenbox_pose()
-                poses[7] = sample_redbox_pose()
+                if BLUEBOX_POSE[0] is not None:
+                    poses[9] = BLUEBOX_POSE[0]
+                else:
+                    poses[9] = sample_bluebox_pose()
+
+                if GREENBOX_POSE[0] is not None:
+                    poses[8] = GREENBOX_POSE[0]
+                else:
+                    poses[8] = sample_greenbox_pose()
+
+                if REDBOX_POSE[0] is not None:
+                    poses[7] = REDBOX_POSE[0]
+                else:
+                    poses[7] = sample_redbox_pose()
                 ref_x = poses[7][0]
             
             queue_spacing = 0.22

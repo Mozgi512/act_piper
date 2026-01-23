@@ -5,14 +5,14 @@
         <!-- Invisible belt extension to the left (-1.0 -> -0.5 range approx) -->
         <!-- Invisible belt extension to the left (-1.0 -> -0.5 range approx) -->
         <body name="belt_extension" pos="-1.0 0.38 -0.02">
-             <joint name="belt_extension_joint" type="slide" axis="1 0 0" frictionloss="0.01" />
-             <geom condim="4" solimp="2 1 0.01" solref="0.01 1" friction="1 0.005 0.0001" pos="0 0 0" size="0.5 0.099 0.02" type="box" name="belt_extension_geom" rgba="0 1 0 0" />
+             <joint name="belt_extension_joint" type="slide" axis="1 0 0" frictionloss="0.0" />
+             <geom condim="4" friction="0 0 0" pos="0 0 0" size="0.5 0.099 0.02" type="box" name="belt_extension_geom" rgba="0 1 0 0" />
         </body>
 
         <body name="cube_0" pos="0 0.0 0.05">
             <joint name="cube_0_joint" type="free" frictionloss="0.01" />
             <inertial pos="0 0 0" mass="0.01" diaginertia="0.002 0.002 0.002" />
-            <geom condim="4" solimp="2 1 0.01" solref="0.01 1" friction="3 0.005 0.0001" pos="0 0 0" size="0.017 0.017 0.017" type="box" name="cube_0" rgba="1 0 0 1" />
+            <geom condim="4" solimp="2 1 0.01" solref="0.01 1" friction="3 0.005 0.0001" pos="0 0 0" size="0.02 0.02 0.02" type="box" name="cube_0" rgba="1 0 0 1" />
         </body>
         <body name="cube_1" pos="0 0.0 0.05">
             <joint name="cube_1_joint" type="free" frictionloss="0.01" />
@@ -27,7 +27,7 @@
         <body name="cube_3" pos="0 0.0 0.05">
             <joint name="cube_3_joint" type="free" frictionloss="0.01" />
             <inertial pos="0 0 0" mass="0.01" diaginertia="0.002 0.002 0.002" />
-            <geom condim="4" solimp="2 1 0.01" solref="0.01 1" friction="3 0.005 0.0001" pos="0 0 0" size="0.017 0.017 0.017" type="box" name="cube_3" rgba="1 1 0 1" />
+            <geom condim="4" solimp="2 1 0.01" solref="0.01 1" friction="3 0.005 0.0001" pos="0 0 0" size="0.02 0.02 0.02" type="box" name="cube_3" rgba="1 1 0 1" />
         </body>
         <body name="cube_4" pos="0 0.0 0.05">
             <joint name="cube_4_joint" type="free" frictionloss="0.01" />
@@ -42,7 +42,7 @@
         <body name="cube_6" pos="0 0.0 0.05">
             <joint name="cube_6_joint" type="free" frictionloss="0.01" />
             <inertial pos="0 0 0" mass="0.01" diaginertia="0.002 0.002 0.002" />
-            <geom condim="4" solimp="2 1 0.01" solref="0.01 1" friction="3 0.005 0.0001" pos="0 0 0" size="0.017 0.017 0.017" type="box" name="cube_6" rgba="0.5 0.5 0.5 1" />
+            <geom condim="4" solimp="2 1 0.01" solref="0.01 1" friction="3 0.005 0.0001" pos="0 0 0" size="0.02 0.02 0.02" type="box" name="cube_6" rgba="0.5 0.5 0.5 1" />
         </body>
         <body name="cube_7" pos="0 0.0 0.05">
             <joint name="cube_7_joint" type="free" frictionloss="0.01" />
@@ -57,7 +57,7 @@
         <body name="cube_9" pos="0 0.0 0.05">
             <joint name="cube_9_joint" type="free" frictionloss="0.01" />
             <inertial pos="0 0 0" mass="0.01" diaginertia="0.002 0.002 0.002" />
-            <geom condim="4" solimp="2 1 0.01" solref="0.01 1" friction="3 0.005 0.0001" pos="0 0 0" size="0.017 0.017 0.017" type="box" name="cube_9" rgba="0.5 0 1 1" />
+            <geom condim="4" solimp="2 1 0.01" solref="0.01 1" friction="3 0.005 0.0001" pos="0 0 0" size="0.02 0.02 0.02" type="box" name="cube_9" rgba="0.5 0 1 1" />
         </body>
     </worldbody>
  

@@ -56,9 +56,9 @@
         <geom name="piperbase2" type="mesh" mesh="piperbase2_mesh" material="Black_Anodized" contype="1" conaffinity="1" pos="0 0 0" rgba="0.5 0.5 0.5 1"/>
     </body>
     <body name="beltconveyor" pos="0 0.38 -0.02">
-            <joint name="belt_joint" type="slide" axis="1 0 0" frictionloss="0.01" />
-            <inertial pos="0 0 0" mass="0.02" diaginertia="0.002 0.002 0.002" />
-            <geom condim="4" solimp="2 1 0.01" solref="0.01 1" friction="1 0.005 0.0001" pos="0 0 0" size="0.5 0.099 0.02" type="box" name="belt_box" rgba="0 1 0 0" />
+            <joint name="belt_joint" type="slide" axis="1 0 0" frictionloss="0.0" />
+            <inertial pos="0 0 0" mass="2.0" diaginertia="0.002 0.002 0.002" />
+            <geom condim="4" friction="0 0 0" pos="0 0 0" size="0.5 0.099 0.02" type="box" name="belt_box" rgba="0 1 0 0" />
     </body>
     <body name="goal_area" pos="0 0.09 0">
             <geom condim="4" solimp="2 1 0.01" solref="0.01 1" friction="1 0.005 0.0001" pos="0 0 0" size="0.1 0.05 0.001" type="box" name="goal_plate" rgba="0.3 0.3 0.3 1" />
@@ -77,7 +77,7 @@
   </worldbody>
 
   <actuator>
-    <velocity name="belt_speed" joint="belt_joint" kv="100" />
+    <velocity name="belt_speed" joint="belt_joint" kv="2000" forcerange="-1000 1000" />
   </actuator>
 
 </mujoco>

@@ -1,23 +1,65 @@
+python3 record_sim_episodes.py --task_name sim_coop_scripted --dataset_dir piper_scripted_dataset/cooperation --num_episodes 100 --onscreen_render
+
+
+python3 independent_record_sim_episodes.py \
+    --task_name sim_coop_scripted \
+    --dataset_dir piper_scripted_dataset/mixcoop \
+    --num_episodes 100 \
+    --arm both --onscreen_render
+
+python3 independent_record_sim_episodes.py \
+    --task_name sim_independent_scripted \
+    --dataset_dir piper_scripted_dataset/independent_full \
+    --num_episodes 100 \
+    --arm both --onscreen_render
+
+
+python3 imitate_episodes.py \
+--task_name sim_coop_scripted \
+--ckpt_dir piper_scripted_ckpt \
+--policy_class ACT --kl_weight 10 --chunk_size 100 --hidden_dim 512 --batch_size 8 --dim_feedforward 3200 \
+--num_epochs 2000  --lr 1e-5 \
+--seed 0
+
+
+
+python3 visualize_episodes.py --dataset_dir piper_scripted_dataset/mixcoop --episode_idx 0
+
+
+/media/act/7e8d2b64-6008-4b58-86d7-ed522230ebae/home/act/act_store
+
+
+python3 visualize_episodes.py --dataset_dir piper_scripted_dataset/sim_coop_scripted --episode_idx 1
+
+
+python3 independent_record_sim_episodes.py --task_name sim_moving_cube_scripted --dataset_dir piper_scripted_dataset/independent_right --num_episodes 50 --arm right --onscreen_render
+
+python3 independent_visualize_episodes.py --dataset_dir piper_scripted_dataset/independent_left --episode_idx 0
+
+python3 independent_imitate_episodes.py \
+--task_name sim_moving_cube_scripted \
+--ckpt_dir piper_scripted_ckpt/independent_right \
+--policy_class ACT --kl_weight 10 --chunk_size 100 --hidden_dim 512 --batch_size 8 --dim_feedforward 3200 \
+--num_epochs 2000  --lr 1e-5 \
+--seed 0 --arm right
+
+
 **左腕のデータ生成:**
 ```bash
 python3 independent_record_sim_episodes.py \
-    --task_name sim_independent_scripted \
-    --dataset_dir <DATASET_DIR>/independent_left \
+    --task_name sim_coop_scripted \
+    --dataset_dir piper_scripted_dataset/mixcoop_left \
     --num_episodes 50
 ```
 **右腕のデータ生成:**
 ```bash
-python3 independent_record_sim_episodes.py \
-    --task_name sim_independent_scripted \
-    --dataset_dir <DATASET_DIR>/independent_right \
-    --num_episodes 50 \
-    --arm right
+
 ```
 同時に生成する
 ```bash
 python3 independent_record_sim_episodes.py \
     --task_name sim_independent_scripted \
-    --dataset_dir piper_scripted_dataset/independent \
+    --dataset_dir dataset/independent \
     --num_episodes 100 \
     --arm both \
     --onscreen_render
@@ -32,11 +74,11 @@ python3 independent_record_sim_episodes.py \
 **左腕ポリシーの学習:**
 ```bash
 python3 independent_imitate_episodes.py \
-    --task_name sim_moving_cube_scripted \
-    --ckpt_dir piper_scripted_ckpt/independent_left \
+    --task_name sim_independent_scripted \
+    --ckpt_dir ckpt/independent_left \
     --policy_class ACT \
     --kl_weight 10 --chunk_size 100 --hidden_dim 512 --batch_size 8 --dim_feedforward 3200 \
-    --num_epochs 2000  --lr 1e-5 \
+    --num_epochs 20000  --lr 1e-5 \
     --seed 0 \
     --arm left
 ```
@@ -44,8 +86,8 @@ python3 independent_imitate_episodes.py \
 **右腕ポリシーの学習:**
 ```bash
 python3 independent_imitate_episodes.py \
-    --task_name sim_moving_cube_scripted \
-    --ckpt_dir piper_scripted_ckpt/independent_right \
+    --task_name sim_independent_scripted \
+    --ckpt_dir ckpt/independent_right \
     --policy_class ACT \
     --kl_weight 10 --chunk_size 100 --hidden_dim 512 --batch_size 8 --dim_feedforward 3200 \
     --num_epochs 2000  --lr 1e-5 \

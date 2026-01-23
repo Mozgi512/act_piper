@@ -136,7 +136,11 @@ def main(args):
              for i in range(10):
                  poses_dict[i] = subtask_info[i*7 : (i+1)*7].copy()
              MANYCUBES_POSES[0] = poses_dict
-        elif 'sim_transfer_cube' in task_name or 'sim_moving_cube' in task_name or 'sim_coop' in task_name or 'sim_independent' in task_name:
+        elif ('sim_independent' in task_name and 'phase2' not in task_name) or 'sim_coop' in task_name:
+             REDBOX_POSE[0] = subtask_info[49:56].copy()      # red box (cube 7)
+             GREENBOX_POSE[0] = subtask_info[56:63].copy()   # green box (cube 8)
+             BLUEBOX_POSE[0] = subtask_info[63:70].copy()   # blue box (cube 9)
+        elif 'sim_transfer_cube' in task_name or 'sim_moving_cube' in task_name:
              REDBOX_POSE[0] = subtask_info[0:7].copy()      # red box
              GREENBOX_POSE[0] = subtask_info[7:14].copy()   # green box
              BLUEBOX_POSE[0] = subtask_info[14:21].copy()   # blue box

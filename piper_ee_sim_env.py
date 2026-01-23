@@ -47,7 +47,7 @@ def make_ee_sim_env(task_name):
         task = InsertionEETask(random=False)
         env = control.Environment(physics, task, time_limit=20, control_timestep=DT,
                                   n_sub_steps=None, flat_observation=False)
-    elif 'sim_moving_cube' in task_name or 'sim_independent' in task_name:
+    elif 'sim_independent' in task_name:
         is_phase2 = 'phase2' in task_name
         xml_path = os.path.join(XML_DIR, f'bimanual_piper_ee_many_cubes.xml')
         physics = mujoco.Physics.from_xml_path(xml_path)
@@ -58,12 +58,6 @@ def make_ee_sim_env(task_name):
         xml_path = os.path.join(XML_DIR, f'bimanual_piper_ee_many_cubes.xml')
         physics = mujoco.Physics.from_xml_path(xml_path)
         task = ManyCubesEETask(random=False)
-        env = control.Environment(physics, task, time_limit=20, control_timestep=DT,
-                                  n_sub_steps=None, flat_observation=False)
-    elif 'sim_independent' in task_name:
-        xml_path = os.path.join(XML_DIR, f'bimanual_piper_ee_coop.xml')
-        physics = mujoco.Physics.from_xml_path(xml_path)
-        task = MovingcubeEETask(random=False)
         env = control.Environment(physics, task, time_limit=20, control_timestep=DT,
                                   n_sub_steps=None, flat_observation=False)
     elif 'sim_many_cubes' in task_name:

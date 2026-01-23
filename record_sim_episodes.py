@@ -8,7 +8,7 @@ import h5py
 from piper_constants import PUPPET_GRIPPER_POSITION_NORMALIZE_FN, SIM_TASK_CONFIGS,BELT_MOVE_SPEED
 from piper_ee_sim_env import make_ee_sim_env
 from piper_sim_env import make_sim_env, REDBOX_POSE, GREENBOX_POSE, BLUEBOX_POSE
-from scripted_policy import PickAndTransferPolicy, InsertionPolicy,PickMovingCubePolicy,CoopPolicy
+from scripted_policy import PickAndTransferPolicy, InsertionPolicy,IndependentPolicy,CoopPolicy
 
 import IPython
 e = IPython.embed
@@ -42,7 +42,7 @@ def main(args):
     elif task_name == 'sim_insertion_scripted':
         policy_cls = InsertionPolicy
     elif task_name == 'sim_moving_cube_scripted':
-        policy_cls = PickMovingCubePolicy
+        policy_cls = IndependentPolicy
     elif task_name == 'sim_coop_scripted':
         policy_cls = CoopPolicy
     
@@ -111,9 +111,14 @@ def main(args):
         # setup the environment
         print('Replaying joint commands')
         env = make_sim_env(task_name)
-        REDBOX_POSE[0] = subtask_info[0:7].copy()      # red box
-        GREENBOX_POSE[0] = subtask_info[7:14].copy()   # green box
-        BLUEBOX_POSE[0] = subtask_info[14:21].copy()   # blue box
+        if 'sim_coop' in task_name:
+             REDBOX_POSE[0] = subtask_info[49:56].copy()      # red box (cube 7)
+             GREENBOX_POSE[0] = subtask_info[56:63].copy()   # green box (cube 8)
+             BLUEBOX_POSE[0] = subtask_info[63:70].copy()   # blue box (cube 9)
+        else:
+             REDBOX_POSE[0] = subtask_info[0:7].copy()      # red box
+             GREENBOX_POSE[0] = subtask_info[7:14].copy()   # green box
+             BLUEBOX_POSE[0] = subtask_info[14:21].copy()   # blue box
         ts = env.reset()
 
         all_actions = [] # actionを記録するための空リスト
