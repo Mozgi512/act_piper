@@ -349,7 +349,7 @@ class CoopPolicy(BasePolicy):
 
         gripper_pick_quat_left = Quaternion(init_mocap_pose_left[3:])
         gripper_pick_quat_left = gripper_pick_quat_left * Quaternion(axis=[0.0, 1.0, 0.0], degrees=30)
-        gripper_assemble_quat_left = gripper_pick_quat_left * Quaternion(axis=[0.0, 1.0, 0.0], degrees=90)
+        gripper_pick_higher_quat_left = gripper_pick_quat_left * Quaternion(axis=[0.0, 1.0, 0.0], degrees=30)
 
 
         assemble_xyz = np.array([0.02, 0.25, 0.1])
@@ -371,8 +371,7 @@ class CoopPolicy(BasePolicy):
             {"t": 380, "xyz": redbox_target_xyz + np.array([0, 0, 0.015]), "quat": gripper_pick_quat_left.elements, "gripper": 0}, # close gripper
             {"t": 400, "xyz": redbox_target_xyz + np.array([0, 0, 0.05]), "quat": gripper_pick_quat_left.elements, "gripper": 0}, # close gripper
 
-            {"t": 460, "xyz": place_xyz + np.array([-0.05, 0, 0.05]), "quat": gripper_pick_quat_left.elements, "gripper": 0}, # move to goal
-            {"t": 480, "xyz": place_xyz + np.array([-0.05, 0, 0]), "quat": gripper_pick_quat_left.elements, "gripper": 0}, # go down
+            {"t": 460, "xyz": place_xyz + np.array([-0.05, 0, 0.05]), "quat": gripper_pick_quat_left.elements, "gripper": 0}, # go down
             {"t": 500, "xyz": place_xyz + np.array([-0.05, 0, 0]), "quat": gripper_pick_quat_left.elements, "gripper": 1}, # place
             {"t": 520, "xyz": place_xyz + np.array([-0.05, 0, 0.1]), "quat": gripper_pick_quat_left.elements, "gripper": 1}, # stay
             {"t": 560, "xyz": init_mocap_pose_left[:3], "quat": init_mocap_pose_left[3:], "gripper": 1}, # return to start

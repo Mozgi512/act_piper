@@ -39,28 +39,132 @@ def apply_rgb_mask_to_strip(image, strip_width=40):
     image[:, :strip_width, :] = masked_strip
     return image
 
+def apply_rgb_mask_to_right_strip(image, strip_width=40):
+    """
+    Applies a color mask to the rightmost `strip_width` pixels of the image.
+    Preserves Red, Green, and Blue colors; blacks out everything else.
+    Image is expected to be (H, W, 3) numpy array (uint8).
+    """
+    if image.shape[1] < strip_width:
+        return image
+        
+    strip = image[:, -strip_width:, :]
+    
+    lower_red = np.array([100, 0, 0])
+    upper_red = np.array([255, 100, 100])
+    
+    lower_green = np.array([0, 100, 0])
+    upper_green = np.array([100, 255, 100])
+    
+    # Floor blue max is ~102, so use 150 to be safe
+    lower_blue = np.array([0, 0, 150])
+    upper_blue = np.array([100, 100, 255])
+    
+    mask_r = cv2.inRange(strip, lower_red, upper_red)
+    mask_g = cv2.inRange(strip, lower_green, upper_green)
+    mask_b = cv2.inRange(strip, lower_blue, upper_blue)
+    
+    combined_mask = cv2.bitwise_or(mask_r, mask_g)
+    combined_mask = cv2.bitwise_or(combined_mask, mask_b)
+    
+    masked_strip = cv2.bitwise_and(strip, strip, mask=combined_mask)
+    
+    image[:, -strip_width:, :] = masked_strip
+    return image
+
 import IPython
 e = IPython.embed
 
 class EpisodicDataset(torch.utils.data.Dataset):
-    def __init__(self, episode_ids, dataset_dir, camera_names, norm_stats):
+    def __init__(self, episode_ids, dataset_dir, camera_names, norm_stats, use_cache=False):
         super(EpisodicDataset).__init__()
         self.episode_ids = episode_ids
         self.dataset_dir = dataset_dir
         self.camera_names = camera_names
         self.norm_stats = norm_stats
         self.is_sim = None
+        self.use_cache = use_cache
+        self.cache = {}
+        self._files = {} # Lazy file cache
+        self.max_cached_files = 50 # Avoid hitting uimit
+        
+        if self.use_cache:
+            print(f"Pre-loading low-dim data for {len(episode_ids)} episodes into RAM...")
+            from tqdm import tqdm
+            for episode_id in tqdm(episode_ids):
+                dataset_path = os.path.join(self.dataset_dir, f'episode_{episode_id}.hdf5')
+                with h5py.File(dataset_path, 'r') as root:
+                    is_sim = root.attrs['sim']
+                    qpos = root['/observations/qpos'][()]
+                    qvel = root['/observations/qvel'][()]
+                    action = root['/action'][()]
+                    
+                self.cache[episode_id] = {
+                    'is_sim': is_sim,
+                    'qpos': qpos,
+                    'qvel': qvel,
+                    'action': action,
+                }
+            print("Cache loading complete (Images will be read from disk).")
+        
         self.__getitem__(0) # initialize self.is_sim
 
     def __len__(self):
         return len(self.episode_ids)
 
+    def _get_file_handle(self, episode_id):
+        if episode_id not in self._files:
+            # simple LRU: if too many files, close random/first
+            if len(self._files) >= self.max_cached_files:
+                closed_id = next(iter(self._files))
+                self._files[closed_id].close()
+                del self._files[closed_id]
+                
+            dataset_path = os.path.join(self.dataset_dir, f'episode_{episode_id}.hdf5')
+            self._files[episode_id] = h5py.File(dataset_path, 'r', libver='latest', swmr=True)
+            
+        return self._files[episode_id]
+
     def __getitem__(self, index):
         sample_full_episode = False # hardcode
 
         episode_id = self.episode_ids[index]
-        dataset_path = os.path.join(self.dataset_dir, f'episode_{episode_id}.hdf5')
-        with h5py.File(dataset_path, 'r') as root:
+        
+        # 1. Get Low-Dim Data
+        if self.use_cache and episode_id in self.cache:
+            # Hit RAM cache
+            data = self.cache[episode_id]
+            is_sim = data['is_sim']
+            qpos_all = data['qpos']
+            action_all = data['action']
+            
+            original_action_shape = action_all.shape
+            episode_len = original_action_shape[0]
+            if sample_full_episode:
+                start_ts = 0
+            else:
+                start_ts = np.random.choice(episode_len)
+            
+            qpos = qpos_all[start_ts]
+            
+            if is_sim:
+                action = action_all[start_ts:]
+                action_len = episode_len - start_ts
+            else:
+                action = action_all[max(0, start_ts - 1):]
+                action_len = episode_len - max(0, start_ts - 1)
+                
+            # Need file for images anyway
+            root = self._get_file_handle(episode_id)
+            image_dict = dict()
+            for cam_name in self.camera_names:
+                image_dict[cam_name] = root[f'/observations/images/{cam_name}'][start_ts]
+
+        else:
+            # No RAM cache, read everything from file
+            # Use cached file handle to avoid open() overhead
+            root = self._get_file_handle(episode_id)
+            
             is_sim = root.attrs['sim']
             original_action_shape = root['/action'].shape
             episode_len = original_action_shape[0]
@@ -68,19 +172,20 @@ class EpisodicDataset(torch.utils.data.Dataset):
                 start_ts = 0
             else:
                 start_ts = np.random.choice(episode_len)
-            # get observation at start_ts only
+            
             qpos = root['/observations/qpos'][start_ts]
             qvel = root['/observations/qvel'][start_ts]
+            
             image_dict = dict()
             for cam_name in self.camera_names:
                 image_dict[cam_name] = root[f'/observations/images/{cam_name}'][start_ts]
-            # get all actions after and including start_ts
+            
             if is_sim:
                 action = root['/action'][start_ts:]
                 action_len = episode_len - start_ts
             else:
-                action = root['/action'][max(0, start_ts - 1):] # hack, to make timesteps more aligned
-                action_len = episode_len - max(0, start_ts - 1) # hack, to make timesteps more aligned
+                action = root['/action'][max(0, start_ts - 1):]
+                action_len = episode_len - max(0, start_ts - 1)
 
         self.is_sim = is_sim
         padded_action = np.zeros(original_action_shape, dtype=np.float32)
@@ -104,7 +209,7 @@ class EpisodicDataset(torch.utils.data.Dataset):
         image_data = torch.einsum('k h w c -> k c h w', image_data)
 
         # normalize image and change dtype to float
-        image_data = image_data / 255.0
+        # image_data = image_data / 255.0
         action_data = (action_data - self.norm_stats["action_mean"]) / self.norm_stats["action_std"]
         qpos_data = (qpos_data - self.norm_stats["qpos_mean"]) / self.norm_stats["qpos_std"]
 
@@ -143,7 +248,7 @@ def get_norm_stats(dataset_dir, num_episodes):
     return stats
 
 
-def load_data(dataset_dir, num_episodes, camera_names, batch_size_train, batch_size_val):
+def load_data(dataset_dir, num_episodes, camera_names, batch_size_train, batch_size_val, num_workers=1, prefetch_factor=2, persistent_workers=False, use_cache=False):
     print(f'\nData from: {dataset_dir}\n')
     # obtain train test split
     train_ratio = 0.8
@@ -155,10 +260,16 @@ def load_data(dataset_dir, num_episodes, camera_names, batch_size_train, batch_s
     norm_stats = get_norm_stats(dataset_dir, num_episodes)
 
     # construct dataset and dataloader
-    train_dataset = EpisodicDataset(train_indices, dataset_dir, camera_names, norm_stats)
-    val_dataset = EpisodicDataset(val_indices, dataset_dir, camera_names, norm_stats)
-    train_dataloader = DataLoader(train_dataset, batch_size=batch_size_train, shuffle=True, pin_memory=True, num_workers=1, prefetch_factor=1)
-    val_dataloader = DataLoader(val_dataset, batch_size=batch_size_val, shuffle=True, pin_memory=True, num_workers=1, prefetch_factor=1)
+    train_dataset = EpisodicDataset(train_indices, dataset_dir, camera_names, norm_stats, use_cache=use_cache)
+    val_dataset = EpisodicDataset(val_indices, dataset_dir, camera_names, norm_stats, use_cache=use_cache)
+    
+    # Check if prefetch_factor is valid (requires num_workers > 0)
+    if num_workers == 0:
+        prefetch_factor = None 
+        persistent_workers = False
+
+    train_dataloader = DataLoader(train_dataset, batch_size=batch_size_train, shuffle=True, pin_memory=True, num_workers=num_workers, prefetch_factor=prefetch_factor, persistent_workers=persistent_workers)
+    val_dataloader = DataLoader(val_dataset, batch_size=batch_size_val, shuffle=True, pin_memory=True, num_workers=num_workers, prefetch_factor=prefetch_factor, persistent_workers=persistent_workers)
 
     return train_dataloader, val_dataloader, norm_stats, train_dataset.is_sim
 
@@ -239,7 +350,7 @@ def compute_dict_mean(epoch_dicts):
 def detach_dict(d):
     new_d = dict()
     for k, v in d.items():
-        new_d[k] = v.detach()
+        new_d[k] = v.detach().cpu()
     return new_d
 
 def set_seed(seed):

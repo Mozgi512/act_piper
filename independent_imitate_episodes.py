@@ -131,7 +131,7 @@ def main(args):
         print()
         exit()
 
-    train_dataloader, val_dataloader, stats, _ = load_data(dataset_dir, num_episodes, camera_names, batch_size_train, batch_size_val)
+    train_dataloader, val_dataloader, stats, _ = load_data(dataset_dir, num_episodes, camera_names, batch_size_train, batch_size_val, args['num_workers'], args['prefetch_factor'], args['persistent_workers'], args['use_cache'])
 
     # save dataset stats
     if not os.path.isdir(ckpt_dir):
@@ -390,9 +390,17 @@ def eval_bc(config, ckpt_name, save_episode=True):
     return success_rate, avg_return
 
 
-def forward_pass(data, policy, arm, device='cuda'):  
+def forward_pass(data, policy, arm, device='cuda', target_size=None):  
     image_data, qpos_data, action_data, is_pad = data
     image_data, qpos_data, action_data, is_pad = image_data.to(device), qpos_data.to(device), action_data.to(device), is_pad.to(device)
+    image_data = image_data.float() / 255.0
+
+    if target_size is not None:
+        # Resize images: [batch*cam, c, h, w] -> resize
+        b, n_cam, c, h, w = image_data.shape
+        image_data = image_data.view(b * n_cam, c, h, w)
+        image_data = F.interpolate(image_data, size=target_size, mode='bilinear', align_corners=False)
+        image_data = image_data.view(b, n_cam, c, target_size[0], target_size[1])
     
     # データが14次元（両腕）の場合、指定されたアーム分だけ抽出
     if qpos_data.shape[1] == 14:
@@ -420,7 +428,16 @@ def train_bc(train_dataloader, val_dataloader, config):
 
     policy = make_policy(policy_class, policy_config)
     policy.to(device)
+    if config.get('use_cuda_graph', False):
+        print("Compiling model with torch.compile (mode='reduce-overhead')...")
+        policy = torch.compile(policy, mode="reduce-overhead")
+
     optimizer = make_optimizer(policy_class, policy)
+    scaler = torch.cuda.amp.GradScaler() # AMP scalar
+
+    target_size = None
+    if config.get('image_width') is not None and config.get('image_height') is not None:
+        target_size = (config['image_height'], config['image_width'])
 
     train_history = []
     validation_history = []
@@ -429,34 +446,38 @@ def train_bc(train_dataloader, val_dataloader, config):
     for epoch in tqdm(range(num_epochs)):
         print(f'\nEpoch {epoch}')
         # validation
-        with torch.inference_mode():
-            policy.eval()
-            epoch_dicts = []
-            for batch_idx, data in enumerate(val_dataloader):
-                forward_dict = forward_pass(data, policy, arm, device=device)
-                epoch_dicts.append(forward_dict)
-            epoch_summary = compute_dict_mean(epoch_dicts)
-            validation_history.append(epoch_summary)
+        if epoch % config.get('validation_interval', 100) == 0:
+            with torch.inference_mode():
+                policy.eval()
+                epoch_dicts = []
+                for batch_idx, data in enumerate(val_dataloader):
+                    forward_dict = forward_pass(data, policy, arm, device=device, target_size=target_size)
+                    epoch_dicts.append(forward_dict)
+                epoch_summary = compute_dict_mean(epoch_dicts)
+                validation_history.append(epoch_summary)
 
-            epoch_val_loss = epoch_summary['loss']
-            if epoch_val_loss < min_val_loss:
-                min_val_loss = epoch_val_loss
-                best_ckpt_info = (epoch, min_val_loss, deepcopy(policy.state_dict()))
-        print(f'Val loss:   {epoch_val_loss:.5f}')
-        summary_string = ''
-        for k, v in epoch_summary.items():
-            summary_string += f'{k}: {v.item():.3f} '
-        print(summary_string)
+                epoch_val_loss = epoch_summary['loss']
+                if epoch_val_loss < min_val_loss:
+                    min_val_loss = epoch_val_loss
+                    best_ckpt_info = (epoch, min_val_loss, deepcopy(policy.state_dict()))
+            print(f'Val loss:   {epoch_val_loss:.5f}')
+            summary_string = ''
+            for k, v in epoch_summary.items():
+                summary_string += f'{k}: {v.item():.3f} '
+            print(summary_string)
 
         # training
         policy.train()
         optimizer.zero_grad()
+
         for batch_idx, data in enumerate(train_dataloader):
-            forward_dict = forward_pass(data, policy, arm, device=device)
+            with torch.cuda.amp.autocast(): # AMP context
+                forward_dict = forward_pass(data, policy, arm, device=device, target_size=target_size)
             # backward
             loss = forward_dict['loss']
-            loss.backward()
-            optimizer.step()
+            scaler.scale(loss).backward()
+            scaler.step(optimizer)
+            scaler.update()
             optimizer.zero_grad()
             train_history.append(detach_dict(forward_dict))
         epoch_summary = compute_dict_mean(train_history[(batch_idx+1)*epoch:(batch_idx+1)*(epoch+1)])
@@ -516,6 +537,15 @@ if __name__ == '__main__':
     parser.add_argument('--num_epochs', action='store', type=int, help='num_epochs', required=True)
     parser.add_argument('--lr', action='store', type=float, help='lr', required=True)
     parser.add_argument('--arm', action='store', type=str, help='arm', default='left', choices=['left', 'right'])
+
+    parser.add_argument('--num_workers', action='store', type=int, help='num_workers', required=False, default=1)
+    parser.add_argument('--prefetch_factor', action='store', type=int, help='prefetch_factor', required=False, default=2)
+    parser.add_argument('--persistent_workers', action='store_true', help='persistent_workers', required=False)
+    parser.add_argument('--use_cache', action='store_true', help='cache dataset in memory', required=False)
+    parser.add_argument('--use_cuda_graph', action='store_true', help='use torch.compile with reduce-overhead', required=False)
+    parser.add_argument('--validation_interval', action='store', type=int, help='validation interval', required=False, default=100)
+    parser.add_argument('--image_width', action='store', type=int, help='image width', required=False)
+    parser.add_argument('--image_height', action='store', type=int, help='image height', required=False)
 
     # for ACT
     parser.add_argument('--kl_weight', action='store', type=int, help='KL Weight', required=False)

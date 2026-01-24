@@ -1,5 +1,7 @@
 python3 record_sim_episodes.py --task_name sim_coop_scripted --dataset_dir piper_scripted_dataset/cooperation --num_episodes 100 --onscreen_render
 
+python3 visualize_episodes.py --dataset_dir piper_scripted_dataset/cooperation --episode_idx 0
+
 
 python3 independent_record_sim_episodes.py \
     --task_name sim_coop_scripted \
@@ -16,9 +18,9 @@ python3 independent_record_sim_episodes.py \
 
 python3 imitate_episodes.py \
 --task_name sim_coop_scripted \
---ckpt_dir piper_scripted_ckpt \
---policy_class ACT --kl_weight 10 --chunk_size 100 --hidden_dim 512 --batch_size 8 --dim_feedforward 3200 \
---num_epochs 2000  --lr 1e-5 \
+--ckpt_dir piper_scripted_ckpt/cooperation \
+--policy_class ACT --kl_weight 10 --chunk_size 100 --hidden_dim 512 --batch_size 32 --dim_feedforward 3200 \
+--num_epochs 20000  --lr 1e-5 \
 --seed 0
 
 
@@ -104,9 +106,9 @@ python3 independent_imitate_episodes.py \
 ```bash
 python policy_switcher.py \
     --task_name sim_many_cubes \
-    --ckpt_dual piper_scripted_ckpt/cooperation \
-    --ckpt_left piper_scripted_ckpt/independent_left \
-    --ckpt_right piper_scripted_ckpt/independent_right \
+    --ckpt_dual ckpt/cooperation \
+    --ckpt_left ckpt/independent_left \
+    --ckpt_right ckpt/independent_right \
     --policy_class ACT \
     --kl_weight 10 --chunk_size 100 --hidden_dim 512 --dim_feedforward 3200
 ```

@@ -375,6 +375,7 @@ class CoopTask(BimanualPiperTask):
         env_state = physics.data.qpos.copy()[17:17+21]
         return env_state
 
+
     def get_reward(self, physics):
         # return whether left gripper is holding the box
         all_contact_pairs = []
@@ -386,12 +387,13 @@ class CoopTask(BimanualPiperTask):
             contact_pair = (name_geom_1, name_geom_2)
             all_contact_pairs.append(contact_pair)
 
-        touch_right_gripper = ("r_gripper_finger","blue_box") in all_contact_pairs
-        touch_left_gripper = ("l_gripper_finger","green_box") in all_contact_pairs
-        assembled = ("green_box", "blue_box") in all_contact_pairs
-        touch_goal_area = ("goal_plate", "blue_box") in all_contact_pairs
-        touch_table = ("cushion1", "red_box") in all_contact_pairs or ("cushion1", "green_box") in all_contact_pairs or ("cushion1", "blue_box") in all_contact_pairs
-
+        touch_right_gripper = ("r_gripper_finger","cube_9") in all_contact_pairs
+        touch_left_gripper = ("l_gripper_finger","cube_8") in all_contact_pairs
+        assembled = ("cube_8", "cube_9") in all_contact_pairs
+        touch_goal_area = ("goal_plate", "cube_9") in all_contact_pairs
+        touch_table = ("cushion1", "cube_8") in all_contact_pairs or ("cushion1", "cube_9") in all_contact_pairs or ("cushion1", "cube_7") in all_contact_pairs
+        touch_red_box = ("l_gripper_finger", "cube_7") in all_contact_pairs
+        placed_red_box = ("goal_plate", "cube_7") in all_contact_pairs
         reward = 0
         if touch_right_gripper or touch_left_gripper:
             reward = 1
@@ -399,6 +401,8 @@ class CoopTask(BimanualPiperTask):
             reward = 2
         if touch_goal_area and assembled: 
             reward = 3
+        if touch_red_box and placed_red_box:
+            reward = 4
         if touch_table:
             reward = 0
 

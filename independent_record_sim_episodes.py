@@ -237,6 +237,11 @@ def main(args):
                 for cam_name in camera_names:
                     # 左半分のみをトリミング (幅640の左半分320ピクセル)
                     img_left_half = ts.observation['images'][cam_name][:, :320, :]
+                    
+                    # Apply RGB mask to the rightmost 40px (symmetric to right arm)
+                    from utils import apply_rgb_mask_to_right_strip
+                    img_left_half = apply_rgb_mask_to_right_strip(img_left_half, strip_width=40)
+                    
                     data_dict[f'/observations/images/{cam_name}'].append(img_left_half)
             elif arm == 'right':
                 data_dict['/observations/qpos'].append(ts.observation['qpos'][7:14])
