@@ -9,3 +9,4 @@ piper_scripted_ckpt
 *.ckpt
 *.csv
 *.mp4
+*.png

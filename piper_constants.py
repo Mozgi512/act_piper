@@ -48,6 +48,24 @@ SIM_TASK_CONFIGS = {
         'episode_len': 800,
         'camera_names': ['top']
     },
+    'sim_coop_phase1_scripted':{
+        'dataset_dir': DATA_DIR + '/cooperation_phase1',
+        'num_episodes': 100,
+        'episode_len': 280,
+        'camera_names': ['top']
+    },
+    'sim_coop_phase2_left_scripted':{
+        'dataset_dir': DATA_DIR + '/cooperation_phase2_left',
+        'num_episodes': 100,
+        'episode_len': 300,
+        'camera_names': ['top']
+    },
+    'sim_coop_phase2_right_scripted':{
+        'dataset_dir': DATA_DIR + '/cooperation_phase2_right',
+        'num_episodes': 100,
+        'episode_len': 300,
+        'camera_names': ['top']
+    },
 }
 
 ### Simulation envs fixed constants

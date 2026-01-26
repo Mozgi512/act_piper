@@ -17,15 +17,15 @@ def apply_rgb_mask_to_strip(image, strip_width=40):
         
     strip = image[:, :strip_width, :]
     
-    lower_red = np.array([100, 0, 0])
-    upper_red = np.array([255, 100, 100])
+    lower_red = np.array([100, 0, 0], dtype=np.uint8)
+    upper_red = np.array([255, 100, 100], dtype=np.uint8)
     
-    lower_green = np.array([0, 100, 0])
-    upper_green = np.array([100, 255, 100])
+    lower_green = np.array([0, 100, 0], dtype=np.uint8)
+    upper_green = np.array([100, 255, 100], dtype=np.uint8)
     
     # Floor blue max is ~102, so use 150 to be safe
-    lower_blue = np.array([0, 0, 150])
-    upper_blue = np.array([100, 100, 255])
+    lower_blue = np.array([0, 0, 150], dtype=np.uint8)
+    upper_blue = np.array([100, 100, 255], dtype=np.uint8)
     
     mask_r = cv2.inRange(strip, lower_red, upper_red)
     mask_g = cv2.inRange(strip, lower_green, upper_green)
@@ -50,15 +50,15 @@ def apply_rgb_mask_to_right_strip(image, strip_width=40):
         
     strip = image[:, -strip_width:, :]
     
-    lower_red = np.array([100, 0, 0])
-    upper_red = np.array([255, 100, 100])
+    lower_red = np.array([100, 0, 0], dtype=np.uint8)
+    upper_red = np.array([255, 100, 100], dtype=np.uint8)
     
-    lower_green = np.array([0, 100, 0])
-    upper_green = np.array([100, 255, 100])
+    lower_green = np.array([0, 100, 0], dtype=np.uint8)
+    upper_green = np.array([100, 255, 100], dtype=np.uint8)
     
     # Floor blue max is ~102, so use 150 to be safe
-    lower_blue = np.array([0, 0, 150])
-    upper_blue = np.array([100, 100, 255])
+    lower_blue = np.array([0, 0, 150], dtype=np.uint8)
+    upper_blue = np.array([100, 100, 255], dtype=np.uint8)
     
     mask_r = cv2.inRange(strip, lower_red, upper_red)
     mask_g = cv2.inRange(strip, lower_green, upper_green)

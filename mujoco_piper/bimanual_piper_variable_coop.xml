@@ -1,6 +1,11 @@
 <mujoco>
     <include file="ACTworkspace.xml"/>
 
+    <asset>
+        <mesh name="cube_large" file="work_cube.stl" scale="4 4 4"/>
+        <mesh name="cube_small" file="work_cube.stl" scale="3.4 3.4 3.4"/>
+    </asset>
+
     <worldbody>
         <!-- Invisible belt extension to the left (-1.0 -> -0.5 range approx) -->
         <!-- Invisible belt extension to the left (-1.0 -> -0.5 range approx) -->
@@ -12,52 +17,52 @@
         <body name="cube_0" pos="0 0.0 0.05">
             <joint name="cube_0_joint" type="free" frictionloss="0.01" />
             <inertial pos="0 0 0" mass="0.01" diaginertia="0.002 0.002 0.002" />
-            <geom condim="4" solimp="2 1 0.01" solref="0.01 1" friction="5 0.005 0.0001" pos="0 0 0" size="0.02 0.02 0.02" type="box" name="cube_0" rgba="1 0 0 1" />
+            <geom condim="4" solimp="2 1 0.01" solref="0.01 1" friction="3 0.005 0.0001" pos="0 0 0" type="mesh" mesh="cube_large" name="cube_0" rgba="1 0 0 1" />
         </body>
         <body name="cube_1" pos="0 0.0 0.05">
             <joint name="cube_1_joint" type="free" frictionloss="0.01" />
             <inertial pos="0 0 0" mass="0.01" diaginertia="0.002 0.002 0.002" />
-            <geom condim="4" solimp="2 1 0.01" solref="0.01 1" friction="5 0.005 0.0001" pos="0 0 0" size="0.017 0.017 0.017" type="box" name="cube_1" rgba="0 1 0 1" />
+            <geom condim="4" solimp="2 1 0.01" solref="0.01 1" friction="3 0.005 0.0001" pos="0 0 0" type="mesh" mesh="cube_small" name="cube_1" rgba="0 1 0 1" />
         </body>
         <body name="cube_2" pos="0 0.0 0.05">
             <joint name="cube_2_joint" type="free" frictionloss="0.01" />
             <inertial pos="0 0 0" mass="0.01" diaginertia="0.002 0.002 0.002" />
-            <geom condim="4" solimp="2 1 0.01" solref="0.01 1" friction="5 0.005 0.0001" pos="0 0 0" size="0.017 0.017 0.017" type="box" name="cube_2" rgba="0 0 1 1" />
+            <geom condim="4" solimp="2 1 0.01" solref="0.01 1" friction="3 0.005 0.0001" pos="0 0 0" type="mesh" mesh="cube_small" name="cube_2" rgba="0 0 1 1" />
         </body>
         <body name="cube_3" pos="0 0.0 0.05">
             <joint name="cube_3_joint" type="free" frictionloss="0.01" />
             <inertial pos="0 0 0" mass="0.01" diaginertia="0.002 0.002 0.002" />
-            <geom condim="4" solimp="2 1 0.01" solref="0.01 1" friction="5 0.005 0.0001" pos="0 0 0" size="0.02 0.02 0.02" type="box" name="cube_3" rgba="1 1 0 1" />
+            <geom condim="4" solimp="2 1 0.01" solref="0.01 1" friction="3 0.005 0.0001" pos="0 0 0" type="mesh" mesh="cube_large" name="cube_3" rgba="1 1 0 1" />
         </body>
         <body name="cube_4" pos="0 0.0 0.05">
             <joint name="cube_4_joint" type="free" frictionloss="0.01" />
             <inertial pos="0 0 0" mass="0.01" diaginertia="0.002 0.002 0.002" />
-            <geom condim="4" solimp="2 1 0.01" solref="0.01 1" friction="5 0.005 0.0001" pos="0 0 0" size="0.017 0.017 0.017" type="box" name="cube_4" rgba="0 1 1 1" />
+            <geom condim="4" solimp="2 1 0.01" solref="0.01 1" friction="3 0.005 0.0001" pos="0 0 0" type="mesh" mesh="cube_small" name="cube_4" rgba="0 1 1 1" />
         </body>
         <body name="cube_5" pos="0 0.0 0.05">
             <joint name="cube_5_joint" type="free" frictionloss="0.01" />
             <inertial pos="0 0 0" mass="0.01" diaginertia="0.002 0.002 0.002" />
-            <geom condim="4" solimp="2 1 0.01" solref="0.01 1" friction="5 0.005 0.0001" pos="0 0 0" size="0.017 0.017 0.017" type="box" name="cube_5" rgba="1 0 1 1" />
+            <geom condim="4" solimp="2 1 0.01" solref="0.01 1" friction="3 0.005 0.0001" pos="0 0 0" type="mesh" mesh="cube_small" name="cube_5" rgba="1 0 1 1" />
         </body>
         <body name="cube_6" pos="0 0.0 0.05">
             <joint name="cube_6_joint" type="free" frictionloss="0.01" />
             <inertial pos="0 0 0" mass="0.01" diaginertia="0.002 0.002 0.002" />
-            <geom condim="4" solimp="2 1 0.01" solref="0.01 1" friction="5 0.005 0.0001" pos="0 0 0" size="0.02 0.02 0.02" type="box" name="cube_6" rgba="0.5 0.5 0.5 1" />
+            <geom condim="4" solimp="2 1 0.01" solref="0.01 1" friction="3 0.005 0.0001" pos="0 0 0" type="mesh" mesh="cube_large" name="cube_6" rgba="0.5 0.5 0.5 1" />
         </body>
         <body name="cube_7" pos="0 0.0 0.05">
             <joint name="cube_7_joint" type="free" frictionloss="0.01" />
             <inertial pos="0 0 0" mass="0.01" diaginertia="0.002 0.002 0.002" />
-            <geom condim="4" solimp="2 1 0.01" solref="0.01 1" friction="5 0.005 0.0001" pos="0 0 0" size="0.017 0.017 0.017" type="box" name="cube_7" rgba="1 0.5 0 1" />
+            <geom condim="4" solimp="2 1 0.01" solref="0.01 1" friction="3 0.005 0.0001" pos="0 0 0" type="mesh" mesh="cube_small" name="cube_7" rgba="1 0.5 0 1" />
         </body>
         <body name="cube_8" pos="0 0.0 0.05">
             <joint name="cube_8_joint" type="free" frictionloss="0.01" />
             <inertial pos="0 0 0" mass="0.01" diaginertia="0.002 0.002 0.002" />
-            <geom condim="4" solimp="2 1 0.01" solref="0.01 1" friction="5 0.005 0.0001" pos="0 0 0" size="0.017 0.017 0.017" type="box" name="cube_8" rgba="0 0.5 1 1" />
+            <geom condim="4" solimp="2 1 0.01" solref="0.01 1" friction="3 0.005 0.0001" pos="0 0 0" type="mesh" mesh="cube_small" name="cube_8" rgba="0 0.5 1 1" />
         </body>
         <body name="cube_9" pos="0 0.0 0.05">
             <joint name="cube_9_joint" type="free" frictionloss="0.01" />
             <inertial pos="0 0 0" mass="0.01" diaginertia="0.002 0.002 0.002" />
-            <geom condim="4" solimp="2 1 0.01" solref="0.01 1" friction="5 0.005 0.0001" pos="0 0 0" size="0.02 0.02 0.02" type="box" name="cube_9" rgba="0.5 0 1 1" />
+            <geom condim="4" solimp="2 1 0.01" solref="0.01 1" friction="3 0.005 0.0001" pos="0 0 0" type="mesh" mesh="cube_large" name="cube_9" rgba="0.5 0 1 1" />
         </body>
     </worldbody>
  

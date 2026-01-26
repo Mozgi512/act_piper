@@ -124,3 +124,28 @@ python policy_switcher.py \
 - **`q`**: 終了
 
 *注意: 実行には `aloha` 環境が有効化されている必要があります (`conda activate aloha`)。*
+
+
+実験結果・評価：
+
+CUDA_LAUNCH_BLOCKING=0 TORCH_CUDNN_V8_API_ENABLED=1 \
+python3 imitate_episodes.py \
+    --task_name sim_coop_scripted \
+    --ckpt_dir ckpt/cooperation_50eps \
+    --policy_class ACT --kl_weight 10 --chunk_size 100 --hidden_dim 512 \
+    --batch_size 32 \
+    --dim_feedforward 3200 \
+    --num_epochs 20000 --lr 1e-5 \
+    --seed 0 \
+    --num_workers 4 \
+    --persistent_workers \
+    --prefetch_factor 2 \
+    --use_cache \
+    --use_cuda_graph \
+    --validation_interval 100 --num_episodes 50
+
+データ分割
+    python3 process_coop_data.py --dataset_dir ./piper_scripted_dataset/cooperation/ --num_episodes 100
+
+成功率評価プロット
+    python3 plot_evaluation.py --csv_path ./ckpt/cooperation_75eps_2/evaluation_results.csv --output_path ./cooperation_result_75_2.png 

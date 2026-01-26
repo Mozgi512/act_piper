@@ -11,6 +11,7 @@ import matplotlib.pyplot as plt
 from copy import deepcopy
 from tqdm import tqdm
 from einops import rearrange
+import csv
 
 from piper_constants import DT
 from piper_constants import PUPPET_GRIPPER_JOINT_OPEN
@@ -65,7 +66,10 @@ def main(args):
         elif os.path.exists(dataset_dir + f'_right') and arm == 'right':
              dataset_dir = dataset_dir + '_right'
 
-    num_episodes = task_config['num_episodes']
+    if args['num_episodes']:
+        num_episodes = args['num_episodes']
+    else:
+        num_episodes = task_config['num_episodes']
     episode_len = task_config['episode_len']
     camera_names = task_config['camera_names']
 
@@ -116,11 +120,33 @@ def main(args):
         'temporal_agg': args['temporal_agg'],
         'camera_names': camera_names,
         'real_robot': not is_sim,
-        'arm': arm
+        'real_robot': not is_sim,
+        'arm': arm,
+        'num_rollouts': args['num_rollouts']
     }
 
     if is_eval:
-        ckpt_names = [f'policy_best.ckpt']
+        ckpt_names = []
+        if args['eval_epoch']:
+            ckpt_names = [f'policy_epoch_{args["eval_epoch"]}_seed_{args["seed"]}.ckpt']
+        elif args['eval_interval']:
+            import re
+            pattern = re.compile(r'policy_epoch_(\d+)_seed_\d+.ckpt')
+            all_files = os.listdir(ckpt_dir)
+            epoch_ckpts = []
+            for filename in all_files:
+                match = pattern.match(filename)
+                if match:
+                    epoch = int(match.group(1))
+                    if epoch % args['eval_interval'] == 0:
+                        epoch_ckpts.append((epoch, filename))
+            
+            epoch_ckpts.sort(key=lambda x: x[0])
+            ckpt_names = [x[1] for x in epoch_ckpts]
+
+        if 'policy_best.ckpt' not in ckpt_names and not args['eval_epoch']:
+            ckpt_names.append('policy_best.ckpt')
+
         results = []
         for ckpt_name in ckpt_names:
             success_rate, avg_return = eval_bc(config, ckpt_name, save_episode=True)
@@ -128,6 +154,15 @@ def main(args):
 
         for ckpt_name, success_rate, avg_return in results:
             print(f'{ckpt_name}: {success_rate=} {avg_return=}')
+        
+        # Save results to CSV
+        csv_path = os.path.join(ckpt_dir, 'evaluation_results.csv')
+        with open(csv_path, 'w', newline='') as f:
+            writer = csv.writer(f)
+            writer.writerow(['Checkpoint', 'Success Rate', 'Average Return'])
+            writer.writerows(results)
+        print(f'Saved evaluation results to {csv_path}')
+
         print()
         exit()
 
@@ -248,7 +283,9 @@ def eval_bc(config, ckpt_name, save_episode=True):
 
     max_timesteps = int(max_timesteps * 1) # may increase for real-world tasks
 
-    num_rollouts = 50
+    max_timesteps = int(max_timesteps * 1) # may increase for real-world tasks
+
+    num_rollouts = config.get('num_rollouts', 50)
     episode_returns = []
     highest_rewards = []
     for rollout_id in range(num_rollouts):
@@ -267,6 +304,8 @@ def eval_bc(config, ckpt_name, save_episode=True):
             REDBOX_POSE[0] = sample_redbox_pose()      # red box
             GREENBOX_POSE[0] = sample_greenbox_pose()   # green box
             BLUEBOX_POSE[0] = sample_bluebox_pose()   # blue box
+            if 'phase2' in task_name:
+                print('Warning: sim_coop_phase2 evaluation is not fully supported (reset to t=0).')
         elif 'sim_independent' in task_name:
             REDBOX_POSE[0] = sample_redbox_pose()      # red box
             GREENBOX_POSE[0] = sample_greenbox_pose()   # green box
@@ -546,6 +585,10 @@ if __name__ == '__main__':
     parser.add_argument('--validation_interval', action='store', type=int, help='validation interval', required=False, default=100)
     parser.add_argument('--image_width', action='store', type=int, help='image width', required=False)
     parser.add_argument('--image_height', action='store', type=int, help='image height', required=False)
+    parser.add_argument('--eval_interval', action='store', type=int, help='eval interval', required=False)
+    parser.add_argument('--num_rollouts', action='store', type=int, help='number of rollouts for eval', required=False, default=50)
+    parser.add_argument('--num_episodes', action='store', type=int, help='number of episodes to use', required=False)
+    parser.add_argument('--eval_epoch', action='store', type=int, help='specific epoch to eval', required=False)
 
     # for ACT
     parser.add_argument('--kl_weight', action='store', type=int, help='KL Weight', required=False)

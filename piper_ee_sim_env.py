@@ -17,7 +17,7 @@ import IPython
 e = IPython.embed
 
 
-def make_ee_sim_env(task_name):
+def make_ee_sim_env(task_name, camera_names=None):
     """
     Environment for simulated robot bi-manual manipulation, with end-effector control.
     Action space:      [left_arm_pose (7),             # position and quaternion for end effector
@@ -38,32 +38,38 @@ def make_ee_sim_env(task_name):
     if 'sim_transfer_cube' in task_name:
         xml_path = os.path.join(XML_DIR, f'bimanual_piper_ee_transfer_cube.xml')
         physics = mujoco.Physics.from_xml_path(xml_path)
-        task = TransferCubeEETask(random=False)
+        task = TransferCubeEETask(random=False, camera_names=camera_names)
         env = control.Environment(physics, task, time_limit=20, control_timestep=DT,
                                   n_sub_steps=None, flat_observation=False)
     elif 'sim_insertion' in task_name:
         xml_path = os.path.join(XML_DIR, f'bimanual_piper_ee_insertion.xml')
         physics = mujoco.Physics.from_xml_path(xml_path)
-        task = InsertionEETask(random=False)
+        task = InsertionEETask(random=False, camera_names=camera_names)
         env = control.Environment(physics, task, time_limit=20, control_timestep=DT,
                                   n_sub_steps=None, flat_observation=False)
     elif 'sim_independent' in task_name:
         is_phase2 = 'phase2' in task_name
         xml_path = os.path.join(XML_DIR, f'bimanual_piper_ee_many_cubes.xml')
         physics = mujoco.Physics.from_xml_path(xml_path)
-        task = ManyCubesEETask(random=False, init_phase=2 if is_phase2 else 1)
+        task = ManyCubesEETask(random=False, init_phase=2 if is_phase2 else 1, camera_names=camera_names)
         env = control.Environment(physics, task, time_limit=20, control_timestep=DT,
                                   n_sub_steps=None, flat_observation=False)
     elif 'sim_coop' in task_name:
         xml_path = os.path.join(XML_DIR, f'bimanual_piper_ee_many_cubes.xml')
         physics = mujoco.Physics.from_xml_path(xml_path)
-        task = ManyCubesEETask(random=False)
+        task = ManyCubesEETask(random=False, camera_names=camera_names)
+        env = control.Environment(physics, task, time_limit=20, control_timestep=DT,
+                                  n_sub_steps=None, flat_observation=False)
+    elif 'sim_variable_coop' in task_name:
+        xml_path = os.path.join(XML_DIR, f'bimanual_piper_ee_variable_coop.xml')
+        physics = mujoco.Physics.from_xml_path(xml_path)
+        task = ManyCubesEETask(random=False, camera_names=camera_names)
         env = control.Environment(physics, task, time_limit=20, control_timestep=DT,
                                   n_sub_steps=None, flat_observation=False)
     elif 'sim_many_cubes' in task_name:
         xml_path = os.path.join(XML_DIR, f'bimanual_piper_ee_many_cubes.xml')
         physics = mujoco.Physics.from_xml_path(xml_path)
-        task = ManyCubesEETask(random=False)
+        task = ManyCubesEETask(random=False, camera_names=camera_names)
         env = control.Environment(physics, task, time_limit=20, control_timestep=DT,
                                   n_sub_steps=None, flat_observation=False)
     else:
@@ -71,8 +77,9 @@ def make_ee_sim_env(task_name):
     return env
 
 class BimanualPiperEETask(base.Task):
-    def __init__(self, random=None):
+    def __init__(self, random=None, camera_names=None):
         super().__init__(random=random)
+        self.camera_names = camera_names if camera_names is not None else ['top', 'angle', 'vis', 'l_wrist', 'r_wrist']
 
     def before_step(self, action, physics):
         a_len = (len(action) -7)// 2
@@ -151,9 +158,17 @@ class BimanualPiperEETask(base.Task):
         obs['qvel'] = self.get_qvel(physics)
         obs['env_state'] = self.get_env_state(physics)
         obs['images'] = dict()
-        obs['images']['top'] = physics.render(height=480, width=640, camera_id='top')
-        obs['images']['angle'] = physics.render(height=480, width=640, camera_id='angle')
-        obs['images']['vis'] = physics.render(height=480, width=640, camera_id='front_close')
+        for cam_name in self.camera_names:
+            if cam_name == 'top':
+                 obs['images']['top'] = physics.render(height=480, width=640, camera_id='top')
+            elif cam_name == 'angle':
+                 obs['images']['angle'] = physics.render(height=480, width=640, camera_id='angle')
+            elif cam_name == 'vis':
+                 obs['images']['vis'] = physics.render(height=480, width=640, camera_id='front_close')
+            elif cam_name == 'l_wrist':
+                 obs['images']['l_wrist'] = physics.render(height=480, width=640, camera_id='l_wrist')
+            elif cam_name == 'r_wrist':
+                 obs['images']['r_wrist'] = physics.render(height=480, width=640, camera_id='r_wrist')
         # used in scripted policy to obtain starting pose
         obs['mocap_pose_left'] = np.concatenate([physics.data.mocap_pos[0], physics.data.mocap_quat[0]]).copy()
         obs['mocap_pose_right'] = np.concatenate([physics.data.mocap_pos[1], physics.data.mocap_quat[1]]).copy()
@@ -165,8 +180,8 @@ class BimanualPiperEETask(base.Task):
         raise NotImplementedError
     
 class InsertionEETask(BimanualPiperEETask):
-    def __init__(self, random=None):
-        super().__init__(random=random)
+    def __init__(self, random=None, camera_names=None):
+        super().__init__(random=random, camera_names=camera_names)
         self.max_reward = 4
 
     def initialize_episode(self, physics):
@@ -233,8 +248,8 @@ class InsertionEETask(BimanualPiperEETask):
         return reward
 
 class TransferCubeEETask(BimanualPiperEETask):
-    def __init__(self, random=None):
-        super().__init__(random=random)
+    def __init__(self, random=None, camera_names=None):
+        super().__init__(random=random, camera_names=camera_names)
         self.max_reward = 4
 
     def initialize_episode(self, physics):
@@ -483,9 +498,9 @@ class CoopEETask(BimanualPiperEETask):
 
 
 class ManyCubesEETask(BimanualPiperEETask):
-    def __init__(self, random=None, randomize_cube_colors=False, init_phase=1):
-        super().__init__(random=random)
-        self.max_reward = 0
+    def __init__(self, random=None, randomize_cube_colors=False, init_phase=1, camera_names=None):
+        super().__init__(random=random, camera_names=camera_names)
+        self.max_reward = 4
         self.randomize_cube_colors = randomize_cube_colors
         self.init_phase = init_phase
 
@@ -533,7 +548,10 @@ class ManyCubesEETask(BimanualPiperEETask):
             poses[9] = sample_bluebox_pose()
             poses[8] = sample_greenbox_pose()
             poses[7] = sample_redbox_pose()
-            ref_x = poses[7][0]
+            
+            # Fix: Anchor queue to the LEFT-MOST active cube (min X)
+            xs = [poses[7][0], poses[8][0], poses[9][0]]
+            ref_x = min(xs)
         
         queue_spacing = 0.22
         
@@ -575,9 +593,38 @@ class ManyCubesEETask(BimanualPiperEETask):
     def get_env_state(physics):
         # return state of 10 cubes (each 7 dims) -> 70 dims
         # qpos structure: robot (16) + belt (1) + belt_extension (1) + 10 cubes (7*10)
+        # Total non-cube joints = 18.
         env_state = physics.data.qpos.copy()[18:18+70]
         return env_state
 
     def get_reward(self, physics):
-        return 0
+        # return whether left gripper is holding the box
+        all_contact_pairs = []
+        for i_contact in range(physics.data.ncon):
+            id_geom_1 = physics.data.contact[i_contact].geom1
+            id_geom_2 = physics.data.contact[i_contact].geom2
+            name_geom_1 = physics.model.id2name(id_geom_1, 'geom')
+            name_geom_2 = physics.model.id2name(id_geom_2, 'geom')
+            contact_pair = (name_geom_1, name_geom_2)
+            all_contact_pairs.append(contact_pair)
 
+        touch_right_gripper = ("r_gripper_finger","cube_9") in all_contact_pairs
+        touch_left_gripper = ("l_gripper_finger","cube_8") in all_contact_pairs
+        assembled = ("cube_8", "cube_9") in all_contact_pairs
+        touch_goal_area = ("goal_plate", "cube_9") in all_contact_pairs
+        touch_table = ("cushion1", "cube_8") in all_contact_pairs or ("cushion1", "cube_9") in all_contact_pairs or ("cushion1", "cube_7") in all_contact_pairs
+        touch_red_box = ("l_gripper_finger", "cube_7") in all_contact_pairs
+        placed_red_box = ("goal_plate", "cube_7") in all_contact_pairs
+        reward = 0
+        if touch_right_gripper or touch_left_gripper:
+            reward = 1
+        if assembled :
+            reward = 2
+        if touch_goal_area and assembled: 
+            reward = 3
+        if placed_red_box:
+            reward = 4
+        if touch_table:
+            reward = 0
+
+        return reward

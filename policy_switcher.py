@@ -221,6 +221,13 @@ def main(args):
     try:
         t = 0
         while True:
+            # Auto-switch logic
+            if args.switch_step is not None and t == args.switch_step:
+                if current_mode != MODE_INDEPENDENT:
+                    current_mode = MODE_INDEPENDENT
+                    step_in_chunk = 0 # Force replan on switch
+                    print(f"[Step {t}] Auto-switched to INDEPENDENT mode (switch_step={args.switch_step})")
+
             key = get_key()
             if key == '1':
                 if current_mode != MODE_INDEPENDENT:
@@ -374,6 +381,7 @@ if __name__ == '__main__':
     
     parser.add_argument('--no_temporal_agg', action='store_true')
     parser.add_argument('--onscreen_render', action='store_true', default=True)
+    parser.add_argument('--switch_step', action='store', type=int, help='Step to auto-switch from Coop to Independent')
     
     args = parser.parse_args()
     main(args)

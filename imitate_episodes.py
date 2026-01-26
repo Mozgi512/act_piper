@@ -11,6 +11,7 @@ import matplotlib.pyplot as plt
 from copy import deepcopy
 from tqdm import tqdm
 from einops import rearrange
+import csv
 
 from piper_constants import DT
 from piper_constants import PUPPET_GRIPPER_JOINT_OPEN
@@ -45,8 +46,16 @@ def main(args):
     else:
         from aloha_scripts.constants import TASK_CONFIGS
         task_config = TASK_CONFIGS[task_name]
-    dataset_dir = task_config['dataset_dir']
-    num_episodes = task_config['num_episodes']
+    
+    if args['dataset_dir']:
+        dataset_dir = args['dataset_dir']
+    else:
+        dataset_dir = task_config['dataset_dir']
+        
+    if args['num_episodes']:
+        num_episodes = args['num_episodes']
+    else:
+        num_episodes = task_config['num_episodes']
     episode_len = task_config['episode_len']
     camera_names = task_config['camera_names']
 
@@ -90,18 +99,54 @@ def main(args):
         'seed': args['seed'],
         'temporal_agg': args['temporal_agg'],
         'camera_names': camera_names,
-        'real_robot': not is_sim
+        'camera_names': camera_names,
+        'real_robot': not is_sim,
+        'num_rollouts': args['num_rollouts'],
+        'ckpt_interval': args['ckpt_interval']
     }
 
     if is_eval:
-        ckpt_names = [f'policy_best.ckpt']
+        ckpt_names = []
+        if args['eval_epoch']:
+            ckpt_names = [f'policy_epoch_{args["eval_epoch"]}_seed_{args["seed"]}.ckpt']
+        elif args['eval_interval']:
+            import re
+            # pattern = re.compile(f'policy_epoch_(\d+)_seed_{args["seed"]}.ckpt')
+            # Relaxed pattern to match any seed if needed, but strict to current seed is better
+            pattern = re.compile(r'policy_epoch_(\d+)_seed_\d+.ckpt')
+            all_files = os.listdir(ckpt_dir)
+            epoch_ckpts = []
+            for filename in all_files:
+                match = pattern.match(filename)
+                if match:
+                    epoch = int(match.group(1))
+                    if args['start_epoch'] is not None and epoch < args['start_epoch']:
+                        continue
+                    if epoch % args['eval_interval'] == 0:
+                        epoch_ckpts.append((epoch, filename))
+            
+            epoch_ckpts.sort(key=lambda x: x[0])
+            ckpt_names = [x[1] for x in epoch_ckpts]
+        
+        if 'policy_best.ckpt' not in ckpt_names and not args['eval_epoch']:
+            ckpt_names.append('policy_best.ckpt') # always eval best unless specific epoch demanded
+
         results = []
         for ckpt_name in ckpt_names:
-            success_rate, avg_return = eval_bc(config, ckpt_name, save_episode=True)
+            success_rate, avg_return = eval_bc(config, ckpt_name, save_episode=not args['no_video'])
             results.append([ckpt_name, success_rate, avg_return])
 
         for ckpt_name, success_rate, avg_return in results:
             print(f'{ckpt_name}: {success_rate=} {avg_return=}')
+        
+        # Save results to CSV
+        csv_path = os.path.join(ckpt_dir, 'evaluation_results.csv')
+        with open(csv_path, 'w', newline='') as f:
+            writer = csv.writer(f)
+            writer.writerow(['Checkpoint', 'Success Rate', 'Average Return'])
+            writer.writerows(results)
+        print(f'Saved evaluation results to {csv_path}')
+        
         print()
         exit()
 
@@ -190,7 +235,7 @@ def eval_bc(config, ckpt_name, save_episode=True):
         env_max_reward = 0
     else:
         from piper_sim_env import make_sim_env
-        env = make_sim_env(task_name)
+        env = make_sim_env(task_name, camera_names=camera_names)
         env_max_reward = env.task.max_reward
 
     query_frequency = policy_config['num_queries']
@@ -200,7 +245,7 @@ def eval_bc(config, ckpt_name, save_episode=True):
 
     max_timesteps = int(max_timesteps * 1) # may increase for real-world tasks
 
-    num_rollouts = 50
+    num_rollouts = config.get('num_rollouts', 50)
     episode_returns = []
     highest_rewards = []
     for rollout_id in range(num_rollouts):
@@ -414,7 +459,7 @@ def train_bc(train_dataloader, val_dataloader, config):
             summary_string += f'{k}: {v.item():.3f} '
         print(summary_string)
 
-        if epoch % 100 == 0:
+        if epoch % config['ckpt_interval'] == 0:
             ckpt_path = os.path.join(ckpt_dir, f'policy_epoch_{epoch}_seed_{seed}.ckpt')
             torch.save(policy.state_dict(), ckpt_path)
             plot_history(train_history, validation_history, epoch, ckpt_dir, seed)
@@ -452,8 +497,10 @@ def plot_history(train_history, validation_history, num_epochs, ckpt_dir, seed):
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
+    parser.add_argument('--dataset_dir', action='store', type=str, help='dataset_dir', required=False)
     parser.add_argument('--eval', action='store_true')
     parser.add_argument('--onscreen_render', action='store_true')
+    parser.add_argument('--no_video', action='store_true', help='Disable video output')
     parser.add_argument('--ckpt_dir', action='store', type=str, help='ckpt_dir', required=True)
     parser.add_argument('--policy_class', action='store', type=str, help='policy_class, capitalize', required=True)
     parser.add_argument('--task_name', action='store', type=str, help='task_name', required=True)
@@ -470,6 +517,12 @@ if __name__ == '__main__':
     parser.add_argument('--validation_interval', action='store', type=int, help='validation interval', required=False, default=100)
     parser.add_argument('--image_width', action='store', type=int, help='image width', required=False)
     parser.add_argument('--image_height', action='store', type=int, help='image height', required=False)
+    parser.add_argument('--eval_interval', action='store', type=int, help='eval interval', required=False)
+    parser.add_argument('--num_rollouts', action='store', type=int, help='number of rollouts for eval', required=False, default=50)
+    parser.add_argument('--num_episodes', action='store', type=int, help='number of episodes to use', required=False)
+    parser.add_argument('--eval_epoch', action='store', type=int, help='specific epoch to eval', required=False)
+    parser.add_argument('--start_epoch', action='store', type=int, help='start epoch for range evaluation', required=False)
+    parser.add_argument('--ckpt_interval', action='store', type=int, help='checkpoint saving interval', required=False, default=1000)
 
     # for ACT
     parser.add_argument('--kl_weight', action='store', type=int, help='KL Weight', required=False)

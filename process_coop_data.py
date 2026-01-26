@@ -6,7 +6,7 @@ import time
 from utils import apply_rgb_mask_to_strip
 import cv2
 
-def process_episode(episode_idx, dataset_dir, phase1_dir, phase2_left_dir, phase2_right_dir, camera_names):
+def process_episode(episode_idx, dataset_dir, phase1_dir, phase2_left_dir, phase2_right_dir, camera_names, split_step, phase2_len):
     dataset_path = os.path.join(dataset_dir, f'episode_{episode_idx}.hdf5')
     
     if not os.path.exists(dataset_path):
@@ -22,8 +22,8 @@ def process_episode(episode_idx, dataset_dir, phase1_dir, phase2_left_dir, phase
         for cam_name in camera_names:
             images[cam_name] = root[f'/observations/images/{cam_name}'][()]
 
-    # --- Phase 1: t=0 to 280 ---
-    PHASE1_END = 280
+    # --- Phase 1: t=0 to split_step ---
+    PHASE1_END = split_step
     
     # Slicing
     p1_qpos = qpos[:PHASE1_END]
@@ -34,9 +34,9 @@ def process_episode(episode_idx, dataset_dir, phase1_dir, phase2_left_dir, phase
     # Save Phase 1
     save_hdf5(os.path.join(phase1_dir, f'episode_{episode_idx}'), p1_qpos, p1_qvel, p1_action, p1_images, camera_names)
 
-    # --- Phase 2: t=280 to 580 ---
-    PHASE2_START = 280
-    PHASE2_END = 580
+    # --- Phase 2: t=split_step to split_step + phase2_len ---
+    PHASE2_START = split_step
+    PHASE2_END = split_step + phase2_len
     
     # Verify length
     total_len = qpos.shape[0]
@@ -115,8 +115,13 @@ def process_episode(episode_idx, dataset_dir, phase1_dir, phase2_left_dir, phase
 def save_hdf5(dataset_path, qpos, qvel, action, images, camera_names):
     max_timesteps = qpos.shape[0]
     # Check image dims
-    sample_img = list(images.values())[0]
-    img_h, img_w = sample_img.shape[1], sample_img.shape[2]
+    if len(images) > 0:
+        sample_img = list(images.values())[0]
+        img_h, img_w = sample_img.shape[1], sample_img.shape[2]
+    else:
+        # Fallback if no images (should not happen usually)
+        img_h, img_w = 480, 640
+        
     action_dim = action.shape[1]
 
     with h5py.File(dataset_path + '.hdf5', 'w', rdcc_nbytes=1024 ** 2 * 2) as root:
@@ -139,6 +144,8 @@ def save_hdf5(dataset_path, qpos, qvel, action, images, camera_names):
 def main(args):
     dataset_dir = args['dataset_dir']
     num_episodes = args['num_episodes']
+    split_step = args['split_step']
+    phase2_len = args['phase2_len']
     
     # Output Directories
     phase1_dir = dataset_dir + '_phase1'
@@ -150,6 +157,8 @@ def main(args):
     os.makedirs(phase2_right_dir, exist_ok=True)
     
     print(f"Processing data from {dataset_dir}")
+    print(f"Split Step: {split_step}")
+    print(f"Phase 2 Length: {phase2_len} (End: {split_step + phase2_len})")
     print(f"Output Phase 1: {phase1_dir}")
     print(f"Output Phase 2 Left: {phase2_left_dir}")
     print(f"Output Phase 2 Right: {phase2_right_dir}")
@@ -167,7 +176,7 @@ def main(args):
     count = 0
     t0 = time.time()
     for i in range(num_episodes):
-        if process_episode(i, dataset_dir, phase1_dir, phase2_left_dir, phase2_right_dir, camera_names):
+        if process_episode(i, dataset_dir, phase1_dir, phase2_left_dir, phase2_right_dir, camera_names, split_step, phase2_len):
             count += 1
         if (i+1) % 10 == 0:
             print(f"Processed {i+1}/{num_episodes} episodes...")
@@ -178,5 +187,7 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument('--dataset_dir', action='store', type=str, help='Source dataset directory', required=True)
     parser.add_argument('--num_episodes', action='store', type=int, help='Number of episodes', required=True)
+    parser.add_argument('--split_step', action='store', type=int, default=280, help='Timestep to split Phase 1 and Phase 2')
+    parser.add_argument('--phase2_len', action='store', type=int, default=300, help='Length of Phase 2')
     
     main(vars(parser.parse_args()))
