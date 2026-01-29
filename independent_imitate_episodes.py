@@ -21,7 +21,7 @@ from utils import compute_dict_mean, set_seed, detach_dict # helper functions
 from policy import ACTPolicy, CNNMLPPolicy
 from visualize_episodes import save_videos
 
-from piper_sim_env import REDBOX_POSE, GREENBOX_POSE, BLUEBOX_POSE
+from piper_sim_env import REDBOX_POSE, GREENBOX_POSE, BLUEBOX_POSE, MANYCUBES_POSES
 
 import IPython
 e = IPython.embed
@@ -304,6 +304,18 @@ def eval_bc(config, ckpt_name, save_episode=True):
             REDBOX_POSE[0] = sample_redbox_pose()      # red box
             GREENBOX_POSE[0] = sample_greenbox_pose()   # green box
             BLUEBOX_POSE[0] = sample_bluebox_pose()   # blue box
+            
+            # Override for Phase 2: Shift Red Box Left by 5cm (-0.05 X)
+            if 'phase2' in task_name:
+                poses = {}
+                # Green (8) at goal
+                poses[8] = np.array([0, 0.1, 0.025, 1, 0, 0, 0])
+                # Blue (9) at goal
+                poses[9] = np.array([0.08, 0.1, 0.025, 1, 0, 0, 0])
+                # Red (7) at original (sample) + 0.2 offset + 0.02 shift = +0.22
+                poses[7] = sample_redbox_pose() + np.array([0.22, 0, 0, 0, 0, 0, 0])
+                MANYCUBES_POSES[0] = poses
+                
             if 'phase2' in task_name:
                 print('Warning: sim_coop_phase2 evaluation is not fully supported (reset to t=0).')
         elif 'sim_independent' in task_name:
@@ -311,6 +323,65 @@ def eval_bc(config, ckpt_name, save_episode=True):
             GREENBOX_POSE[0] = sample_greenbox_pose()   # green box
             BLUEBOX_POSE[0] = sample_bluebox_pose()   # blue box
         ts = env.reset()
+        
+        # Override for Phase 2: Set robot to Handover Pose (t=280 of Phase 1)
+        if 'phase2' in task_name and 'scripted' in task_name:
+             # qpos extracted from get_phase2_start_pose.py (t=260)
+             PHASE2_START_QPOS = np.array([ 0.9178,  1.852 , -1.7805,  2.1262, -0.97  , -1.8465,  1.    , 
+                                           -0.9023,  1.9241, -1.4575, -1.8638, -0.7894,  1.4111,  0.5081])
+             
+             # 1. Arm Joints (indices 0-6 and 8-14 in output, but 0-6 and 7-13 in action/env_qpos logic)
+             # Wait, PHASE2_START_QPOS is 14 dims: [L_Arm(6), L_Grip(1), R_Arm(6), R_Grip(1)]
+             # physics.data.qpos for Robot is 16 dims (including dummy grippers? No)
+             # piper_sim_env: 
+             #   physics.named.data.qpos[:16] = START_ARM_POSE
+             #   START_ARM_POSE has 16 elements in piper_constants?
+             #   Let's check piper_constants.py START_ARM_POSE
+             
+             # piper_constants.py L79: START_ARM_POSE = [0.76... 16 elements]
+             # Structure: L_Arm(6) + L_Grip(2) + R_Arm(6) + R_Grip(2)
+             
+             # So we need to map 14-dim info to 16-dim qpos.
+             # L_Arm: [0:6] -> qpos[0:6]
+             # L_Grip: [6] (Norm) -> Unnorm and set to qpos[6] AND qpos[7] (negated?)
+             # R_Arm: [7:13] -> qpos[8:14]
+             # R_Grip: [13] (Norm) -> Unnorm and set to qpos[14] AND qpos[15]
+             
+             # Helper
+             CLOSE = 0.005
+             OPEN = 0.035
+             unnorm = lambda x: x * (OPEN - CLOSE) + CLOSE
+             
+             new_qpos = np.zeros(16)
+             # Left Arm
+             new_qpos[0:6] = PHASE2_START_QPOS[0:6]
+             # Left Gripper
+             l_grip_val = unnorm(PHASE2_START_QPOS[6])
+             new_qpos[6] = l_grip_val
+             new_qpos[7] = -l_grip_val # Mirror
+             
+             # Right Arm
+             new_qpos[8:14] = PHASE2_START_QPOS[7:13]
+             # Right Gripper
+             r_grip_val = unnorm(PHASE2_START_QPOS[13])
+             new_qpos[14] = r_grip_val
+             new_qpos[15] = -r_grip_val # Mirror
+             
+             env.physics.data.qpos[:16] = new_qpos
+             
+             # Ensure simulation state is consistent
+             env.physics.forward() 
+             
+             # Reconstruct TS
+             ts_obs = env.task.get_observation(env.physics)
+             import dm_env
+             ts = dm_env.TimeStep(
+                step_type=ts.step_type,
+                reward=ts.reward,
+                discount=ts.discount,
+                observation=ts_obs
+             )
+
 
         ### onscreen render
         if onscreen_render:
@@ -527,7 +598,7 @@ def train_bc(train_dataloader, val_dataloader, config):
             summary_string += f'{k}: {v.item():.3f} '
         print(summary_string)
 
-        if epoch % 100 == 0:
+        if epoch % 1000 == 0:
             ckpt_path = os.path.join(ckpt_dir, f'policy_epoch_{epoch}_seed_{seed}.ckpt')
             torch.save(policy.state_dict(), ckpt_path)
             plot_history(train_history, validation_history, epoch, ckpt_dir, seed)

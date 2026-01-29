@@ -88,8 +88,8 @@
     </worldbody>
 
     <actuator>
-        <position name="l_gripper" joint="l_joint7" class="finger" kp="800" kv="5"/>
-        <position name="r_gripper" joint="r_joint7" class="finger" kp="800" kv="5"/>
+        <position name="l_gripper" joint="l_joint7" class="finger" kp="600" kv="5"/>
+        <position name="r_gripper" joint="r_joint7" class="finger" kp="600" kv="5"/>
     </actuator>
 
     <equality>

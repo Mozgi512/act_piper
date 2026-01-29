@@ -9,6 +9,9 @@ import IPython
 e = IPython.embed
 
 
+# Calibration Offset determined by calibration script
+CALIBRATION_OFFSET = -0.002
+
 class BasePolicy:
     def __init__(self, inject_noise=False):
         self.inject_noise = inject_noise
@@ -422,6 +425,7 @@ class InsertionPolicy(BasePolicy):
         meet_xyz = np.array([0, 0.5, 0.15])
         lift_right = 0.00715
 
+
         self.left_trajectory = [
             {"t": 0, "xyz": init_mocap_pose_left[:3], "quat": init_mocap_pose_left[3:], "gripper": 0}, # sleep
             {"t": 120, "xyz": socket_xyz + np.array([0, 0, 0.08]), "quat": gripper_pick_quat_left.elements, "gripper": 1}, # approach the cube
@@ -670,7 +674,7 @@ class VariableCoopPolicy(BasePolicy):
             
         last_right = self.right_trajectory[-1]
         if last_right['t'] < max_t:
-            self.right_trajectory.append({"t": max_t, "xyz": last_right['xyz'], "quat": last_right['quat'], "gripper": last_right['gripper']})
+            self.right_trajectory.append({"t": max_t, "xyz": last_right['xyz'], "quat": last_right['quat'], "gripper": 1})
 
         # Add hold-forever waypoint to prevent index error if simulation runs long
         final_t = 10000 # Large enough to cover max episode steps
@@ -685,6 +689,110 @@ class VariableCoopPolicy(BasePolicy):
         last = traj[-1]
         if last['t'] < until_t:
             traj.append({"t": until_t, "xyz": last['xyz'], "quat": last['quat'], "gripper": last['gripper']})
+
+    def get_object_xyz(self, ts, idx):
+        # Retrieve 3D position of cube 'idx' from env_state
+        # env_state: [cube0 (7), cube1 (7), ...]
+        env_state = np.array(ts.observation['env_state'])
+        offset = idx * 7
+        return env_state[offset : offset+3]
+
+    def __call__(self, ts):
+        # generate trajectory at first timestep, then open-loop execution
+        if self.step_count == 0:
+            self.generate_trajectory(ts)
+
+        # obtain left and right waypoints
+        if self.left_trajectory[0]['t'] == self.step_count:
+            waypoint = self.left_trajectory.pop(0)
+            # Store resolved position for tracking waypoints
+            # Store resolved position for tracking waypoints
+            if 'track_idx' in waypoint:
+                waypoint['resolved_xyz'] = self.get_object_xyz(ts, waypoint['track_idx']) + waypoint['track_offset']
+            self.curr_left_waypoint = waypoint
+        next_left_waypoint = self.left_trajectory[0]
+
+        if self.right_trajectory[0]['t'] == self.step_count:
+            waypoint = self.right_trajectory.pop(0)
+            # Store resolved position for tracking waypoints
+            if 'track_idx' in waypoint:
+                waypoint['resolved_xyz'] = self.get_object_xyz(ts, waypoint['track_idx']) + waypoint['track_offset']
+            self.curr_right_waypoint = waypoint
+        next_right_waypoint = self.right_trajectory[0]
+
+        # Resolve Dynamic Tracking (Left)
+        if 'resolved_xyz' in self.curr_left_waypoint:
+            curr_l_xyz = self.curr_left_waypoint['resolved_xyz']
+        elif 'track_idx' in self.curr_left_waypoint:
+            curr_l_xyz = self.get_object_xyz(ts, self.curr_left_waypoint['track_idx']) + self.curr_left_waypoint['track_offset']
+        else:
+            curr_l_xyz = self.curr_left_waypoint['xyz']
+        # For next: always use current tracking position
+        if 'track_idx' in next_left_waypoint:
+            next_l_xyz = self.get_object_xyz(ts, next_left_waypoint['track_idx']) + next_left_waypoint['track_offset']
+        elif next_left_waypoint.get('freeze_snapshot', False):
+            # Use the resolved position of the CURRENT waypoint (snapshot) as the target for NEXT
+            if 'resolved_xyz' in self.curr_left_waypoint:
+                next_l_xyz = self.curr_left_waypoint['resolved_xyz']
+            else:
+                 # Fallback (shouldn't happen if logic is correct): keep current xyz
+                next_l_xyz = self.curr_left_waypoint['xyz']
+            # Store it so it's valid when it becomes curr
+            next_left_waypoint['xyz'] = next_l_xyz
+        else:
+            next_l_xyz = next_left_waypoint['xyz']
+
+        # Resolve Dynamic Tracking (Right)
+        if 'resolved_xyz' in self.curr_right_waypoint:
+            curr_r_xyz = self.curr_right_waypoint['resolved_xyz']
+        elif 'track_idx' in self.curr_right_waypoint:
+            curr_r_xyz = self.get_object_xyz(ts, self.curr_right_waypoint['track_idx']) + self.curr_right_waypoint['track_offset']
+        else:
+            curr_r_xyz = self.curr_right_waypoint['xyz']
+            
+        if 'track_idx' in next_right_waypoint:
+            next_r_xyz = self.get_object_xyz(ts, next_right_waypoint['track_idx']) + next_right_waypoint['track_offset']
+        elif next_right_waypoint.get('freeze_snapshot', False):
+            if 'resolved_xyz' in self.curr_right_waypoint:
+                next_r_xyz = self.curr_right_waypoint['resolved_xyz']
+            else:
+                next_r_xyz = self.curr_right_waypoint['xyz']
+            next_right_waypoint['xyz'] = next_r_xyz
+        else:
+            next_r_xyz = next_right_waypoint['xyz']
+
+
+        # interpolate between waypoints to obtain current pose and gripper command (Modified: pass resolved xyz)
+        # We need a modified verify interpolate or just do it here inline for XYZ
+        
+        t = self.step_count
+        t_frac_l = np.clip((t - self.curr_left_waypoint["t"]) / (next_left_waypoint["t"] - self.curr_left_waypoint["t"]), 0, 1)
+        t_frac_r = np.clip((t - self.curr_right_waypoint["t"]) / (next_right_waypoint["t"] - self.curr_right_waypoint["t"]), 0, 1)
+        
+        left_xyz = curr_l_xyz + (next_l_xyz - curr_l_xyz) * t_frac_l
+        right_xyz = curr_r_xyz + (next_r_xyz - curr_r_xyz) * t_frac_r
+        
+        # Interpolate Quat/Gripper (Standard)
+        left_quat = self.curr_left_waypoint['quat'] + (next_left_waypoint['quat'] - self.curr_left_waypoint['quat']) * t_frac_l
+        left_gripper = self.curr_left_waypoint['gripper'] + (next_left_waypoint['gripper'] - self.curr_left_waypoint['gripper']) * t_frac_l
+        
+        right_quat = self.curr_right_waypoint['quat'] + (next_right_waypoint['quat'] - self.curr_right_waypoint['quat']) * t_frac_r
+        right_gripper = self.curr_right_waypoint['gripper'] + (next_right_waypoint['gripper'] - self.curr_right_waypoint['gripper']) * t_frac_r
+        
+
+        # Inject noise
+        if self.inject_noise:
+            scale = 0.01
+            left_xyz = left_xyz + np.random.uniform(-scale, scale, left_xyz.shape)
+            right_xyz = right_xyz + np.random.uniform(-scale, scale, right_xyz.shape)
+
+        action_left = np.concatenate([left_xyz, left_quat, [left_gripper]])
+        action_right = np.concatenate([right_xyz, right_quat, [right_gripper]])
+
+        self.step_count += 1
+        return np.concatenate([action_left, action_right])
+    
+    # ... Skipping strict interpolate static method usage since we inlined it ...
 
     def get_quat(self, is_left, mode='pick', top_down=False):
         if top_down:
@@ -704,83 +812,235 @@ class VariableCoopPolicy(BasePolicy):
                 pass
             return q.elements
 
-    def add_pick_place(self, traj, start_t, obj_xyz, goal_xyz, belt_speed, is_left, offset_x=0.0):
-        # Move to Object -> Pick -> Move to Goal -> Place -> Return
-        approach_dur = 80
+    def add_pick_place(self, traj, start_t, obj_idx, goal_xyz, belt_speed, is_left, offset_x=0.0):
+        # Move to Object (Tracking) -> Pick -> Move to Goal -> Place -> Return
+        approach_dur = 90
         intercept_t = start_t + approach_dur
-        target_xyz = obj_xyz + np.array([belt_speed * (intercept_t * 0.02) + 0.02, 0, 0])
         
-        # Adaptive Orientation: If Right Arm and object is far right (>0.25), use Top-Down
-        top_down = False
-        if not is_left and target_xyz[0] > 0.2:
-            top_down = True
-            
+        # Tracking Waypoints
+        # Note: obj_xyz is NOT used. We use obj_idx.
+        
+        # Adaptive Orientation (Not easily possible with dynamic tracking unless we read state again? 
+        # But let's assume standard orientation for now or fix it.)
+        top_down = False 
         q_pick = self.get_quat(is_left, 'pick', top_down=top_down)
         
-        traj.append({"t": intercept_t, "xyz": target_xyz + [0, 0, 0.08], "quat": q_pick, "gripper": 1})
-        traj.append({"t": intercept_t + 20, "xyz": target_xyz + [0, 0, 0], "quat": q_pick, "gripper": 1})
-        traj.append({"t": intercept_t + 40, "xyz": target_xyz + [0, 0, 0], "quat": q_pick, "gripper": 0})
-        traj.append({"t": intercept_t + 60, "xyz": target_xyz + [0, 0, 0.08], "quat": q_pick, "gripper": 0})
+        # 1. Approach High (Track)
+        traj.append({"t": intercept_t, "xyz": None, "quat": q_pick, "gripper": 1, 
+                     "track_idx": obj_idx, "track_offset": np.array([0, 0, 0.08])})
         
-        current_t = intercept_t + 60
-        place_pos = goal_xyz + [offset_x, 0, 0.05]
-        traj.append({"t": current_t + 60, "xyz": place_pos, "quat": q_pick, "gripper": 0})
-        traj.append({"t": current_t + 80, "xyz": place_pos - [0, 0, 0.05], "quat": q_pick, "gripper": 0})
-        traj.append({"t": current_t + 100, "xyz": place_pos - [0, 0, 0.05], "quat": q_pick, "gripper": 1})
-        traj.append({"t": current_t + 120, "xyz": place_pos, "quat": q_pick, "gripper": 1})
+        # 2. Go Down (Track)
+        traj.append({"t": intercept_t + 20, "xyz": None, "quat": q_pick, "gripper": 1,
+                     "track_idx": obj_idx, "track_offset": np.array([0, 0, 0.02])})
+                     
+        # 3. Close Gripper (Track - Moving with belt)
+        traj.append({"t": intercept_t + 40, "xyz": None, "quat": q_pick, "gripper": 0,
+                     "track_idx": obj_idx, "track_offset": np.array([0, 0, 0.02])})
+                     
+        # 4. Lift Up (STOP tracking after grip - use last resolved position)
+        # We need to transition from tracking to fixed coords
+        # The waypoint will resolve its position when reached, then next waypoint uses fixed coords
+        # 4. Lift Up (STOP tracking after grip - use last resolved position)
+        traj.append({"t": intercept_t + 55, "xyz": None, "quat": q_pick, "gripper": 0,
+                     "track_idx": obj_idx, "track_offset": np.array([0, 0, 0.04])})
         
-        return current_t + 120
+        # 4b. Hover (Intermediate Fixed Waypoint)
+        # Stay at the Lift Up position for 20 steps to kill velocity
+        traj.append({"t": intercept_t + 60, "xyz": None, "quat": q_pick, "gripper": 0,
+                     "freeze_snapshot": True})
 
-    def add_pick_top(self, traj, start_t, obj_xyz, meet_xyz, belt_speed, is_left):
-        approach_dur = 80
+        current_t = intercept_t + 60
+        place_pos = goal_xyz + [offset_x, 0, 0]
+        # Standard Place (Absolute coords)
+        # Transition from Hover (Fixed) to Place (Fixed)
+        traj.append({"t": current_t + 80, "xyz": place_pos + [0, 0, 0.08], "quat": q_pick, "gripper": 0})
+        traj.append({"t": current_t + 100, "xyz": place_pos + [0, 0, 0.02], "quat": q_pick, "gripper": 0})
+        traj.append({"t": current_t + 120, "xyz": place_pos + [0, 0, 0.02], "quat": q_pick, "gripper": 1})
+        traj.append({"t": current_t + 140, "xyz": place_pos+ [0, 0, 0.08], "quat": q_pick, "gripper": 1})
+        
+        return current_t + 140
+
+    def add_pick_top(self, traj, start_t, obj_idx, meet_xyz, belt_speed, is_left):
+        approach_dur = 90
         intercept_t = start_t + approach_dur
-        target_xyz = obj_xyz + np.array([belt_speed * (intercept_t * 0.02) + 0.02, 0, 0])
         q_pick = self.get_quat(is_left, 'pick')
         
-        traj.append({"t": intercept_t, "xyz": target_xyz + [0, 0, 0.08], "quat": q_pick, "gripper": 1})
-        traj.append({"t": intercept_t + 20, "xyz": target_xyz + [0, 0, 0], "quat": q_pick, "gripper": 1})
-        traj.append({"t": intercept_t + 40, "xyz": target_xyz + [0, 0, 0], "quat": q_pick, "gripper": 0})
-        traj.append({"t": intercept_t + 60, "xyz": target_xyz + [0, 0, 0.08], "quat": q_pick, "gripper": 0})
+        # Track Init
+        traj.append({"t": intercept_t, "xyz": None, "quat": q_pick, "gripper": 1,
+                     "track_idx": obj_idx, "track_offset": np.array([0, 0, 0.08])})
+        # Track Down
+        traj.append({"t": intercept_t + 20, "xyz": None, "quat": q_pick, "gripper": 1,
+                     "track_idx": obj_idx, "track_offset": np.array([0, 0, 0.02])})
+        # Close
+        traj.append({"t": intercept_t + 40, "xyz": None, "quat": q_pick, "gripper": 0,
+                     "track_idx": obj_idx, "track_offset": np.array([0, 0, 0.02])})
+        # Up (stop tracking after grip)
+        traj.append({"t": intercept_t + 60, "xyz": None, "quat": q_pick, "gripper": 0,
+                     "track_idx": obj_idx, "track_offset": np.array([0, 0, 0.08])})
         
         current_t = intercept_t + 60
         # Move to Meet (+Z offset for Top)
-        traj.append({"t": current_t + 60, "xyz": meet_xyz + [0, 0, 0.05], "quat": q_pick, "gripper": 0})
+        traj.append({"t": current_t + 60, "xyz": meet_xyz + [0, 0, 0.08], "quat": q_pick, "gripper": 0})
         
         return current_t + 60
 
     def add_assembly_top_action(self, traj, start_t, meet_xyz, is_left):
         q_pick = self.get_quat(is_left, 'pick')
         # Lower -> Open -> Raise
-        traj.append({"t": start_t + 20, "xyz": meet_xyz + [0, 0, 0.025], "quat": q_pick, "gripper": 0}) # Touch
-        traj.append({"t": start_t + 40, "xyz": meet_xyz + [0, 0, 0.025], "quat": q_pick, "gripper": 1}) # Release
-        traj.append({"t": start_t + 60, "xyz": meet_xyz + [0, 0, 0.10], "quat": q_pick, "gripper": 1}) # Exit
+        traj.append({"t": start_t + 20, "xyz": meet_xyz + [0, 0, 0.08], "quat": q_pick, "gripper": 0}) # Touch
+        traj.append({"t": start_t + 40, "xyz": meet_xyz + [0, 0, 0.08], "quat": q_pick, "gripper": 1}) # Release
+        traj.append({"t": start_t + 60, "xyz": meet_xyz + [0, 0, 0.08], "quat": q_pick, "gripper": 1}) # Exit
         return start_t + 60
 
-    def add_pick_base(self, traj, start_t, obj_xyz, meet_xyz, goal_xyz, belt_speed, is_left):
-        approach_dur = 80
+    def add_pick_base(self, traj, start_t, obj_idx, meet_xyz, goal_xyz, belt_speed, is_left):
+        approach_dur = 90
         intercept_t = start_t + approach_dur
-        target_xyz = obj_xyz + np.array([belt_speed * (intercept_t * 0.02) + 0.02, 0, 0])
         q_pick = self.get_quat(is_left, 'pick')
         
-        traj.append({"t": intercept_t, "xyz": target_xyz + [0, 0, 0.08], "quat": q_pick, "gripper": 1})
-        traj.append({"t": intercept_t + 20, "xyz": target_xyz + [0, 0, 0], "quat": q_pick, "gripper": 1})
-        traj.append({"t": intercept_t + 40, "xyz": target_xyz + [0, 0, 0], "quat": q_pick, "gripper": 0})
-        traj.append({"t": intercept_t + 60, "xyz": target_xyz + [0, 0, 0.08], "quat": q_pick, "gripper": 0})
+        # Track Init
+        traj.append({"t": intercept_t, "xyz": None, "quat": q_pick, "gripper": 1,
+                     "track_idx": obj_idx, "track_offset": np.array([0, 0, 0.08])})
+        # Track Down
+        traj.append({"t": intercept_t + 20, "xyz": None, "quat": q_pick, "gripper": 1,
+                     "track_idx": obj_idx, "track_offset": np.array([0, 0, 0.02])})
+        # Close
+        traj.append({"t": intercept_t + 40, "xyz": None, "quat": q_pick, "gripper": 0,
+                     "track_idx": obj_idx, "track_offset": np.array([0, 0, 0.02])})
+        # Up (stop tracking after grip)
+        traj.append({"t": intercept_t + 55, "xyz": None, "quat": q_pick, "gripper": 0,
+                     "track_idx": obj_idx, "track_offset": np.array([0, 0, 0.04])})
+
+        # Hover
+        traj.append({"t": intercept_t + 60, "xyz": None, "quat": q_pick, "gripper": 0,
+                     "freeze_snapshot": True})
         
         current_t = intercept_t + 60
         # Move to Meet (Base pos)
-        traj.append({"t": current_t + 60, "xyz": meet_xyz - [0, 0, 0.025], "quat": q_pick, "gripper": 0})
+        traj.append({"t": current_t + 60, "xyz": meet_xyz - [0, 0, 0.04], "quat": q_pick, "gripper": 0})
         
         return current_t + 60
 
     def add_base_transport(self, traj, start_t, goal_xyz, is_left, offset_x=0.0):
         q_pick = self.get_quat(is_left, 'pick')
         place_pos = goal_xyz + [offset_x, 0, 0.0]
-        traj.append({"t": start_t + 60, "xyz": place_pos + [0, 0, 0.05], "quat": q_pick, "gripper": 0})
-        traj.append({"t": start_t + 80, "xyz": place_pos, "quat": q_pick, "gripper": 0})
-        traj.append({"t": start_t + 100, "xyz": place_pos, "quat": q_pick, "gripper": 1})
-        traj.append({"t": start_t + 120, "xyz": place_pos + [0, 0, 0.1], "quat": q_pick, "gripper": 1})
+        traj.append({"t": start_t + 60, "xyz": place_pos + [0, 0, 0.08], "quat": q_pick, "gripper": 0})
+        traj.append({"t": start_t + 80, "xyz": place_pos + [0, 0, 0.025], "quat": q_pick, "gripper": 0})
+        traj.append({"t": start_t + 100, "xyz": place_pos + [0, 0, 0.025], "quat": q_pick, "gripper": 1})
+        traj.append({"t": start_t + 120, "xyz": place_pos + [0, 0, 0.08], "quat": q_pick, "gripper": 1})
         return start_t + 120
+
+
+class FourObjectPolicy(BasePolicy):
+    def generate_trajectory(self, ts_first):
+        init_mocap_pose_right = ts_first.observation['mocap_pose_right']
+        init_mocap_pose_left = ts_first.observation['mocap_pose_left']
+
+        work_info = np.array(ts_first.observation['env_state'])
+        # 6: Red2, 7: Red1, 8: Green, 9: Blue
+        red2_xyz = work_info[42:45]
+        red1_xyz = work_info[49:52]
+        green_xyz = work_info[56:59]
+        blue_xyz = work_info[63:66]
+        
+        # Targets
+        # Adjusting targets based on estimated pickup times
+        # t=0-170 Pickup G/B -> Pickup time approx t=100?
+        green_target_xyz = green_xyz + np.array([BELT_MOVE_SPEED*3-0.01, 0, 0])
+        blue_target_xyz = blue_xyz + np.array([BELT_MOVE_SPEED*3-0.02, 0, 0])
+        
+        # t=280-400 Pickup Red1 -> Pickup time approx t=340?(right)
+        red1_target_xyz = red1_xyz + np.array([BELT_MOVE_SPEED*9+0.02, 0, 0])
+        
+        # t=400-520 Pickup Red2 (Right) -> Pickup time approx t=460?(left)
+        red2_target_xyz = red2_xyz + np.array([BELT_MOVE_SPEED*7+0.01, 0, 0])
+
+        gripper_pick_quat_right = Quaternion(init_mocap_pose_right[3:])
+        #gripper_pick_quat_right = gripper_pick_quat_right * Quaternion(axis=[0.0, 1.0, 0.0], degrees=-30)
+        
+        gripper_pick_quat_left = Quaternion(init_mocap_pose_left[3:])
+        #gripper_pick_quat_left = gripper_pick_quat_left * Quaternion(axis=[0.0, 1.0, 0.0], degrees=30)
+        
+        assemble_xyz = np.array([0.02, 0.25, 0.1])
+        place_xyz = np.array([0, 0.1, 0.025])
+        
+        # ==============================================================================
+        # Left Trajectory
+        # ==============================================================================
+        self.left_trajectory = [
+            {"t": 0, "xyz": init_mocap_pose_left[:3], "quat": init_mocap_pose_left[3:], "gripper": 1}, 
+            {"t": 20, "xyz": init_mocap_pose_left[:3], "quat": init_mocap_pose_left[3:], "gripper": 1}, 
+
+            
+            # --- t=0-170: Pick Green (Top) ---
+            {"t": 60,  "xyz": green_target_xyz + np.array([0, 0, 0.08]), "quat": gripper_pick_quat_left.elements, "gripper": 1}, 
+            {"t": 100, "xyz": green_target_xyz + np.array([0, 0, 0.015]), "quat": gripper_pick_quat_left.elements, "gripper": 1}, 
+            {"t": 120, "xyz": green_target_xyz + np.array([0, 0, 0.015]), "quat": gripper_pick_quat_left.elements, "gripper": 0}, 
+            {"t": 130, "xyz": green_target_xyz + np.array([0, 0, 0.05]), "quat": gripper_pick_quat_left.elements, "gripper": 0}, 
+
+            # --- t=170-280: Assemble ---
+            {"t": 170, "xyz": assemble_xyz + np.array([-0.03, 0, 0.05]), "quat": gripper_pick_quat_left.elements, "gripper": 0}, 
+            {"t": 200, "xyz": assemble_xyz + np.array([0, 0, 0.025]), "quat": gripper_pick_quat_left.elements, "gripper": 0}, 
+            {"t": 220, "xyz": assemble_xyz + np.array([0, 0, 0.025]), "quat": gripper_pick_quat_left.elements, "gripper": 1}, 
+            {"t": 240, "xyz": assemble_xyz + np.array([-0.05, 0, 0.025]), "quat": gripper_pick_quat_left.elements, "gripper": 1}, 
+            {"t": 250, "xyz": init_mocap_pose_left[:3], "quat": init_mocap_pose_left[3:], "gripper": 1}, 
+            {"t": 260, "xyz": init_mocap_pose_left[:3], "quat": init_mocap_pose_left[3:], "gripper": 1}, 
+            
+            # --- t=280-400: Pick Red1 (Independent) ---
+            {"t": 340, "xyz": red2_target_xyz + np.array([0, 0, 0.08]), "quat": gripper_pick_quat_left.elements, "gripper": 1}, 
+            {"t": 360, "xyz": red2_target_xyz + np.array([0, 0, 0.015]), "quat": gripper_pick_quat_left.elements, "gripper": 1}, 
+            {"t": 380, "xyz": red2_target_xyz + np.array([0, 0, 0.015]), "quat": gripper_pick_quat_left.elements, "gripper": 0}, 
+            {"t": 390, "xyz": red2_target_xyz + np.array([0, 0, 0.05]), "quat": gripper_pick_quat_left.elements, "gripper": 0}, 
+            
+            # --- t=400-520: Place Red1 ---
+            {"t": 460, "xyz": place_xyz + np.array([-0.08, 0, 0.05]), "quat": gripper_pick_quat_left.elements, "gripper": 0}, 
+            {"t": 480, "xyz": place_xyz + np.array([-0.08, 0, 0]), "quat": gripper_pick_quat_left.elements, "gripper": 0}, 
+            {"t": 500, "xyz": place_xyz + np.array([-0.08, 0, 0]), "quat": gripper_pick_quat_left.elements, "gripper": 1}, 
+            {"t": 520, "xyz": place_xyz + np.array([-0.08, 0, 0.05]), "quat": gripper_pick_quat_left.elements, "gripper": 1}, 
+            
+            {"t": 580, "xyz": init_mocap_pose_left[:3], "quat": init_mocap_pose_left[3:], "gripper": 1}, 
+            {"t": 680, "xyz": init_mocap_pose_left[:3], "quat": init_mocap_pose_left[3:], "gripper": 1},        
+        ]
+        
+        # ==============================================================================
+        # Right Trajectory
+        # ==============================================================================
+        self.right_trajectory = [
+            {"t": 0, "xyz": init_mocap_pose_right[:3], "quat": init_mocap_pose_right[3:], "gripper": 1}, 
+            {"t": 20, "xyz": init_mocap_pose_right[:3], "quat": init_mocap_pose_right[3:], "gripper": 1}, 
+            
+            # --- t=0-170: Pick Blue (Base) ---
+            {"t": 60,  "xyz": blue_target_xyz + np.array([0, 0, 0.08]), "quat": gripper_pick_quat_right.elements, "gripper": 1}, 
+            {"t": 100, "xyz": blue_target_xyz + np.array([0, 0, 0.015]), "quat": gripper_pick_quat_right.elements, "gripper": 1}, 
+            {"t": 120, "xyz": blue_target_xyz + np.array([0, 0, 0.015]), "quat": gripper_pick_quat_right.elements, "gripper": 0}, 
+            {"t": 130, "xyz": blue_target_xyz + np.array([0, 0, 0.05]), "quat": gripper_pick_quat_right.elements, "gripper": 0}, 
+            
+            # --- t=170-260: Assemble (Hold Base) ---
+            {"t": 170, "xyz": assemble_xyz + np.array([0, 0, -0.01]), "quat": gripper_pick_quat_right.elements, "gripper": 0}, 
+            {"t": 240, "xyz": assemble_xyz + np.array([0, 0, -0.01]), "quat": gripper_pick_quat_right.elements, "gripper": 0}, 
+            {"t": 250, "xyz": init_mocap_pose_right[:3], "quat": init_mocap_pose_right[3:], "gripper": 0}, 
+            {"t": 260, "xyz": init_mocap_pose_right[:3], "quat": init_mocap_pose_right[3:], "gripper": 0}, 
+            # --- t=260-420: Place Assembled Parts ---
+            {"t": 340, "xyz": place_xyz + np.array([0, 0, 0.05]), "quat": gripper_pick_quat_right.elements, "gripper": 0}, 
+            {"t": 360, "xyz": place_xyz + np.array([0, 0, 0]), "quat": gripper_pick_quat_right.elements, "gripper": 0}, 
+            {"t": 380, "xyz": place_xyz + np.array([0, 0, 0]), "quat": gripper_pick_quat_right.elements, "gripper": 1}, 
+            {"t": 420, "xyz": place_xyz + np.array([0.05, 0, 0.08]), "quat": gripper_pick_quat_right.elements, "gripper": 1}, 
+            
+            # --- t=420-510: Pick Red2 (Right Arm) ---
+            # Red2 target needs adjustment to be reachable?
+            {"t": 460, "xyz": red1_target_xyz + np.array([0, 0, 0.08]), "quat": gripper_pick_quat_right.elements, "gripper": 1}, 
+            {"t": 480, "xyz": red1_target_xyz + np.array([0, 0, 0.015]), "quat": gripper_pick_quat_right.elements, "gripper": 1}, 
+            {"t": 500, "xyz": red1_target_xyz + np.array([0, 0, 0.015]), "quat": gripper_pick_quat_right.elements, "gripper": 0}, 
+            {"t": 510, "xyz": red1_target_xyz + np.array([0, 0, 0.05]), "quat": gripper_pick_quat_right.elements, "gripper": 0}, 
+
+            # --- t=510-640: Place Red2 ---
+            {"t": 560, "xyz": place_xyz + np.array([0.08, 0, 0.05]), "quat": gripper_pick_quat_right.elements, "gripper": 0}, 
+            {"t": 580, "xyz": place_xyz + np.array([0.08, 0, 0]), "quat": gripper_pick_quat_right.elements, "gripper": 0}, 
+            {"t": 600, "xyz": place_xyz + np.array([0.08, 0, 0]), "quat": gripper_pick_quat_right.elements, "gripper": 1}, 
+            {"t": 640, "xyz": place_xyz + np.array([0.08, 0, 0.1]), "quat": gripper_pick_quat_right.elements, "gripper": 1}, 
+            
+            {"t": 660, "xyz": init_mocap_pose_right[:3], "quat": init_mocap_pose_right[3:], "gripper": 1}, 
+            {"t": 680, "xyz": init_mocap_pose_right[:3], "quat": init_mocap_pose_right[3:], "gripper": 1}, 
+        ]
 
 def test_policy(task_name):
     # example rolling out pick_and_transfer policy
@@ -790,153 +1050,87 @@ def test_policy(task_name):
     # setup the environment
     if task_name == 'sim_variable_coop_scripted':
         episode_len = 1000 # custom len
-        env = make_ee_sim_env('sim_coop') # Re-use coop env but with variable policy if we inject random pose
-        # For testing variable coop: we need random start positions?
-        # env = make_ee_sim_env('sim_independent_phase2') # Phase2 has random locs but maybe too constrained?
-        # Let's use sim_coop env but we might need to manually override box positions in test_policy loop to verify robustness
+        env = make_ee_sim_env('sim_coop')
+    elif task_name == 'sim_four_objects_scripted':
+        episode_len = SIM_TASK_CONFIGS[task_name]['episode_len']
+        env = make_ee_sim_env('sim_four_objects')
     elif task_name in SIM_TASK_CONFIGS:
         episode_len = SIM_TASK_CONFIGS[task_name]['episode_len']
         if 'sim_transfer_cube' in task_name:
             env = make_ee_sim_env('sim_transfer_cube')
         elif 'sim_insertion' in task_name:
             env = make_ee_sim_env('sim_insertion')
-        elif 'sim_moving_cube' in task_name:
-            env = make_ee_sim_env('sim_moving_cube')
-        elif 'sim_independent_phase2' in task_name:
-            env = make_ee_sim_env(task_name)
+        elif 'sim_moving_cube' in task_name:  # independent
+            env = make_ee_sim_env('sim_independent')
+        elif 'sim_independent_scripted' in task_name:
+            env = make_ee_sim_env('sim_independent')
+        elif 'sim_independent_phase2_scripted' in task_name:
+            env = make_ee_sim_env('sim_independent_phase2')
         elif 'sim_coop' in task_name:
             env = make_ee_sim_env('sim_coop')
+        elif 'sim_many_cubes' in task_name:
+            env = make_ee_sim_env('sim_many_cubes')
         else:
             raise NotImplementedError
     else:
-        # Fallback
-        episode_len = 1000
-        env = make_ee_sim_env('sim_coop')
+        raise NotImplementedError
 
-    for episode_idx in range(5): # Run 5 times to test different orders if random
-        ts = env.reset()
-        
-        # Override positions for Variable Coop Test to ensure randomness
-        if task_name == 'sim_variable_coop_scripted':
-            # Manually inject random R, G, B positions on belt
-            # Range: 0.2 to -0.4?
-            # Belt moves X+ -> X-?
-            # Let's generate 3 random X in [-0.1, 0.4] (safe range)
-            positions = np.random.uniform(-0.1, 0.4, 3) 
-            # Ensure spacing
-            # Simple manual assignment for test
-            # idx 7,8,9 = R,G,B
-            # Need to set qpos
-            # R=7 (offset 16+1 (belt) +1(ext) + 7*7 = 18+49?)
-            # piper_ee_sim_env.ManyCubesEETask sets positions in initialize_episode.
-            # We can't easily override mapping here without accessing physics directly.
-            # But we can assume the Env already randomized them if we used a randomized env.
-            # CoopTask usually has fixed positions?
-            # Let's trust make_ee_sim_env('sim_coop') for now, but maybe it only generates one pattern?
-            # Yes, CoopEETask generates fixed.
-            # We should use ManyCubesEETask with init_phase=2 or similar if accessible.
-            # Or manually set qpos here.
-            physics = env.physics
-            # Get qpos addresses for cubes
-            # R=cube_7, G=cube_8, B=cube_9
-            # X coordinates
-            # Let's shuffle the positions of R, G, B
-            # Standard positions in Coop: R=[-0.19], G=[-0.05], B=[0.09] (approx) relative.
-            # Let's define 3 slots and shuffle assignment
-            slots = [0.2, 0.0, -0.2]
-            np.random.shuffle(slots)
-            
-            # cube_7 (R)
-            start_idx_r = physics.model.jnt_qposadr[physics.model.name2id('cube_7_joint', 'joint')]
-            physics.data.qpos[start_idx_r] = slots[0]
-            physics.data.qpos[start_idx_r+1] = 0.35 # Y
-            
-            # cube_8 (G)
-            start_idx_g = physics.model.jnt_qposadr[physics.model.name2id('cube_8_joint', 'joint')]
-            physics.data.qpos[start_idx_g] = slots[1]
-            physics.data.qpos[start_idx_g+1] = 0.35
-            
-            # cube_9 (B)
-            start_idx_b = physics.model.jnt_qposadr[physics.model.name2id('cube_9_joint', 'joint')]
-            physics.data.qpos[start_idx_b] = slots[2]
-            physics.data.qpos[start_idx_b+1] = 0.35
-            
-            # Update env state?
-            ts = env._task.get_observation(physics) # Refresh obs
-            # But ts structure might need manual update if we are not careful.
-            # calling env.step with no-op might be better but we haven't started policy.
-            # Hack: Manually construct TS-like obj or just pass physics to generation?
-            # Policy uses ts.observation['env_state'].
-            # get_observation re-reads from physics, so we are good if we call it.
-            # However `env.reset()` returns a TimeStep. we need to update it.
-            pass
+    # setup policy
+    if task_name == 'sim_transfer_cube_scripted':
+        policy = PickAndTransferPolicy(inject_noise)
+    elif task_name == 'sim_insertion_scripted':
+        policy = InsertionPolicy(inject_noise)
+    elif task_name == 'sim_moving_cube_scripted':
+        policy = IndependentPolicy(inject_noise)
+    elif task_name == 'sim_independent_scripted':
+        policy = IndependentPolicy(inject_noise)
+    elif task_name == 'sim_independent_phase2_scripted':
+        policy = IndependentPhase2Policy(inject_noise)
+    elif task_name == 'sim_coop_scripted':
+        policy = CoopPolicy(inject_noise)
+    elif task_name == 'sim_variable_coop_scripted':
+        # Need to refresh TS because we modified qpos (if we did)
+        # obs = env._task.get_observation(env.physics)
+        policy = VariableCoopPolicy(inject_noise)
+    elif task_name == 'sim_four_objects_scripted':
+        policy = FourObjectPolicy(inject_noise)
+    else:
+        raise NotImplementedError
 
-        episode = [ts]
-        if onscreen_render:
-            ax = plt.subplot()
-            cam_image = env.physics.render(height=360, width=640, camera_id="top")
-            plt_img = ax.imshow(cam_image)
-            #plt_img = ax.imshow(ts.observation['images']['angle'])
-            plt.ion()
+    episode_len = 1000 # override just in case
+    policy.success_t = episode_len 
 
-        if 'sim_transfer_cube' in task_name:
-            policy = PickAndTransferPolicy(inject_noise)
-        elif 'sim_insertion' in task_name:
-            policy = InsertionPolicy(inject_noise)
-        elif 'sim_independent_phase2' in task_name:
-            policy = IndependentPhase2Policy(inject_noise)
-        elif 'sim_moving_cube' in task_name or 'sim_independent' in task_name:
-            policy = IndependentPolicy(inject_noise)
-        elif 'sim_variable_coop_scripted' in task_name:
-            # Need to refresh TS because we modified qpos
-            obs = env._task.get_observation(env.physics)
-            from dm_env import TimeStep, StepType
-            ts = TimeStep(step_type=StepType.FIRST, reward=0, discount=1, observation=obs)
-            policy = VariableCoopPolicy(inject_noise)
-        elif 'sim_coop' in task_name:
-            policy = CoopPolicy(inject_noise)
-        else:
-            raise NotImplementedError
-
-        for step in range(episode_len):
-            action = policy(ts)
-            ts = env.step(action)
-            episode.append(ts)
-
-            # === 接触判定デバッグ =======================================================
-            # 現在のphysicsインスタンスを取得
-            #physics = env.physics
-            #print(f"--- Step {step}: {physics.data.ncon} contacts ---")
-            #for i in range(physics.data.ncon):
-            #    contact = physics.data.contact[i]
-            #    geom1_name = physics.model.id2name(contact.geom1, 'geom')
-            #    geom2_name = physics.model.id2name(contact.geom2, 'geom')
-            #   print(f"  Contact {i}: {geom1_name} <--> {geom2_name}")
-
-            # === 関節角度表示==========================================================
-            # physics = env.physics
-            # print(f"--- Step {step} Joint Angles ---")
-            # for i in range(physics.model.njnt):
-            #     joint_name = physics.model.id2name(i, 'joint')
-            #     if physics.model.joint(joint_name).type[0] != 0: # freejoint (type 0) を除外
-            #         qpos_index = physics.model.jnt_qposadr[i]
-            #         angle_rad = physics.data.qpos[qpos_index]
-            #         print(f"  {joint_name}: {angle_rad:.2f}")
-            # ========================================================================
+    ts = env.reset()
+    episode = [ts]
     
-            if onscreen_render:
-                cam_image = env.physics.render(height=360, width=640, camera_id="top")
-                plt_img.set_data(cam_image)
-                #plt_img.set_data(ts.observation['images']['angle'])
-                plt.pause(0.02)
-        plt.close()
+    if onscreen_render:
+        ax = plt.subplot()
+        plt_img = ax.imshow(ts.observation['images']['top'])
+        plt.ion()
 
-        episode_return = np.sum([ts.reward for ts in episode[1:]])
-        if episode_return > 0:
-            print(f"{episode_idx=} Successful, {episode_return=}")
-        else:
-            print(f"{episode_idx=} Failed")
+    for step in range(episode_len):
+        # === 関節角度表示==========================================================
+        physics = env.physics
+        print(f"--- Step {step} Joint Angles ---")
+        for i in range(physics.model.njnt):
+            joint_name = physics.model.id2name(i, 'joint')
+            if physics.model.joint(joint_name).type[0] != 0: # freejoint (type 0) を除外
+                qpos_index = physics.model.jnt_qposadr[i]
+                angle_rad = physics.data.qpos[qpos_index]
+                print(f"  {joint_name}: {angle_rad:.2f}")
+        # ========================================================================
+        action = policy(ts)
+        ts = env.step(action)
+        episode.append(ts)
+        if onscreen_render:
+            plt_img.set_data(ts.observation['images']['top'])
+            plt.pause(0.002)
 
+            if policy.success_t is not None and step >= policy.success_t:
+                print(f"Policy success at step {policy.success_t}")
+                break
+    plt.ioff()
+    plt.show()
 
 if __name__ == '__main__':
-    test_policy('sim_variable_coop_scripted')
+    test_policy('sim_four_objects_scripted')

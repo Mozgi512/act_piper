@@ -277,7 +277,7 @@ def load_data(dataset_dir, num_episodes, camera_names, batch_size_train, batch_s
 ### env utils
 
 def sample_redbox_pose():
-    x_range = [-0.5, -0.3]
+    x_range = [-0.45, -0.30]
     y_range = [0.30, 0.4]
     z_range = [0.01, 0.01]
 
@@ -289,7 +289,7 @@ def sample_redbox_pose():
 
 
 def sample_greenbox_pose():
-    x_range = [-0.25, -0.1]
+    x_range = [-0.25,-0.10]
     y_range = [0.30, 0.4]
     z_range = [0.01, 0.01]
 
@@ -300,7 +300,7 @@ def sample_greenbox_pose():
     return np.concatenate([stick_position, stick_quat])
 
 def sample_bluebox_pose():
-    x_range = [0.0, 0.15]
+    x_range = [0.00, 0.15]
     y_range = [0.30, 0.4]
     z_range = [0.01, 0.01]
 
@@ -310,6 +310,50 @@ def sample_bluebox_pose():
     socket_quat = np.array([1, 0, 0, 0])
     return np.concatenate([socket_position, socket_quat])
 
+
+def sample_redbox1_pose():
+    x_range = [-0.30, -0.25]
+    y_range = [0.30, 0.4]
+    z_range = [0.01, 0.01]
+
+    ranges = np.vstack([x_range, y_range, z_range])
+    cube_position = np.random.uniform(ranges[:, 0], ranges[:, 1])
+
+    cube_quat = np.array([1, 0, 0, 0])
+    return np.concatenate([cube_position, cube_quat])
+
+def sample_redbox2_pose():
+    x_range = [-0.40, -0.35]
+    y_range = [0.30, 0.4]
+    z_range = [0.01, 0.01]
+
+    ranges = np.vstack([x_range, y_range, z_range])
+    cube_position = np.random.uniform(ranges[:, 0], ranges[:, 1])
+
+    cube_quat = np.array([1, 0, 0, 0])
+    return np.concatenate([cube_position, cube_quat])
+
+def sample_greenbox1_pose():
+    x_range = [-0.20,-0.05]
+    y_range = [0.30, 0.4]
+    z_range = [0.01, 0.01]
+
+    ranges = np.vstack([x_range, y_range, z_range])
+    stick_position = np.random.uniform(ranges[:, 0], ranges[:, 1])
+
+    stick_quat = np.array([1, 0, 0, 0])
+    return np.concatenate([stick_position, stick_quat])
+
+def sample_bluebox1_pose():
+    x_range = [0.00, 0.15]
+    y_range = [0.30, 0.4]
+    z_range = [0.01, 0.01]
+
+    ranges = np.vstack([x_range, y_range, z_range])
+    socket_position = np.random.uniform(ranges[:, 0], ranges[:, 1])
+
+    socket_quat = np.array([1, 0, 0, 0])
+    return np.concatenate([socket_position, socket_quat])
 def sample_insertion_pose():
     # Peg
     x_range = [0.1, 0.2]

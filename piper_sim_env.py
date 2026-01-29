@@ -21,6 +21,7 @@ REDBOX_POSE = [None] # to be changed from outside
 BLUEBOX_POSE = [None]
 GREENBOX_POSE = [None]
 MANYCUBES_POSES = [None]
+MANYCUBES_COLORS = [None] 
 
 def make_sim_env(task_name, camera_names=None):
     """
@@ -68,6 +69,12 @@ def make_sim_env(task_name, camera_names=None):
                                   n_sub_steps=None, flat_observation=False)
     elif 'sim_variable_coop' in task_name:
         xml_path = os.path.join(XML_DIR, f'bimanual_piper_variable_coop.xml')
+        physics = mujoco.Physics.from_xml_path(xml_path)
+        task = ManyCubesTask(random=False, camera_names=camera_names)
+        env = control.Environment(physics, task, time_limit=20, control_timestep=DT,
+                                  n_sub_steps=None, flat_observation=False)
+    elif 'sim_four_objects' in task_name:
+        xml_path = os.path.join(XML_DIR, f'bimanual_piper_many_cubes.xml')
         physics = mujoco.Physics.from_xml_path(xml_path)
         task = ManyCubesTask(random=False, camera_names=camera_names)
         env = control.Environment(physics, task, time_limit=20, control_timestep=DT,
@@ -458,7 +465,11 @@ class ManyCubesTask(BimanualPiperTask):
             
             poses = {}
             
-            if self.init_phase == 2:
+            if MANYCUBES_POSES[0] is not None:
+                poses = MANYCUBES_POSES[0]
+                # Dummy ref_x, not used if all poses provided
+                ref_x = 0
+            elif self.init_phase == 2:
                 # Phase 2: G/B at goal, R and Queue at ORIGINAL positions
                 
                 if MANYCUBES_POSES[0] is not None:
@@ -498,6 +509,35 @@ class ManyCubesTask(BimanualPiperTask):
                 # to prevent queue overlapping with other cubes if Red is far right.
                 xs = [poses[7][0], poses[8][0], poses[9][0]]
                 ref_x = min(xs)
+
+                # Interactive Mode Override: Linear Queue 0..9
+                # 0 is First (Rightmost on belt start), 9 is Last (Back of queue)
+                # But physically belt moves +X to -X.
+                # If we want 0 to arrive FIRST, 0 should be Left-most (closest to center) and 9 Right-most.
+                # Current logic: Belt moves +X -> -X??
+                # Wait, BELT_MOVE_SPEED is usually positive?
+                # If positive, does it move +X or -X?
+                # piper_constants.py: BELT_MOVE_SPEED = 0.005?
+                # In simulation xml, belt direction?
+                # If items spawn at 0.4 and drift to -0.5, belt moves -X.
+                # So Upstream is +X. Downstream is -X.
+                # Order 0, 1, 2...
+                # 0 should be Downstream (First to pick).
+                # 1 should be Upstream of 0.
+                if MANYCUBES_COLORS[0] is not None:
+                     poses = {} # Clear specials
+                     start_x = 0.00 # Start of working area
+                     spacing = 0.15 # Spacing towards Upstream (+X)
+                     for i in range(10):
+                         # x = start + i*spacing
+                         # 0: 0.35
+                         # 1: 0.53
+                         # ...
+                         px = start_x - i * spacing
+                         py = np.random.uniform(0.35, 0.40)
+                         poses[i] = np.array([px, py, 0.025, 1, 0, 0, 0])
+                         print(f"Debug: Cube {i} initialized at X={px:.3f}, Y={py:.3f}")
+                     ref_x = 0 # Ignored
             
             queue_spacing = 0.22
             
@@ -525,8 +565,25 @@ class ManyCubesTask(BimanualPiperTask):
                 if self.randomize_cube_colors:
                     color = colors[np.random.randint(0, 3)]
                 else:
-                    color_idx = (i + 2) % 3
-                    color = colors[color_idx]
+                    # Check for injected color sequence
+                    if MANYCUBES_COLORS[0] is not None and i < len(MANYCUBES_COLORS[0]):
+                        c_code = MANYCUBES_COLORS[0][i]
+                        if c_code == 'r': color = colors[0]
+                        elif c_code == 'g': color = colors[1]
+                        elif c_code == 'b': color = colors[2]
+                        else: color = colors[0] # Default Red
+                    
+                    # Explicit mapping for Four Object Task (Legacy/Fallback)
+                    elif i == 6 or i == 7: # Red
+                        color = colors[0]
+                    elif i == 8: # Green
+                        color = colors[1]
+                    elif i == 9: # Blue
+                        color = colors[2]
+                    else:
+                        # Fallback for others (queue)
+                        color_idx = (i + 2) % 3
+                        color = colors[color_idx]
 
                 geom_id = physics.model.name2id(f'cube_{i}', 'geom')
                 physics.model.geom_rgba[geom_id] = color

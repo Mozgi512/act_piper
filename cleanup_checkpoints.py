@@ -1,36 +1,54 @@
 
 import os
+import argparse
 import re
+import glob
 
-def main():
-    ckpt_base_dir = '/home/act/act_piper/ckpt'
-    # Pattern to match: policy_epoch_{epoch}_seed_{seed}.ckpt
-    pattern = re.compile(r'policy_epoch_(\d+)_seed_\d+\.ckpt')
-    
-    deleted_count = 0
-    
-    if not os.path.exists(ckpt_base_dir):
-        print(f"Directory {ckpt_base_dir} does not exist.")
+def cleanup_checkpoints(ckpt_dir):
+    if not os.path.isdir(ckpt_dir):
+        print(f"Directory not found: {ckpt_dir}")
         return
 
-    print(f"Scanning {ckpt_base_dir} for checkpoints to cleanup...")
-
-    for root, dirs, files in os.walk(ckpt_base_dir):
-        for filename in files:
-            match = pattern.match(filename)
-            if match:
-                epoch = int(match.group(1))
-                # Delete if NOT a multiple of 1000
-                if epoch % 1000 != 0:
-                    filepath = os.path.join(root, filename)
-                    try:
-                        os.remove(filepath)
-                        # print(f"Deleted: {filepath}")
-                        deleted_count += 1
-                    except Exception as e:
-                        print(f"Error deleting {filepath}: {e}")
+    print(f"Cleaning up checkpoints in {ckpt_dir}...")
     
-    print(f"Cleanup complete. Deleted {deleted_count} files.")
+    # Matches policy_epoch_100_seed_0.ckpt
+    pattern = re.compile(r'policy_epoch_(\d+)_seed_\d+\.ckpt')
+    
+    files = glob.glob(os.path.join(ckpt_dir, "*.ckpt"))
+    deleted_count = 0
+    kept_count = 0
+    
+    for fpath in files:
+        fname = os.path.basename(fpath)
+        
+        # Always keep best and last
+        if 'best' in fname or 'last' in fname:
+            kept_count += 1
+            print(f"Keeping special ckpt: {fname}")
+            continue
+            
+        match = pattern.match(fname)
+        if match:
+            epoch = int(match.group(1))
+            if epoch % 1000 != 0:
+                print(f"Deleting {fname} (Epoch {epoch})")
+                os.remove(fpath)
+                deleted_count += 1
+            else:
+                print(f"Keeping {fname} (Epoch {epoch})")
+                kept_count += 1
+        else:
+            # Keep unrecognized files (safety)
+            print(f"Skipping unrecognized file: {fname}")
+            kept_count += 1
+            
+    print(f"\nCleanup finished.")
+    print(f"Deleted: {deleted_count}")
+    print(f"Kept: {kept_count}")
 
-if __name__ == "__main__":
-    main()
+if __name__ == '__main__':
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--ckpt_dir', type=str, required=True, help='Path to checkpoint directory')
+    args = parser.parse_args()
+    
+    cleanup_checkpoints(args.ckpt_dir)

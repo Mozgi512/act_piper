@@ -42,6 +42,12 @@ SIM_TASK_CONFIGS = {
         'episode_len': 360,
         'camera_names': ['top']
     },
+    'sim_four_objects_scripted':{
+        'dataset_dir': DATA_DIR + '/sim_four_objects',
+        'num_episodes': 100,
+        'episode_len': 700,
+        'camera_names': ['top']
+    },
     'sim_many_cubes':{
         'dataset_dir': DATA_DIR + '/sim_many_cubes',
         'num_episodes': 100,
@@ -57,13 +63,19 @@ SIM_TASK_CONFIGS = {
     'sim_coop_phase2_left_scripted':{
         'dataset_dir': DATA_DIR + '/cooperation_phase2_left',
         'num_episodes': 100,
-        'episode_len': 300,
+        'episode_len': 400,
         'camera_names': ['top']
     },
     'sim_coop_phase2_right_scripted':{
         'dataset_dir': DATA_DIR + '/cooperation_phase2_right',
         'num_episodes': 100,
-        'episode_len': 300,
+        'episode_len': 400,
+        'camera_names': ['top']
+    },
+    'sim_four_objects_scripted':{
+        'dataset_dir': DATA_DIR + '/four_objects',
+        'num_episodes': 100,
+        'episode_len': 680,
         'camera_names': ['top']
     },
 }
@@ -75,8 +87,11 @@ JOINT_NAMES = ["waist", "shoulder", "elbow", "forearm_roll", "wrist_angle", "wri
 #START_ARM_POSE = [2.2, 1.1, -0.5, 1.9, -2.1, -0.8, 0.02, -0.02, -2.2, 1.1, -0.5, -1.9, -2.1, 1, 0.02, -0.02]
 #START_ARM_POSE = [1.80,1.60,-0.90, 1.63,-1.79,-0.87,0.03,-0.03,-1.78,1.57,-0.90,-1.68,-1.73,0.99,0.03,-0.03]
 #START_ARM_POSE = [1.93,1.45,-1.08, 1.70,-1.87,-1.18,0.03,-0.03,-1.93,1.45,-1.08,-1.70,-1.87,1.18,0.03,-0.03]
-START_ARM_POSE = [0,0.36,-0.14, 0,-0.27,0,0.03,-0.03,0,0.36,-0.14,0,-0.27,0,0.03,-0.03]
-START_ARM_POSE = [0.76,1.23,-0.42,0.92,-1.05,-0.58,0.03,-0.03,-0.76,1.23,-0.42,-0.92,-1.05,0.58,0.03,-0.03]
+#START_ARM_POSE = [0,0.36,-0.14, 0,-0.27,0,0.03,-0.03,0,0.36,-0.14,0,-0.27,0,0.03,-0.03]
+#START_ARM_POSE = [0.76,1.23,-0.42,0.92,-1.05,-0.58,0.03,-0.03,-0.76,1.23,-0.42,-0.92,-1.05,0.58,0.03,-0.03]
+#START_ARM_POSE = [1.01,1.40,-1.04,1.95,-0.91,-1.49,0.03,-0.04,-1.00,1.39,-1.05,-1.97,-0.91,1.53,0.03,-0.04]
+START_ARM_POSE = [0.83, 1.62, -0.90, 1.56, -0.69, -1.05, 0.03, -0.04, -0.83, 1.62, -0.90, -1.57, -0.68, 1.07, 0.03, -0.04]
+
 
 XML_DIR = str(pathlib.Path(__file__).parent.resolve()) + '/mujoco_piper/' # note: absolute path
 

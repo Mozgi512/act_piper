@@ -1,4 +1,4 @@
-python3 record_sim_episodes.py --task_name sim_coop_scripted --dataset_dir piper_scripted_dataset/cooperation --num_episodes 100 --onscreen_render
+python3 record_sim_episodes.py --task_name sim_coop_scripted --dataset_dir piper_scripted_dataset/cooperation_200 --num_episodes 100 --onscreen_render
 
 python3 visualize_episodes.py --dataset_dir piper_scripted_dataset/cooperation --episode_idx 0
 
@@ -18,9 +18,9 @@ python3 independent_record_sim_episodes.py \
 
 python3 imitate_episodes.py \
 --task_name sim_coop_scripted \
---ckpt_dir piper_scripted_ckpt/cooperation \
+--ckpt_dir piper_scripted_ckpt/cooperation_200 \
 --policy_class ACT --kl_weight 10 --chunk_size 100 --hidden_dim 512 --batch_size 32 --dim_feedforward 3200 \
---num_epochs 20000  --lr 1e-5 \
+--num_epochs 40000  --lr 1e-5 \
 --seed 0
 
 
@@ -32,7 +32,6 @@ python3 visualize_episodes.py --dataset_dir piper_scripted_dataset/mixcoop --epi
 
 
 python3 visualize_episodes.py --dataset_dir piper_scripted_dataset/sim_coop_scripted --episode_idx 1
-
 
 python3 independent_record_sim_episodes.py --task_name sim_moving_cube_scripted --dataset_dir piper_scripted_dataset/independent_right --num_episodes 50 --arm right --onscreen_render
 
@@ -131,21 +130,77 @@ python policy_switcher.py \
 CUDA_LAUNCH_BLOCKING=0 TORCH_CUDNN_V8_API_ENABLED=1 \
 python3 imitate_episodes.py \
     --task_name sim_coop_scripted \
-    --ckpt_dir ckpt/cooperation_50eps \
+    --ckpt_dir ckpt/cooperation_200eps \
     --policy_class ACT --kl_weight 10 --chunk_size 100 --hidden_dim 512 \
     --batch_size 32 \
     --dim_feedforward 3200 \
-    --num_epochs 20000 --lr 1e-5 \
+    --num_epochs 40000 --lr 1e-5 \
     --seed 0 \
     --num_workers 4 \
     --persistent_workers \
     --prefetch_factor 2 \
     --use_cache \
     --use_cuda_graph \
-    --validation_interval 100 --num_episodes 50
+    --validation_interval 100 --num_episodes 200
 
 データ分割
-    python3 process_coop_data.py --dataset_dir ./piper_scripted_dataset/cooperation/ --num_episodes 100
+    python3 process_coop_data.py \
+    --dataset_dir ./piper_scripted_dataset/cooperation/ \
+    --num_episodes 100 \
+    --split_step 280 \
+    --phase2_len 300 \
+    --overlap_len 100
+
+
+    python3 process_coop_data.py \
+    --dataset_dir ./data/variable_coop_dataset/RGB \
+    --num_episodes 20 \
+    --split_step 280 \
+    --phase2_len 290 \
+    --overlap_len 100
+
+    python3 visualize_episodes.py --dataset_dir ./data/variable_coop_dataset/RGB_phase1 --episode_idx 0
+    python3 visualize_episodes.py --dataset_dir ./data/variable_coop_dataset/RGB_phase2_left --episode_idx 0
+    python3 visualize_episodes.py --dataset_dir ./data/variable_coop_dataset/RGB_phase2_right --episode_idx 0
+
+
+
 
 成功率評価プロット
-    python3 plot_evaluation.py --csv_path ./ckpt/cooperation_75eps_2/evaluation_results.csv --output_path ./cooperation_result_75_2.png 
+    python3 plot_evaluation.py --csv_path ./ckpt/cooperation_150eps/evaluation_results.csv --output_path ./cooperation_result_75_2.png 
+
+階層型理論値評価
+python3 policy_switcher.py \
+    --task_name sim_coop_scripted \
+    --ckpt_dual ckpt/cooperation/_phase1 \
+    --ckpt_left ckpt/cooperation/phase2_left \
+    --ckpt_right ckpt/cooperation/phase2_right \
+    --policy_class ACT \
+    --kl_weight 10 \
+    --chunk_size 100 \
+    --hidden_dim 512 \
+    --dim_feedforward 3200 \
+    --switch_step 280 \
+    --onscreen_render \
+    --inherit_temporal_buffer \
+    --warmup_steps 100 \
+    --num_rollouts 50
+
+
+    python3 generate_coop_dataset.py --target_order BGR GBR --num_episodes 50
+
+python3 independent_imitate_episodes.py \
+    --task_name sim_coop_phase2_left_scripted \
+    --ckpt_dir ckpt/cooperation/phase2_left \
+    --policy_class ACT \
+    --kl_weight 10 \
+    --chunk_size 100 \
+    --hidden_dim 512 \
+    --dim_feedforward 3200 \
+    --num_epochs 40000 \
+    --lr 1e-5 \
+    --seed 0 \
+    --onscreen_render \
+    --arm left \
+    --eval \
+    --batch_size 32

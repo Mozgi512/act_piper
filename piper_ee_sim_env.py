@@ -1,6 +1,7 @@
 import numpy as np
 import collections
 import os
+from pyquaternion import Quaternion
 
 from piper_constants import DT, XML_DIR, START_ARM_POSE,BELT_MOVE_SPEED
 from piper_constants import PUPPET_GRIPPER_POSITION_CLOSE
@@ -8,7 +9,8 @@ from piper_constants import PUPPET_GRIPPER_POSITION_UNNORMALIZE_FN
 from piper_constants import PUPPET_GRIPPER_POSITION_NORMALIZE_FN
 from piper_constants import PUPPET_GRIPPER_VELOCITY_NORMALIZE_FN
 
-from utils import sample_redbox_pose, sample_insertion_pose,sample_bluebox_pose,sample_greenbox_pose,sample_cube_pose
+from utils import sample_redbox_pose, sample_insertion_pose,sample_bluebox_pose,sample_greenbox_pose,sample_cube_pose, sample_redbox1_pose, sample_redbox2_pose, sample_greenbox1_pose, sample_bluebox1_pose
+from piper_sim_env import MANYCUBES_COLORS
 from dm_control import mujoco
 from dm_control.rl import control
 from dm_control.suite import base
@@ -66,11 +68,17 @@ def make_ee_sim_env(task_name, camera_names=None):
         task = ManyCubesEETask(random=False, camera_names=camera_names)
         env = control.Environment(physics, task, time_limit=20, control_timestep=DT,
                                   n_sub_steps=None, flat_observation=False)
+    elif 'sim_four_objects' in task_name:
+        xml_path = os.path.join(XML_DIR, f'bimanual_piper_ee_variable_coop.xml') # Reuse Variable Coop XML
+        physics = mujoco.Physics.from_xml_path(xml_path)
+        task = FourObjectEETask(random=False, camera_names=camera_names)
+        env = control.Environment(physics, task, time_limit=20, control_timestep=DT,
+                                  n_sub_steps=None, flat_observation=False)
     elif 'sim_many_cubes' in task_name:
         xml_path = os.path.join(XML_DIR, f'bimanual_piper_ee_many_cubes.xml')
         physics = mujoco.Physics.from_xml_path(xml_path)
         task = ManyCubesEETask(random=False, camera_names=camera_names)
-        env = control.Environment(physics, task, time_limit=20, control_timestep=DT,
+        env = control.Environment(physics, task, time_limit=1000, control_timestep=DT,
                                   n_sub_steps=None, flat_observation=False)
     else:
         raise NotImplementedError
@@ -108,11 +116,15 @@ class BimanualPiperEETask(base.Task):
         # (2) get env._physics.named.data.xpos['vx300s_left/gripper_link']
         #     get env._physics.named.data.xquat['vx300s_left/gripper_link']
         #     repeat the same for right side
-        np.copyto(physics.data.mocap_pos[0], [-0.1, 0.1, 0.2])
-        np.copyto(physics.data.mocap_quat[0], [1, 0, 0, 0])
+        np.copyto(physics.data.mocap_pos[0], [-0.05, 0.25, 0.1])
+        # Left: +30 deg around Y
+        q_left = Quaternion(axis=[0.0, 1.0, 0.0], degrees=30)
+        np.copyto(physics.data.mocap_quat[0], q_left.elements)
         # right
-        np.copyto(physics.data.mocap_pos[1], np.array([0.1, 0.1, 0.2]))
-        np.copyto(physics.data.mocap_quat[1],  [1, 0, 0, 0])
+        np.copyto(physics.data.mocap_pos[1], [0.05, 0.25, 0.1])
+        # Right: -30 deg around Y
+        q_right = Quaternion(axis=[0.0, 1.0, 0.0], degrees=-30)
+        np.copyto(physics.data.mocap_quat[1], q_right.elements)
 
         # reset gripper control
         close_gripper_control = np.array([
@@ -521,6 +533,10 @@ class ManyCubesEETask(BimanualPiperEETask):
     def initialize_episode(self, physics):
         """Sets the state of the environment at the start of each episode."""
         self.initialize_robots(physics)
+        # Object Removal State
+        self.removal_timers = {}
+        self.removed_objects = set()
+        
         # randomize 10 cubes position
         # range mostly on the belt
         
@@ -573,14 +589,32 @@ class ManyCubesEETask(BimanualPiperEETask):
             
             joint_id = physics.model.name2id(f'cube_{i}_joint', 'joint')
             qpos_adr = physics.model.jnt_qposadr[joint_id]
-            np.copyto(physics.data.qpos[qpos_adr : qpos_adr + 7], cube_pose)
-
+            # Interactive Mode Override: Linear Queue 0..9 (Same logic as piper_sim_env)
+            # Interactive Mode Override: Linear Queue 0..9 (Same logic as piper_sim_env)
+            if MANYCUBES_COLORS[0] is not None:
+                 start_x = 0.00
+                 spacing = 0.15
+                 px = start_x - i * spacing
+                 py = np.random.uniform(0.35, 0.40)
+                 np.copyto(physics.data.qpos[qpos_adr : qpos_adr + 7], [px, py, 0.025, 1, 0, 0, 0])
+                 print(f"Debug EE: Cube {i} initialized at X={px:.3f}, Y={py:.3f}")
+            else:
+                 np.copyto(physics.data.qpos[qpos_adr : qpos_adr + 7], cube_pose)
+            
             # Color logic
             if self.randomize_cube_colors:
                 color = colors[np.random.randint(0, 3)]
             else:
-                color_idx = (i + 2) % 3
-                color = colors[color_idx]
+                # Check for injected color sequence
+                if MANYCUBES_COLORS[0] is not None and i < len(MANYCUBES_COLORS[0]):
+                    c_code = MANYCUBES_COLORS[0][i]
+                    if c_code == 'r': color = colors[0]
+                    elif c_code == 'g': color = colors[1]
+                    elif c_code == 'b': color = colors[2]
+                    else: color = colors[0]
+                else:
+                    color_idx = (i + 2) % 3
+                    color = colors[color_idx]
 
             geom_id = physics.model.name2id(f'cube_{i}', 'geom')
             physics.model.geom_rgba[geom_id] = color
@@ -588,6 +622,50 @@ class ManyCubesEETask(BimanualPiperEETask):
         physics.named.data.ctrl['belt_speed'] = BELT_MOVE_SPEED
 
         super().initialize_episode(physics)
+
+    def after_step(self, physics):
+        super().after_step(physics)
+        
+        # Check for objects in placement zone (Y < 0.28)
+        # If they stay there for > 4.0s, remove them (hide)
+        
+        current_time = physics.time()
+        
+        for i in range(10):
+            if i in self.removed_objects:
+                continue
+                
+            # Get Cube Position
+            try:
+                joint_id = physics.model.name2id(f'cube_{i}_joint', 'joint')
+                qpos_adr = physics.model.jnt_qposadr[joint_id]
+                
+                # qpos: [x, y, z, qw, qx, qy, qz]
+                y_pos = physics.data.qpos[qpos_adr + 1]
+                
+                if y_pos < 0.28:
+                    # In Placement Zone
+                    if i not in self.removal_timers:
+                        self.removal_timers[i] = current_time
+                    
+                    # Check Duration
+                    if current_time - self.removal_timers[i] > 4.0:
+                        # Move to hidden location
+                        hidden_pos = np.array([10.0 + i, -10.0, -1.0, 1, 0, 0, 0])
+                        np.copyto(physics.data.qpos[qpos_adr : qpos_adr+7], hidden_pos)
+                        
+                        # Kill velocity to prevent physics explosions
+                        dof_adr = physics.model.jnt_dofadr[joint_id]
+                        np.copyto(physics.data.qvel[dof_adr : dof_adr+6], np.zeros(6))
+                        
+                        self.removed_objects.add(i)
+                else:
+                    # Not in zone (or moved out)
+                    if i in self.removal_timers:
+                        del self.removal_timers[i]
+                        
+            except Exception as e:
+                pass
 
     @staticmethod
     def get_env_state(physics):
@@ -628,3 +706,56 @@ class ManyCubesEETask(BimanualPiperEETask):
             reward = 0
 
         return reward
+
+
+class FourObjectEETask(ManyCubesEETask):
+    def __init__(self, random=None, randomize_cube_colors=False, init_phase=1, camera_names=None):
+        super().__init__(random=random, randomize_cube_colors=randomize_cube_colors, init_phase=init_phase, camera_names=camera_names)
+
+    def initialize_episode(self, physics):
+        # Initialize robots first (joint positions etc)
+        self.initialize_robots(physics)
+        
+        poses = {}
+        # 7: Red1 -> sample_redbox1_pose
+        poses[7] = sample_redbox1_pose()
+        # 6: Red2 -> sample_redbox2_pose (New)
+        poses[6] = sample_redbox2_pose()
+        # 8: Green -> sample_greenbox1_pose
+        poses[8] = sample_greenbox1_pose()
+        # 9: Blue -> sample_bluebox1_pose
+        poses[9] = sample_bluebox1_pose()
+        
+        # Colors
+        red = np.array([1, 0, 0, 1])
+        green = np.array([0, 1, 0, 1])
+        blue = np.array([0, 0, 1, 1])
+        gray = np.array([0.2, 0.2, 0.2, 0.5])
+
+        for i in range(10):
+            if i in poses:
+                cube_pose = poses[i]
+            else:
+                 # Spawn unused far away
+                cube_pose = np.array([10.0 + i*0.1, 10.0, 0, 1, 0, 0, 0])
+            
+            joint_id = physics.model.name2id(f'cube_{i}_joint', 'joint')
+            qpos_adr = physics.model.jnt_qposadr[joint_id]
+            np.copyto(physics.data.qpos[qpos_adr : qpos_adr + 7], cube_pose)
+
+            # Set colors
+            geom_id = physics.model.name2id(f'cube_{i}', 'geom')
+            if i == 7 or i == 6:
+                physics.model.geom_rgba[geom_id] = red
+            elif i == 8:
+                physics.model.geom_rgba[geom_id] = green
+            elif i == 9:
+                physics.model.geom_rgba[geom_id] = blue
+            else:
+                physics.model.geom_rgba[geom_id] = gray
+
+        physics.named.data.ctrl['belt_speed'] = BELT_MOVE_SPEED
+        
+        # Bypass ManyCubesEETask.initialize_episode and go straight to BimanualPiperEETask
+        # BimanualPiperEETask.initialize_episode calls super().initialize_episode(physics) which is base.Task
+        BimanualPiperEETask.initialize_episode(self, physics)

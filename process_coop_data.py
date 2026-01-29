@@ -6,7 +6,7 @@ import time
 from utils import apply_rgb_mask_to_strip
 import cv2
 
-def process_episode(episode_idx, dataset_dir, phase1_dir, phase2_left_dir, phase2_right_dir, camera_names, split_step, phase2_len):
+def process_episode(episode_idx, dataset_dir, phase1_dir, phase2_left_dir, phase2_right_dir, camera_names, split_step, phase2_len, overlap_len):
     dataset_path = os.path.join(dataset_dir, f'episode_{episode_idx}.hdf5')
     
     if not os.path.exists(dataset_path):
@@ -35,7 +35,8 @@ def process_episode(episode_idx, dataset_dir, phase1_dir, phase2_left_dir, phase
     save_hdf5(os.path.join(phase1_dir, f'episode_{episode_idx}'), p1_qpos, p1_qvel, p1_action, p1_images, camera_names)
 
     # --- Phase 2: t=split_step to split_step + phase2_len ---
-    PHASE2_START = split_step
+    # With overlap: start earlier by overlap_len
+    PHASE2_START = max(0, split_step - overlap_len)
     PHASE2_END = split_step + phase2_len
     
     # Verify length
@@ -146,6 +147,7 @@ def main(args):
     num_episodes = args['num_episodes']
     split_step = args['split_step']
     phase2_len = args['phase2_len']
+    overlap_len = args['overlap_len']
     
     # Output Directories
     phase1_dir = dataset_dir + '_phase1'
@@ -176,7 +178,7 @@ def main(args):
     count = 0
     t0 = time.time()
     for i in range(num_episodes):
-        if process_episode(i, dataset_dir, phase1_dir, phase2_left_dir, phase2_right_dir, camera_names, split_step, phase2_len):
+        if process_episode(i, dataset_dir, phase1_dir, phase2_left_dir, phase2_right_dir, camera_names, split_step, phase2_len, overlap_len):
             count += 1
         if (i+1) % 10 == 0:
             print(f"Processed {i+1}/{num_episodes} episodes...")
@@ -189,5 +191,6 @@ if __name__ == '__main__':
     parser.add_argument('--num_episodes', action='store', type=int, help='Number of episodes', required=True)
     parser.add_argument('--split_step', action='store', type=int, default=280, help='Timestep to split Phase 1 and Phase 2')
     parser.add_argument('--phase2_len', action='store', type=int, default=300, help='Length of Phase 2')
+    parser.add_argument('--overlap_len', action='store', type=int, default=0, help='Length of overlap before split_step for Phase 2')
     
     main(vars(parser.parse_args()))

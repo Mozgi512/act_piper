@@ -4,11 +4,12 @@ import numpy as np
 import argparse
 import matplotlib.pyplot as plt
 import h5py
+import csv
 
 from piper_constants import PUPPET_GRIPPER_POSITION_NORMALIZE_FN, SIM_TASK_CONFIGS,BELT_MOVE_SPEED
 from piper_ee_sim_env import make_ee_sim_env
-from piper_sim_env import make_sim_env, REDBOX_POSE, GREENBOX_POSE, BLUEBOX_POSE
-from scripted_policy import PickAndTransferPolicy, InsertionPolicy,IndependentPolicy,CoopPolicy
+from piper_sim_env import make_sim_env, REDBOX_POSE, GREENBOX_POSE, BLUEBOX_POSE, MANYCUBES_POSES
+from scripted_policy import PickAndTransferPolicy, InsertionPolicy,IndependentPolicy,CoopPolicy, FourObjectPolicy
 
 import IPython
 e = IPython.embed
@@ -45,12 +46,15 @@ def main(args):
         policy_cls = IndependentPolicy
     elif task_name == 'sim_coop_scripted':
         policy_cls = CoopPolicy
+    elif task_name == 'sim_four_objects_scripted':
+        policy_cls = FourObjectPolicy
     
     else:
         raise NotImplementedError
 
     success = []
-    for episode_idx in range(num_episodes):
+    episode_idx = 0
+    while episode_idx < num_episodes:
         print(f'{episode_idx=}')
         print('Rollout out EE space scripted policy')
         # setup the environment
@@ -81,9 +85,23 @@ def main(args):
         episode_return = np.sum([ts.reward for ts in episode[1:]])
         episode_max_reward = np.max([ts.reward for ts in episode[1:]])
         if episode_max_reward == env.task.max_reward:
-            print(f"{episode_idx=} Successful, {episode_return=}")
+            print(f"{episode_idx=} Successful Rollout, {episode_return=}")
         else:
-            print(f"{episode_idx=} Failed")
+            print(f"{episode_idx=} Failed Rollout")
+            
+            # Log failure
+            subtask_info_fail = episode[0].observation['env_state'].copy()
+            if 'sim_coop' in task_name:
+                red_pos = subtask_info_fail[49:52]
+            else:
+                red_pos = subtask_info_fail[0:3]
+            
+            with open('record_log.csv', 'a', newline='') as f:
+                writer = csv.writer(f)
+                writer.writerow([episode_idx, red_pos[0], red_pos[1], red_pos[2], 0]) # 0 for failure
+
+            del env
+            continue
 
         joint_traj = [ts.observation['qpos'] for ts in episode]
 
@@ -96,8 +114,6 @@ def main(args):
             joint[6+7] = right_ctrl
 
         subtask_info = episode[0].observation['env_state'].copy() # box pose at step 0
-        
-
         
         # clear unused variables
         del env
@@ -115,6 +131,11 @@ def main(args):
              REDBOX_POSE[0] = subtask_info[49:56].copy()      # red box (cube 7)
              GREENBOX_POSE[0] = subtask_info[56:63].copy()   # green box (cube 8)
              BLUEBOX_POSE[0] = subtask_info[63:70].copy()   # blue box (cube 9)
+        elif 'sim_four_objects' in task_name:
+             poses = {}
+             for i in range(10):
+                 poses[i] = subtask_info[i*7 : (i+1)*7].copy()
+             MANYCUBES_POSES[0] = poses
         else:
              REDBOX_POSE[0] = subtask_info[0:7].copy()      # red box
              GREENBOX_POSE[0] = subtask_info[7:14].copy()   # green box
@@ -144,10 +165,25 @@ def main(args):
         episode_max_reward = np.max([ts.reward for ts in episode_replay[1:]])
         if episode_max_reward == env.task.max_reward:
             success.append(1)
-            print(f"{episode_idx=} Successful, {episode_return=}")
+            print(f"{episode_idx=} Successful Replay, {episode_return=}")
+            is_success = 1
         else:
-            success.append(0)
-            print(f"{episode_idx=} Failed")
+            print(f"{episode_idx=} Failed Replay")
+            is_success = 0
+            
+        # Log result
+        if 'sim_coop' in task_name:
+             red_pos = subtask_info[49:52]
+        else:
+             red_pos = subtask_info[0:3]
+
+        with open('record_log.csv', 'a', newline='') as f:
+            writer = csv.writer(f)
+            writer.writerow([episode_idx, red_pos[0], red_pos[1], red_pos[2], is_success])
+
+        if is_success == 0:
+            del env
+            continue
 
         plt.close()
         joint_traj1 = [ts.observation['qpos'] for ts in episode_replay]
@@ -191,24 +227,27 @@ def main(args):
                 data_dict[f'/observations/images/{cam_name}'].append(ts.observation['images'][cam_name])
 
         # HDF5
-        t0 = time.time()
-        dataset_path = os.path.join(dataset_dir, f'episode_{episode_idx}')
-        with h5py.File(dataset_path + '.hdf5', 'w', rdcc_nbytes=1024 ** 2 * 2) as root:
-            root.attrs['sim'] = True
-            obs = root.create_group('observations')
-            image = obs.create_group('images')
-            for cam_name in camera_names:
-                _ = image.create_dataset(cam_name, (max_timesteps, 480, 640, 3), dtype='uint8',
-                                         chunks=(1, 480, 640, 3), )
-            # compression='gzip',compression_opts=2,)
-            # compression=32001, compression_opts=(0, 0, 0, 0, 9, 1, 1), shuffle=False)
-            qpos = obs.create_dataset('qpos', (max_timesteps, 14))
-            qvel = obs.create_dataset('qvel', (max_timesteps, 14))
-            action = root.create_dataset('action', (max_timesteps, 14))
+        if not args['no_save_data']:
+            t0 = time.time()
+            dataset_path = os.path.join(dataset_dir, f'episode_{episode_idx}')
+            with h5py.File(dataset_path + '.hdf5', 'w', rdcc_nbytes=1024 ** 2 * 2) as root:
+                root.attrs['sim'] = True
+                obs = root.create_group('observations')
+                image = obs.create_group('images')
+                for cam_name in camera_names:
+                    _ = image.create_dataset(cam_name, (max_timesteps, 480, 640, 3), dtype='uint8',
+                                             chunks=(1, 480, 640, 3), )
+                # compression='gzip',compression_opts=2,)
+                # compression=32001, compression_opts=(0, 0, 0, 0, 9, 1, 1), shuffle=False)
+                qpos = obs.create_dataset('qpos', (max_timesteps, 14))
+                qvel = obs.create_dataset('qvel', (max_timesteps, 14))
+                action = root.create_dataset('action', (max_timesteps, 14))
 
-            for name, array in data_dict.items():
-                root[name][...] = array
-        print(f'Saving: {time.time() - t0:.1f} secs\n')
+                for name, array in data_dict.items():
+                    root[name][...] = array
+            print(f'Saving: {time.time() - t0:.1f} secs\n')
+        
+        episode_idx += 1
 
     print(f'Saved to {dataset_dir}')
     print(f'Success: {np.sum(success)} / {len(success)}')
@@ -219,6 +258,7 @@ if __name__ == '__main__':
     parser.add_argument('--dataset_dir', action='store', type=str, help='dataset saving dir', required=True)
     parser.add_argument('--num_episodes', action='store', type=int, help='num_episodes', required=False)
     parser.add_argument('--onscreen_render', action='store_true')
+    parser.add_argument('--no_save_data', action='store_true', help='Do not save HDF5 data')
     
     main(vars(parser.parse_args()))
 

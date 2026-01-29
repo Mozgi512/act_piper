@@ -73,8 +73,8 @@
         <position name="l_joint4" joint="l_joint4" class="piper" kp="400" kv="5"/>
         <position name="l_joint5" joint="l_joint5" class="piper" kp="100" kv="1.5"/>
         <position name="l_joint6" joint="l_joint6" class="piper" kp="100" kv="1.5"/>
-        <position name="l_finger" joint="l_joint7" class="finger" kp="800" kv="5"/>
-        <position name="l_finger2" joint="l_joint8" class="finger" kp="800" kv="5"/>
+        <position name="l_finger" joint="l_joint7" class="finger" kp="600" kv="5"/>
+        <position name="l_finger2" joint="l_joint8" class="finger" kp="600" kv="5"/>
 
         <position name="r_joint1" joint="r_joint1" class="piper" kp="800" kv="5"/>
         <position name="r_joint2" joint="r_joint2" class="piper" kp="800" kv="5"/>
@@ -82,8 +82,8 @@
         <position name="r_joint4" joint="r_joint4" class="piper" kp="400" kv="5"/>
         <position name="r_joint5" joint="r_joint5" class="piper" kp="100" kv="1.5"/>
         <position name="r_joint6" joint="r_joint6" class="piper" kp="100" kv="1.5"/>
-        <position name="r_finger" joint="r_joint7" class="finger" kp="800" kv="5"/>
-        <position name="r_finger2" joint="r_joint8" class="finger" kp="800" kv="5"/>
+        <position name="r_finger" joint="r_joint7" class="finger" kp="600" kv="5"/>
+        <position name="r_finger2" joint="r_joint8" class="finger" kp="600" kv="5"/>
 
     </actuator>
 

@@ -18,11 +18,12 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--onscreen_render', action='store_true')
     parser.add_argument('--target_order', action='store', type=str, nargs='+', help='Specific permutations to generate (e.g. RGB BRG)')
+    parser.add_argument('--num_episodes', action='store', type=int, default=20, help='Number of episodes per configuration')
     args = parser.parse_args()
     
     base_dataset_dir = 'data/variable_coop_dataset'
     task_name = 'sim_coop_scripted' # Use coop config for camera/length
-    num_episodes_per_config = 20
+    num_episodes_per_config = args.num_episodes
     onscreen_render = args.onscreen_render
     
     # 6 Permutations of Cube IDs [7=R, 8=G, 9=B]
@@ -258,6 +259,7 @@ def main():
             data_dict = {
                 '/observations/qpos': [],
                 '/observations/qvel': [],
+                '/action': [],
             }
             for cam_name in camera_names:
                 data_dict[f'/observations/images/{cam_name}'] = []
