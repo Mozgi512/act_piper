@@ -1,8 +1,10 @@
 import time
 import sys
 import select
+import os
+os.environ['MUJOCO_GL'] = 'egl'
+
 import numpy as np
-import matplotlib.pyplot as plt
 from pyquaternion import Quaternion
 
 from piper_ee_sim_env import make_ee_sim_env
@@ -26,15 +28,14 @@ class InteractivePolicy(VariableCoopPolicy):
         self.right_trajectory = [
             {"t": 0, "xyz": [0,0,0], "quat": [1,0,0,0], "gripper": 1},
             {"t": 100000, "xyz": [0,0,0], "quat": [1,0,0,0], "gripper": 1} 
-        ]
+         ]
         self.step_count = 0
         self.initialized = False
         
         self.picked_objects = set()
         self.sequence_idx = 0 # Points to the *next* object in COLOR_SEQUENCE to process
         self.task_count = 0  # Counter for Y-offset calculation (5cm per task) - DEPRECATED, use specific counters
-        self.independent_count = 0  # Counter for Independent task Y-offset
-        self.cooperative_count = 0  # Counter for Cooperative task Y-offset
+        self.last_action_end_t = -1
 
     def generate_trajectory(self, ts_first):
         self.init_pose(ts_first)
@@ -81,7 +82,8 @@ class InteractivePolicy(VariableCoopPolicy):
             # Check if on conveyor (rough bounds)
             # Spawn is around 0.2 to 0.4. Belt moves to -X.
             # "On conveyor" implies reachable and moving.
-            if xyz[0] < 0.4 and xyz[0] > -0.5:
+            # Restrict X range to avoid over-reaching (causing singularities)
+            if xyz[0] < 0.4 and xyz[0] > -0.45:
                 available.append((i, xyz[0], color))
                 
         # Sort by X descending (Rightmost first -> coming effectively?)
@@ -176,8 +178,7 @@ class InteractivePolicy(VariableCoopPolicy):
         belt_speed = BELT_MOVE_SPEED
         # Calculate Y-offset: 5cm per Independent task to prevent collisions
         # Base position is 0.05m, so 1st task: 0.05m, 2nd: 0.10m, 3rd: 0.15m...
-        y_offset = self.independent_count * 0.05
-        goal_xyz = np.array([0, 0.05 + y_offset, 0.025])
+        goal_xyz = np.array([0, 0.10, 0.025])
         
         # Sort targets by X descending
         targets.sort(key=lambda x: x[1], reverse=True)
@@ -198,20 +199,29 @@ class InteractivePolicy(VariableCoopPolicy):
         offset = t_right_target[0] * 7
         obj_xyz = cubes_state[offset : offset+3] # Still needed? No, logic moved to helper.
         # But we pass obj_idx = t_right_target[0]
-        start_t = max(t_right_end, self.step_count)
+        # Sync Start: Ensure we start from current time or last connection
+        # Add 20 steps buffer to allow smooth transition from Loading/Holding to Reach
+        start_t = max(t_right_end, self.step_count) + 20
+        # If gap exists, fill it with hold (handled by get_last_waypoint/interpolate fallback?)
+        # Better: Explicitly hold until start_t? 
+        # Actually base policy interpolates. If we define start_t > last_t, it interpolates.
+        if start_t > t_right_end:
+             # Ensure last waypoint is preserved until start_t for smooth takeoff? 
+             # No, simple interpolation from last_waypoint to first pick_waypoint is sufficient 
+             # IF duration is long enough. 20 steps (0.4s) is good.
+             pass
+
         self.add_pick_place(self.right_trajectory, start_t, t_right_target[0], goal_xyz, belt_speed, is_left=False, offset_x=0.08)
         
         # Left Arm Plan
         offset = t_left_target[0] * 7
         obj_xyz = cubes_state[offset : offset+3]
-        start_t = max(t_left_end, self.step_count)
+        start_t = max(t_left_end, self.step_count) + 20
         self.add_pick_place(self.left_trajectory, start_t, t_left_target[0], goal_xyz, belt_speed, is_left=True, offset_x=-0.08)
-        
-        # Increment Independent task counter for next placement
-        self.independent_count += 1
-        
+
         # Return to home position
         return_t = max(self.left_trajectory[-1]['t'], self.right_trajectory[-1]['t']) + 60
+        self.last_action_end_t = return_t
         self.left_trajectory.append({"t": return_t, "xyz": self.init_left_pose["xyz"], "quat": self.init_left_pose["quat"], "gripper": 1})
         self.right_trajectory.append({"t": return_t, "xyz": self.init_right_pose["xyz"], "quat": self.init_right_pose["quat"], "gripper": 1})
         
@@ -298,8 +308,7 @@ class InteractivePolicy(VariableCoopPolicy):
             
             # Place (Right carries Blue base)
             t_place_start = t_retreat
-            y_offset = self.cooperative_count * 0.05
-            self.add_place(self.right_trajectory, t_place_start, np.array([0, 0.05 + y_offset, 0.025]), is_left=False)
+            self.add_place(self.right_trajectory, t_place_start, np.array([0, 0.05, 0.025]), is_left=False)
         else:
             # Right has Green = Right is Top (Insertion)
             self.right_trajectory.append({"t": t_done, "xyz": meet_xyz + [0,0,0.04], "quat": q_r, "gripper": 1}) # Insert
@@ -315,12 +324,9 @@ class InteractivePolicy(VariableCoopPolicy):
             
             # Place (Left carries Blue base)
             t_place_start = t_retreat
-            y_offset = self.cooperative_count * 0.05
-            self.add_place(self.left_trajectory, t_place_start, np.array([0, 0.05 + y_offset, 0.025]), is_left=True)
+            self.add_place(self.left_trajectory, t_place_start, np.array([0, 0.05, 0.025]), is_left=True)
         
-        # Increment Cooperative task counter for next placement
-        self.cooperative_count += 1
-        
+        # Increment Cooperative task counter for next placement        
         # Return to home position
         # Placing arm returns first, other arm returns later
         if left_holds_green:
@@ -337,6 +343,11 @@ class InteractivePolicy(VariableCoopPolicy):
             # Right arm returns later
             right_return_t = left_return_t -70
             self.right_trajectory.append({"t": right_return_t, "xyz": self.init_right_pose["xyz"], "quat": self.init_right_pose["quat"], "gripper": 1})
+        
+        
+        # Calculate completion time
+        return_t = max(self.left_trajectory[-1]['t'], self.right_trajectory[-1]['t'])
+        self.last_action_end_t = return_t
         
         # Restore Tails
         tail_t = max(self.left_trajectory[-1]['t'], self.right_trajectory[-1]['t']) + 10000
@@ -357,20 +368,38 @@ class InteractivePolicy(VariableCoopPolicy):
 
     # Inject Sequence
 def main():
+    import argparse
+    parser = argparse.ArgumentParser()
+    parser.add_argument('-c', '--commands', type=str, help='Sequence of commands (e.g. "ICI")', default="")
+    args = parser.parse_args()
+    
+    command_queue = list(args.commands)
+    # Next, trigger at step 20 for the first command
+    next_trigger = 20 if command_queue else -1
+
     MANYCUBES_COLORS[0] = COLOR_SEQUENCE
     
     task_name = 'sim_many_cubes'
-    env = make_ee_sim_env(task_name)
+    env = make_ee_sim_env(task_name, camera_names=['top'])
     policy = InteractivePolicy(inject_noise=False)
     
     # Render setup
-    plt.ion()
-    fig = plt.figure()
-    ax = fig.add_subplot(111)
+    import cv2
+    window_name = "Interactive Policy"
+    cv2.namedWindow(window_name, cv2.WINDOW_AUTOSIZE)
+    try:
+        cv2.startWindowThread()
+    except:
+        pass
+
     # Init render
     ts = env.reset()
-    img = ax.imshow(ts.observation['images']['top'])
-    plt.show(block=False)
+    
+    # Show initial frame immediately
+    img_rgb = ts.observation['images']['top']
+    img_bgr = cv2.cvtColor(img_rgb, cv2.COLOR_RGB2BGR)
+    cv2.imshow(window_name, img_bgr)
+    cv2.waitKey(100) # Wait a bit longer for first frame
     
     policy.init_pose(ts)
     
@@ -384,6 +413,15 @@ def main():
     step = 0
     try:
         while True:
+            # Auto Execution Logic
+            if command_queue and step == next_trigger:
+                cmd = command_queue.pop(0).upper()
+                print(f"Auto-executing command '{cmd}' at step {step}")
+                policy.schedule_command(cmd, ts)
+                # Next trigger will be set upon completion
+                next_trigger = -1
+
+            # Non-blocking stdin read
             if select.select([sys.stdin], [], [], 0.0)[0]:
                 line = sys.stdin.readline().strip().upper()
                 if line == 'Q':
@@ -396,16 +434,32 @@ def main():
             action = policy(ts)
             ts = env.step(action)
             
+            # Render every step or every N steps
             if step % 2 == 0: 
-                img.set_data(ts.observation['images']['top'])
-                fig.canvas.flush_events()
+                # Get RGB image
+                img_rgb = ts.observation['images']['top']
+                # Convert to BGR for OpenCV
+                img_bgr = cv2.cvtColor(img_rgb, cv2.COLOR_RGB2BGR)
                 
+                cv2.imshow(window_name, img_bgr)
+                # Wait 1ms to process events
+                key = cv2.waitKey(10) & 0xFF
+                if key == ord('q'):
+                    break
+             
+            if step == policy.last_action_end_t:
+                print(f"Subtask completed at timestep {step}")
+                if command_queue:
+                    next_trigger = step + 20
+                    print(f"Next task scheduled at step {next_trigger}")
+
             step += 1
             
     except KeyboardInterrupt:
         pass
     finally:
-        plt.close()
+        # plt.close()
+        cv2.destroyAllWindows()
         print("Interactive Policy Terminated")
 
 if __name__ == '__main__':
