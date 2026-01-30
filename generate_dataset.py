@@ -129,6 +129,17 @@ def main(args):
         # Extract Joint Trajectory
         joint_traj = [ts.observation['qpos'] for ts in episode]
         
+        # Debug: Check for discontinuities in the extracted trajectory
+        print(f"  Debug: joint_traj length = {len(joint_traj)}")
+        print(f"  Debug: joint_traj[0] shape = {joint_traj[0].shape}")
+        print(f"  Debug: Checking for large jumps in extracted qpos...")
+        for t in range(1, min(len(joint_traj), 1100)):
+            diff = np.abs(joint_traj[t] - joint_traj[t-1])
+            if np.max(diff) > 0.5:
+                print(f"    Large jump at step {t}: max_diff = {np.max(diff):.3f}, joint {np.argmax(diff)}")
+                print(f"      Before: {joint_traj[t-1]}")
+                print(f"      After:  {joint_traj[t]}")
+        
         # Replace gripper pose with gripper control (standard practice in record_sim_episodes)
         gripper_ctrl_traj = [ts.observation['gripper_ctrl'] for ts in episode]
         for joint, ctrl in zip(joint_traj, gripper_ctrl_traj):
@@ -152,8 +163,8 @@ def main(args):
         # Unwrap each joint column. Discontinuity threshold = pi
         # Note: Gripper indices are linear (0-1), unwrapping won't affect them if they are smooth
         # But for rotation joints (radians), this fixes jumps +/- 2pi
-        for j in range(14):
-             joint_traj_np[:, j] = np.unwrap(joint_traj_np[:, j])
+        # for j in range(14):
+        #      joint_traj_np[:, j] = np.unwrap(joint_traj_np[:, j])
         
         # Convert back to list of arrays
         joint_traj_np = np.array(joint_traj) # Need this for processing
@@ -181,9 +192,6 @@ def main(args):
         max_jump = np.max(np.abs(jumps))
         if max_jump > 0.2:
              print(f"WARNING: Large joint jump detected! Max: {max_jump:.3f} rad/step")
-             rows, cols = np.where(np.abs(jumps) > 0.2)
-             for r, c in zip(rows[:10], cols[:10]):
-                 print(f"  Jump at Step {r}, Joint {c}: {jumps[r, c]:.3f}")
 
         del env
         del policy
@@ -192,6 +200,11 @@ def main(args):
         # 2. Joint Space Replay
         # ---------------------------------------------------------
         print(f'Episode {episode_idx}: Replaying in Joint space')
+        print(f'  EE Episode Length: {len(episode)} steps')
+        print(f'  Joint Trajectory Length: {len(joint_traj)} steps')
+        
+        if len(episode) != len(joint_traj):
+            print(f'  WARNING: Length mismatch! EE={len(episode)}, Joint={len(joint_traj)}')
         
         # Inject Initial Poses from EE Rollout
         poses = {}
@@ -200,7 +213,7 @@ def main(args):
         MANYCUBES_POSES[0] = poses
         MANYCUBES_COLORS[0] = COLOR_SEQUENCE
         
-        env = make_sim_env(task_name, camera_names=['top']) # uses MANYCUBES_POSES[0]
+        env = make_sim_env(task_name, camera_names=['top'], time_limit=1000) # Large time_limit to prevent reset
         ts = env.reset()
         episode_replay = [ts]
         
