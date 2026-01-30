@@ -21,7 +21,8 @@ REDBOX_POSE = [None] # to be changed from outside
 BLUEBOX_POSE = [None]
 GREENBOX_POSE = [None]
 MANYCUBES_POSES = [None]
-MANYCUBES_COLORS = [None] 
+MANYCUBES_COLORS = [None]
+MANYCUBES_TASK_COUNT = [None]  # Expected number of tasks to complete
 
 def make_sim_env(task_name, camera_names=None, time_limit=20):
     """
@@ -159,15 +160,15 @@ class BimanualPiperTask(base.Task):
         obs['images'] = dict()
         for cam_name in self.camera_names:
             if cam_name == 'top':
-                obs['images']['top'] = physics.render(height=480, width=640, camera_id='top')
+                obs['images']['top'] = physics.render(height=240, width=320, camera_id='top')
             elif cam_name == 'angle':
-                obs['images']['angle'] = physics.render(height=480, width=640, camera_id='angle')
+                obs['images']['angle'] = physics.render(height=240, width=320, camera_id='angle')
             elif cam_name == 'vis':
-                obs['images']['vis'] = physics.render(height=480, width=640, camera_id='front_close')
+                obs['images']['vis'] = physics.render(height=240, width=320, camera_id='front_close')
             elif cam_name == 'l_wrist':
-                obs['images']['l_wrist'] = physics.render(height=480, width=640, camera_id='l_wrist')
+                obs['images']['l_wrist'] = physics.render(height=240, width=320, camera_id='l_wrist')
             elif cam_name == 'r_wrist':
-                obs['images']['r_wrist'] = physics.render(height=480, width=640, camera_id='r_wrist')
+                obs['images']['r_wrist'] = physics.render(height=240, width=320, camera_id='r_wrist')
 
         return obs
 
@@ -432,10 +433,14 @@ class CoopTask(BimanualPiperTask):
 class ManyCubesTask(BimanualPiperTask):
     def __init__(self, random=None, randomize_cube_colors=False, init_phase=1, camera_names=None):
         super().__init__(random=random, camera_names=camera_names)
-        self.max_reward = 4
+        self.max_reward = 4  # Will be updated dynamically based on color sequence
         self.belt_speed = BELT_MOVE_SPEED
         self.randomize_cube_colors = randomize_cube_colors
         self.init_phase = init_phase
+        self.color_sequence = None  # Will be set from MANYCUBES_COLORS during initialize_episode
+        # Track completed tasks cumulatively (survives object removal)
+        self.completed_independent_pairs = set()  # Set of (cube_i, cube_j) tuples
+        self.completed_cooperative_pairs = set()  # Set of (green_idx, blue_idx) tuples
 
     def initialize_episode(self, physics):
         """Sets the state of the environment at the start of each episode."""
@@ -592,6 +597,25 @@ class ManyCubesTask(BimanualPiperTask):
                 actuator_name = physics.model.actuator(i).name
                 control_value = physics.data.ctrl[i]
                 # print(f"ctrl[{i}] -> Actuator '{actuator_name}': {control_value:.4f}")
+            
+            # Store color sequence for reward calculation
+            if MANYCUBES_COLORS[0] is not None:
+                self.color_sequence = MANYCUBES_COLORS[0]
+                # Set max_reward based on expected task count (if provided)
+                if MANYCUBES_TASK_COUNT[0] is not None:
+                    self.max_reward = MANYCUBES_TASK_COUNT[0]
+                else:
+                    # Fallback: calculate from color sequence
+                    red_count = self.color_sequence.count('r')
+                    green_count = self.color_sequence.count('g')
+                    blue_count = self.color_sequence.count('b')
+                    independent_pairs = red_count // 2
+                    cooperative_pairs = min(green_count, blue_count)
+                    self.max_reward = independent_pairs + cooperative_pairs
+            
+            # Reset completed task tracking
+            self.completed_independent_pairs = set()
+            self.completed_cooperative_pairs = set()
                 
         super().initialize_episode(physics)
 
@@ -604,7 +628,75 @@ class ManyCubesTask(BimanualPiperTask):
         return env_state
 
     def get_reward(self, physics):
-        # return whether left gripper is holding the box
+        """
+        Flexible reward calculation with cumulative tracking:
+        - Independent task (RR): 2 Red cubes in goal zone = +1 (tracked cumulatively)
+        - Cooperative task (GB): 1 assembled Green+Blue in goal zone = +1 (tracked cumulatively)
+        Returns total number of completed task pairs (cumulative).
+        """
+        # If no color sequence set, fall back to old logic
+        if self.color_sequence is None:
+            return self._get_reward_legacy(physics)
+        
+        # Get all contact pairs
+        all_contact_pairs = []
+        for i_contact in range(physics.data.ncon):
+            id_geom_1 = physics.data.contact[i_contact].geom1
+            id_geom_2 = physics.data.contact[i_contact].geom2
+            name_geom_1 = physics.model.id2name(id_geom_1, 'geom')
+            name_geom_2 = physics.model.id2name(id_geom_2, 'geom')
+            all_contact_pairs.append((name_geom_1, name_geom_2))
+        
+        # Find cubes by color and check goal/assembly status
+        red_in_goal = []
+        green_cubes = []  # All green cubes (may or may not be in goal)
+        blue_in_goal = []  # Blue cubes that ARE in goal
+        
+        for i in range(10):
+            cube_name = f'cube_{i}'
+            color = self.color_sequence[i]
+            in_goal = (('goal_plate', cube_name) in all_contact_pairs or 
+                      (cube_name, 'goal_plate') in all_contact_pairs)
+            
+            if color == 'r' and in_goal:
+                red_in_goal.append(i)
+            elif color == 'g':
+                green_cubes.append(i)  # Track all greens, not just in goal
+            elif color == 'b' and in_goal:
+                blue_in_goal.append(i)  # Only blues in goal
+        
+        # Mark new Independent pairs as completed
+        # Sort to create consistent pairs (e.g., always (smaller, larger))
+        red_in_goal_sorted = sorted(red_in_goal)
+        for i in range(0, len(red_in_goal_sorted) - 1, 2):
+            pair = tuple(sorted([red_in_goal_sorted[i], red_in_goal_sorted[i+1]]))
+            if pair not in self.completed_independent_pairs:
+                self.completed_independent_pairs.add(pair)
+                print(f"  [Reward] Completed Independent pair: R{pair[0]} + R{pair[1]}")
+        
+        # Mark new Cooperative pairs as completed
+        # Success condition: G-B assembled AND B in goal (G doesn't need to be in goal)
+        used_blues = set()
+        for g_idx in green_cubes:  # Check ALL green cubes
+            for b_idx in blue_in_goal:  # Only blues that are in goal
+                if b_idx in used_blues:
+                    continue
+                # Check if green and blue are assembled (in contact)
+                if ((f'cube_{g_idx}', f'cube_{b_idx}') in all_contact_pairs or
+                    (f'cube_{b_idx}', f'cube_{g_idx}') in all_contact_pairs):
+                    pair = (g_idx, b_idx)
+                    if pair not in self.completed_cooperative_pairs:
+                        self.completed_cooperative_pairs.add(pair)
+                        print(f"  [Reward] Completed Cooperative pair: G{g_idx} + B{b_idx} (assembled, B in goal)")
+                    used_blues.add(b_idx)
+                    break  # Each green can only pair once
+        
+        # Return total completed tasks
+        total_reward = len(self.completed_independent_pairs) + len(self.completed_cooperative_pairs)
+        return total_reward
+    
+    def _get_reward_legacy(self, physics):
+        """Legacy reward calculation for backward compatibility"""
         all_contact_pairs = []
         for i_contact in range(physics.data.ncon):
             id_geom_1 = physics.data.contact[i_contact].geom1

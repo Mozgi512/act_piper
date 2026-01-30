@@ -172,15 +172,15 @@ class BimanualPiperEETask(base.Task):
         obs['images'] = dict()
         for cam_name in self.camera_names:
             if cam_name == 'top':
-                 obs['images']['top'] = physics.render(height=480, width=640, camera_id='top')
+                 obs['images']['top'] = physics.render(height=240, width=320, camera_id='top')
             elif cam_name == 'angle':
-                 obs['images']['angle'] = physics.render(height=480, width=640, camera_id='angle')
+                 obs['images']['angle'] = physics.render(height=240, width=320, camera_id='angle')
             elif cam_name == 'vis':
-                 obs['images']['vis'] = physics.render(height=480, width=640, camera_id='front_close')
+                 obs['images']['vis'] = physics.render(height=240, width=320, camera_id='front_close')
             elif cam_name == 'l_wrist':
-                 obs['images']['l_wrist'] = physics.render(height=480, width=640, camera_id='l_wrist')
+                 obs['images']['l_wrist'] = physics.render(height=240, width=320, camera_id='l_wrist')
             elif cam_name == 'r_wrist':
-                 obs['images']['r_wrist'] = physics.render(height=480, width=640, camera_id='r_wrist')
+                 obs['images']['r_wrist'] = physics.render(height=240, width=320, camera_id='r_wrist')
         # used in scripted policy to obtain starting pose
         obs['mocap_pose_left'] = np.concatenate([physics.data.mocap_pos[0], physics.data.mocap_quat[0]]).copy()
         obs['mocap_pose_right'] = np.concatenate([physics.data.mocap_pos[1], physics.data.mocap_quat[1]]).copy()

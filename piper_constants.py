@@ -50,8 +50,8 @@ SIM_TASK_CONFIGS = {
     },
     'sim_many_cubes':{
         'dataset_dir': DATA_DIR + '/sim_many_cubes',
-        'num_episodes': 100,
-        'episode_len': 800,
+        'num_episodes': 80,
+        'episode_len': 1430,
         'camera_names': ['top']
     },
     'sim_coop_phase1_scripted':{
@@ -76,6 +76,18 @@ SIM_TASK_CONFIGS = {
         'dataset_dir': DATA_DIR + '/four_objects',
         'num_episodes': 100,
         'episode_len': 680,
+        'camera_names': ['top']
+    },
+    'sim_dataset_i': {
+        'dataset_dir': DATA_DIR + '/sim_dataset_i',
+        'num_episodes': 100,
+        'episode_len': 400,
+        'camera_names': ['top']
+    },
+    'sim_dataset_c': {
+        'dataset_dir': DATA_DIR + '/sim_dataset_c',
+        'num_episodes': 100,
+        'episode_len': 520,
         'camera_names': ['top']
     },
 }

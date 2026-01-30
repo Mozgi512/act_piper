@@ -129,8 +129,9 @@ python policy_switcher.py \
 
 CUDA_LAUNCH_BLOCKING=0 TORCH_CUDNN_V8_API_ENABLED=1 \
 python3 imitate_episodes.py \
-    --task_name sim_coop_scripted \
-    --ckpt_dir ckpt/cooperation_200eps \
+    --task_name sim_many_cubes \
+    --ckpt_dir ckpt/end2end \
+    --dataset_dir data/training_data \
     --policy_class ACT --kl_weight 10 --chunk_size 100 --hidden_dim 512 \
     --batch_size 32 \
     --dim_feedforward 3200 \
@@ -141,7 +142,11 @@ python3 imitate_episodes.py \
     --prefetch_factor 2 \
     --use_cache \
     --use_cuda_graph \
-    --validation_interval 100 --num_episodes 200
+    --validation_interval 100 --num_episodes 80 \
+    --eval \
+    --eval_epoch 2000 \
+    --image_width 320 --image_height 240  
+
 
 データ分割
     python3 process_coop_data.py \
@@ -204,3 +209,118 @@ python3 independent_imitate_episodes.py \
     --arm left \
     --eval \
     --batch_size 32
+
+
+
+    python3 process_coop_data.py \
+  --dataset_dir data/CCI \
+  --num_episodes 20 \
+  --split1 520 \
+  --split2 1030 \
+  --type3 c
+
+    python3 process_coop_data.py \
+  --dataset_dir data/IIC \
+  --num_episodes 20 \
+  --split1 400 \
+  --split2 790 \
+  --type1 c \
+  --type2 c 
+
+    python3 process_coop_data.py \
+  --dataset_dir data/CIC \
+  --num_episodes 20 \
+  --split1 520 \
+  --split2 910 \
+  --type2 c 
+      python3 process_coop_data.py \
+  --dataset_dir data/ICI \
+  --num_episodes 20 \
+  --split1 400 \
+  --split2 910 \
+  --type1 c \
+  --type3 c 
+
+
+    python3 visualize_episodes.py --dataset_dir ./data/ICI_phase1_left --episode_idx 0
+    python3 visualize_episodes.py --dataset_dir ./data/ICI_phase1_right --episode_idx 0
+    python3 visualize_episodes.py --dataset_dir ./data/ICI_phase2 --episode_idx 0
+    python3 visualize_episodes.py --dataset_dir ./data/ICI_phase3_right --episode_idx 0
+    python3 visualize_episodes.py --dataset_dir ./data/ICI_phase3_left --episode_idx 0
+
+python3 merge_datasets.py --input_dirs data/C --output_dir data/C_merged
+python3 merge_datasets.py --input_dirs data/I_left --output_dir data/I_left_merged
+python3 merge_datasets.py --input_dirs data/I_right --output_dir data/I_right_merged
+
+python3 pad_dataset.py --input_dir data/C_merged --output_dir data/C_training
+python3 pad_dataset.py --input_dir data/I_left_merged --output_dir data/I_left_training
+python3 pad_dataset.py --input_dir data/I_right_merged --output_dir data/I_right_training
+
+
+    CUDA_LAUNCH_BLOCKING=0 TORCH_CUDNN_V8_API_ENABLED=1
+
+    python3 independent_imitate_episodes.py \
+    --task_name sim_dataset_i \
+    --ckpt_dir ckpt/i_left \
+    --dataset_dir data/I_left_training \
+    --policy_class ACT \
+    --kl_weight 10 --chunk_size 100 --hidden_dim 512 --batch_size 32 --dim_feedforward 3200 \
+    --num_epochs 40000 --lr 1e-5 \
+    --seed 0 --arm left --num_episodes 80 --num_workers 4 \
+    --persistent_workers \
+    --prefetch_factor 2 \
+    --use_cache \
+    --use_cuda_graph \
+    --validation_interval 100
+
+    python3 independent_imitate_episodes.py \
+    --task_name sim_dataset_i \
+    --ckpt_dir ckpt/i_right \
+    --dataset_dir data/I_right_training \
+    --policy_class ACT \
+    --kl_weight 10 --chunk_size 100 --hidden_dim 512 --batch_size 32 --dim_feedforward 3200 \
+    --num_epochs 40000 --lr 1e-5 \
+    --seed 0 --arm right --num_episodes 80 --num_workers 4 \
+    --persistent_workers \
+    --prefetch_factor 2 \
+    --use_cache \
+    --use_cuda_graph \
+    --validation_interval 100
+
+    python3 imitate_episodes.py \
+    --task_name sim_dataset_c \
+    --ckpt_dir ckpt/c \
+    --dataset_dir data/C_training \
+    --policy_class ACT --kl_weight 10 --chunk_size 100 --hidden_dim 512 \
+    --batch_size 32 \
+    --dim_feedforward 3200 \
+    --num_epochs 40000 --lr 1e-5 \
+    --seed 0 \
+    --num_workers 4 \
+    --persistent_workers \
+    --prefetch_factor 2 \
+    --use_cache \
+    --use_cuda_graph \
+    --validation_interval 100 --num_episodes 80 
+
+    python3 imitate_episodes.py \
+    --task_name sim_dataset_i \
+    --ckpt_dir ckpt/i \
+    --dataset_dir data/I_training \
+    --policy_class ACT --kl_weight 10 --chunk_size 100 --hidden_dim 512 \
+    --batch_size 32 \
+    --dim_feedforward 3200 \
+    --num_epochs 40000 --lr 1e-5 \
+    --seed 0 \
+    --num_workers 4 \
+    --persistent_workers \
+    --prefetch_factor 2 \
+    --use_cache \
+    --use_cuda_graph \
+    --validation_interval 100 --num_episodes 80 
+
+
+
+
+python3 shuffle_dataset.py --dataset_dir data/my_dataset
+

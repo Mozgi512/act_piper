@@ -213,7 +213,8 @@ def get_image(ts, camera_names, arm, device='cuda'):
         if arm == 'left':
             curr_image = curr_image[:, :, :w//2]  # 左半分のみ
         else:
-            offset = 40
+            # Scale offset based on width (base 640 -> 40)
+            offset = int(40 * (w / 640))
             start = w//2 - offset
             end = w - offset
             curr_image = curr_image[:, :, start:end]

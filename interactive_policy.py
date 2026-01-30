@@ -19,8 +19,10 @@ e = IPython.embed
 COLOR_SEQUENCE = ['r', 'r', 'g', 'b', 'r', 'r', 'g', 'b', 'r', 'g']
 
 class InteractivePolicy(VariableCoopPolicy):
-    def __init__(self, inject_noise=False):
+    def __init__(self, inject_noise=False, color_sequence=None):
         super().__init__(inject_noise)
+        # Use provided sequence or default
+        self.color_sequence = color_sequence if color_sequence is not None else COLOR_SEQUENCE
         self.left_trajectory = [
             {"t": 0, "xyz": [0,0,0], "quat": [1,0,0,0], "gripper": 1},
             {"t": 100000, "xyz": [0,0,0], "quat": [1,0,0,0], "gripper": 1} 
@@ -57,7 +59,7 @@ class InteractivePolicy(VariableCoopPolicy):
         self.right_trajectory[1] = {"t": 100000, "xyz": init_mocap_pose_right[:3], "quat": init_mocap_pose_right[3:], "gripper": 1}
         
         self.initialized = True
-        print("Policy Initialized. Sequence:", COLOR_SEQUENCE)
+        print("Policy Initialized. Sequence:", self.color_sequence)
 
     def scan_conveyor(self, ts, color_filter=None):
         """Finds objects on the conveyor (X < 0.35) matching color_filter."""
@@ -71,8 +73,8 @@ class InteractivePolicy(VariableCoopPolicy):
             if i in self.picked_objects: continue
             
             # Determine color from static sequence
-            if i >= len(COLOR_SEQUENCE): break
-            color = COLOR_SEQUENCE[i]
+            if i >= len(self.color_sequence): break
+            color = self.color_sequence[i]
             
             if color_filter and color != color_filter: continue
             

@@ -12,7 +12,7 @@ import collections
 from piper_constants import PUPPET_GRIPPER_POSITION_NORMALIZE_FN, SIM_TASK_CONFIGS, BELT_MOVE_SPEED, PUPPET_GRIPPER_POSITION_OPEN, PUPPET_GRIPPER_POSITION_CLOSE
 from piper_ee_sim_env import make_ee_sim_env
 import piper_sim_env
-from piper_sim_env import make_sim_env, MANYCUBES_POSES, MANYCUBES_COLORS
+from piper_sim_env import make_sim_env, MANYCUBES_POSES, MANYCUBES_COLORS, MANYCUBES_TASK_COUNT
 from interactive_policy import InteractivePolicy, COLOR_SEQUENCE
 
 def main(args):
@@ -30,6 +30,16 @@ def main(args):
     
     command_sequence_str = args['commands']
     command_queue_template = list(command_sequence_str)
+    
+    # Parse color sequence if provided
+    color_seq = None
+    if args.get('color_sequence'):
+        color_seq = list(args['color_sequence'].lower())
+        if len(color_seq) != 10:
+            raise ValueError(f"Color sequence must be exactly 10 characters (got {len(color_seq)})")
+        for c in color_seq:
+            if c not in ['r', 'g', 'b']:
+                raise ValueError(f"Invalid color '{c}' in sequence. Use only 'r', 'g', 'b'")
 
     if not os.path.isdir(dataset_dir):
         os.makedirs(dataset_dir, exist_ok=True)
@@ -47,19 +57,21 @@ def main(args):
         # 1. EE Rollout
         # ---------------------------------------------------------
         
-        # Inject color sequence if needed
-        MANYCUBES_COLORS[0] = COLOR_SEQUENCE
+        # Inject color sequence (use custom or default)
+        MANYCUBES_COLORS[0] = color_seq if color_seq is not None else COLOR_SEQUENCE
+        # Set expected task count based on command sequence
+        MANYCUBES_TASK_COUNT[0] = len(command_queue_template)
         
         # Force EGL for headless rendering during rollout (if needed, or just let it be)
         # os.environ['MUJOCO_GL'] = 'egl' 
         
-        # Optimization: Disable cameras if not rendering to speed up EE execution
-        ee_cameras = ['top'] if onscreen_render else []
+        # EE environment needs cameras only for onscreen rendering
+        ee_cameras = camera_names if onscreen_render else []
         env = make_ee_sim_env(task_name, camera_names=ee_cameras) 
         ts = env.reset()
         episode = [ts]
         
-        policy = InteractivePolicy(inject_noise=inject_noise)
+        policy = InteractivePolicy(inject_noise=inject_noise, color_sequence=color_seq)
         policy.init_pose(ts)
 
         if onscreen_render:
@@ -128,17 +140,6 @@ def main(args):
         
         # Extract Joint Trajectory
         joint_traj = [ts.observation['qpos'] for ts in episode]
-        
-        # Debug: Check for discontinuities in the extracted trajectory
-        print(f"  Debug: joint_traj length = {len(joint_traj)}")
-        print(f"  Debug: joint_traj[0] shape = {joint_traj[0].shape}")
-        print(f"  Debug: Checking for large jumps in extracted qpos...")
-        for t in range(1, min(len(joint_traj), 1100)):
-            diff = np.abs(joint_traj[t] - joint_traj[t-1])
-            if np.max(diff) > 0.5:
-                print(f"    Large jump at step {t}: max_diff = {np.max(diff):.3f}, joint {np.argmax(diff)}")
-                print(f"      Before: {joint_traj[t-1]}")
-                print(f"      After:  {joint_traj[t]}")
         
         # Replace gripper pose with gripper control (standard practice in record_sim_episodes)
         gripper_ctrl_traj = [ts.observation['gripper_ctrl'] for ts in episode]
@@ -211,9 +212,16 @@ def main(args):
         for i in range(10):
             poses[i] = subtask_info[i*7 : (i+1)*7].copy()
         MANYCUBES_POSES[0] = poses
-        MANYCUBES_COLORS[0] = COLOR_SEQUENCE
+        MANYCUBES_COLORS[0] = color_seq if color_seq is not None else COLOR_SEQUENCE
+        MANYCUBES_TASK_COUNT[0] = len(command_queue_template)
         
-        env = make_sim_env(task_name, camera_names=['top'], time_limit=1000) # Large time_limit to prevent reset
+        # Create replay environment
+        # Only disable cameras if we're not saving data (optimization)
+        if args['no_save_data']:
+            replay_cameras = ['top'] if onscreen_render else []
+        else:
+            replay_cameras = camera_names  # Need cameras for dataset images
+        env = make_sim_env(task_name, camera_names=replay_cameras, time_limit=1000)
         ts = env.reset()
         episode_replay = [ts]
         
@@ -223,10 +231,21 @@ def main(args):
         DT = 0.02 # From piper_constants
         
         # Replay Loop
+        import time as time_module
+        replay_start = time_module.time()
+        step_times = []
+        max_reward_achieved = 0  # Track maximum reward during replay
+        
         for t in range(len(joint_traj)):
+            t_start = time_module.time()
             action = joint_traj[t].copy()
             ts = env.step(action)
             episode_replay.append(ts)
+            step_times.append(time_module.time() - t_start)
+            
+            # Track maximum reward achieved
+            if ts.reward is not None:
+                max_reward_achieved = max(max_reward_achieved, ts.reward)
             
             if onscreen_render:
                 if t % 5 == 0:
@@ -253,7 +272,6 @@ def main(args):
                         
                         if current_time - removal_timers[i] > 4.0:
                             # Remove (Teleport)
-                            # print(f"Mirroring Removal of Cube {i} at step {t}")
                             hidden_pos = np.array([10.0 + i, -10.0, -1.0, 1, 0, 0, 0])
                             np.copyto(physics.data.qpos[qpos_adr : qpos_adr+7], hidden_pos)
                             
@@ -266,6 +284,10 @@ def main(args):
                              del removal_timers[i]
                 except:
                     pass
+        
+        replay_time = time_module.time() - replay_start
+        avg_step_time = np.mean(step_times) * 1000
+        print(f"  Replay completed in {replay_time:.1f}s ({avg_step_time:.1f}ms/step)")
 
         # Verify Success (simple reward check)
         rewards = [ts.reward for ts in episode_replay[1:] if ts.reward is not None]
@@ -320,7 +342,7 @@ def main(args):
         
         for k in range(num_steps_to_save):
             action = joint_traj[k]
-            ts = episode_replay[k]
+            ts = episode_replay[k]  # Use Joint replay observations (including images)
             
             data_dict['/observations/qpos'].append(ts.observation['qpos'])
             data_dict['/observations/qvel'].append(ts.observation['qvel'])
@@ -337,8 +359,8 @@ def main(args):
                 obs = root.create_group('observations')
                 image = obs.create_group('images')
                 for cam_name in camera_names:
-                    _ = image.create_dataset(cam_name, (num_steps_to_save, 480, 640, 3), dtype='uint8',
-                                             chunks=(1, 480, 640, 3), )
+                    _ = image.create_dataset(cam_name, (num_steps_to_save, 240, 320, 3), dtype='uint8',
+                                             chunks=(1, 240, 320, 3), )
                 qpos = obs.create_dataset('qpos', (num_steps_to_save, 14))
                 qvel = obs.create_dataset('qvel', (num_steps_to_save, 14))
                 action = root.create_dataset('action', (num_steps_to_save, 14))
@@ -360,6 +382,7 @@ if __name__ == '__main__':
     parser.add_argument('--dataset_dir', action='store', type=str, help='dataset saving dir', required=True)
     parser.add_argument('--num_episodes', action='store', type=int, help='num_episodes', required=True)
     parser.add_argument('--commands', action='store', type=str, help='Command sequence (e.g. ICI)', required=True)
+    parser.add_argument('--color_sequence', action='store', type=str, help='Color sequence (e.g. rrggbb for 10 objects)', default=None)
     parser.add_argument('--onscreen_render', action='store_true')
     parser.add_argument('--no_save_data', action='store_true', help='Do not save HDF5 data')
     

@@ -3,6 +3,7 @@ import os
 cwd = os.getcwd()
 sys.path.append(os.path.join(cwd, 'detr'))
 
+import torch.nn.functional as F
 import torch
 import numpy as np
 import pickle
@@ -102,7 +103,9 @@ def main(args):
         'camera_names': camera_names,
         'real_robot': not is_sim,
         'num_rollouts': args['num_rollouts'],
-        'ckpt_interval': args['ckpt_interval']
+        'ckpt_interval': args['ckpt_interval'],
+        'image_width': args['image_width'],
+        'image_height': args['image_height']
     }
 
     if is_eval:
@@ -301,6 +304,12 @@ def eval_bc(config, ckpt_name, save_episode=True):
                 qpos = torch.from_numpy(qpos).float().cuda().unsqueeze(0)
                 qpos_history[:, t] = qpos
                 curr_image = get_image(ts, camera_names)
+                if config.get('image_width') is not None and config.get('image_height') is not None:
+                    target_size = (config['image_height'], config['image_width'])
+                    b, n_cam, c, h, w = curr_image.shape
+                    curr_image = curr_image.view(b * n_cam, c, h, w)
+                    curr_image = F.interpolate(curr_image, size=target_size, mode='bilinear', align_corners=False)
+                    curr_image = curr_image.view(b, n_cam, c, target_size[0], target_size[1])
 
                 ### query policy
                 if config['policy_class'] == "ACT":
@@ -346,7 +355,7 @@ def eval_bc(config, ckpt_name, save_episode=True):
         rewards = np.array(rewards)
         episode_return = np.sum(rewards[rewards!=None])
         episode_returns.append(episode_return)
-        episode_highest_reward = np.max(rewards)
+        episode_highest_reward = np.max(rewards[rewards!=None]) if (rewards!=None).any() else 0
         highest_rewards.append(episode_highest_reward)
         print(f'Rollout {rollout_id}\n{episode_return=}, {episode_highest_reward=}, {env_max_reward=}, Success: {episode_highest_reward==env_max_reward}')
 
