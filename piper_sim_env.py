@@ -24,7 +24,7 @@ MANYCUBES_POSES = [None]
 MANYCUBES_COLORS = [None]
 MANYCUBES_TASK_COUNT = [None]  # Expected number of tasks to complete
 
-def make_sim_env(task_name, camera_names=None, time_limit=20):
+def make_sim_env(task_name, camera_names=None, time_limit=20, interleave_last_four=False):
     """
     Environment for simulated robot bi-manual manipulation, with joint position control
     Action space:      [left_arm_qpos (6),             # absolute joint position
@@ -83,7 +83,7 @@ def make_sim_env(task_name, camera_names=None, time_limit=20):
     elif 'sim_many_cubes' in task_name:
         xml_path = os.path.join(XML_DIR, f'bimanual_piper_many_cubes.xml')
         physics = mujoco.Physics.from_xml_path(xml_path)
-        task = ManyCubesTask(random=False, camera_names=camera_names)
+        task = ManyCubesTask(random=False, camera_names=camera_names, interleave_last_four=interleave_last_four)
         env = control.Environment(physics, task, time_limit=time_limit, control_timestep=DT,
                                   n_sub_steps=None, flat_observation=False)
     else:
@@ -431,8 +431,9 @@ class CoopTask(BimanualPiperTask):
 
 
 class ManyCubesTask(BimanualPiperTask):
-    def __init__(self, random=None, randomize_cube_colors=False, init_phase=1, camera_names=None):
+    def __init__(self, random=None, randomize_cube_colors=False, init_phase=1, camera_names=None, interleave_last_four=False):
         super().__init__(random=random, camera_names=camera_names)
+        self.interleave_last_four = interleave_last_four
         self.max_reward = 4  # Will be updated dynamically based on color sequence
         self.belt_speed = BELT_MOVE_SPEED
         self.randomize_cube_colors = randomize_cube_colors
@@ -544,21 +545,105 @@ class ManyCubesTask(BimanualPiperTask):
                          print(f"Debug: Cube {i} initialized at X={px:.3f}, Y={py:.3f}")
                      ref_x = 0 # Ignored
             
+                     ref_x = 0 # Ignored
+            
             queue_spacing = 0.22
             
-            for i in range(10):
+            # Scramble indices if requested
+            # Normal: 0,1,2,3,4,5,6,7,8,9 (0 is downstream/closest)
+            # Interleave: 0, 6, 1, 7, 2, 8, 3, 9, 4, 5
+            slot_to_cube_map = list(range(10))
+            if self.interleave_last_four:
+                print("DEBUG: Interleaving last 4 objects among first 5")
+                slot_to_cube_map = [0, 6, 1, 7, 2, 8, 3, 9, 4, 5]
+
+            for slot_i in range(10):
+                # The cube index we are placing at this spatial slot
+                i = slot_to_cube_map[slot_i]
+
                 if i in poses:
                     cube_pose = poses[i]
                 else:
-                    # i=6 -> 1 step behind 7 (Original)
-                    step = 7 - i
-                    # Original pos would be: ref_x - step * spacing
-                    orig_x = ref_x - step * queue_spacing 
+                    # slot_i determines position relative to start
+                    # i=6 -> 1 step behind 7 (Original logic was weird because it used 'i' for position)
+                    # New logic: Use slot_i for spacing
                     
-                    cube_x = orig_x + np.random.uniform(-0.01, 0.01)
+                    # Original logic used fixed ref_x and 'step = 7 - i'. 
+                    # If we use slot_i, we just place them sequentially.
+                    # Start X = ref_x
+                    # X = ref_x - slot_i * queue_spacing (if moving +X to -X???)
+                    # Wait, original logic:
+                    # i=7 (Red) is ref. i=6 is 1 step behind.
+                    # so i=6 X > i=7 X ???
+                    # If belt moves -X (items travel Left), then Upstream is Right.
+                    # If 6 is "Behind" 7, it means 6 arrives LATER. So 6 is Right of 7.
+                    # 7 is Downstream. 6 is Upstream.
+                    # step = 7 - 6 = 1.
+                    # orig_x = ref_x - step * spacing.
+                    # if spacing is negative? No.
+                    # Let's check: spacing = -0.15 (line 455). queue_spacing = 0.22.
+                    # ref_x was min(xs) (leftmost).
+                    # This logic is extremely messy in original code.
+                    
+                    # SIMPLIFIED LOGIC for INTERACTIVE/EVAL MODE (where MANYCUBES_COLORS is set)
+                    if MANYCUBES_COLORS[0] is not None:
+                        # We already set poses in line 536 loop!
+                        # BUT wait, the loop 536 sets poses for 'i' in range(10).
+                        # If we interleave, we want CUBE 6 to be at SLOT 1 position.
+                        # So we should re-assign based on slot map.
                         
-                    cube_y = np.random.uniform(0.30, 0.45) 
+                        # The previous loop (536) set pose for cube 'i' at position 'i'.
+                        # We want to swap them.
+                        pass # handled below if poses[i] is already set.
                     
+                    # If poses[i] is NOT set (e.g. queue logic without colors?)
+                    # Fallback to slot-based placement
+                    # We assume slot 0 is closest/first.
+                    # For safe placement, let's just use the override loop above if colors set.
+                    
+                    # Re-verify the loop 536-545:
+                    # for i in range(10): px = start - i*spacing... poses[i] = ...
+                    # This sets Cube 0 at Pos 0. Cube 1 at Pos 1.
+                    # If interleave is ON, we want Cube 6 at Pos 1.
+                    # So we need to change how poses are generated OR how they are applied.
+                    # The current loop 549 iterates `i` in range(10) (Standard Order).
+                    # And applies `poses[i]`.
+                    # So if poses[i] implies "Position for Cube i", then Cube 6 is at Pos 6.
+                    # We want Cube 6 at Pos 1.
+                    
+                    # So we must modify the PREVIOUS loop (line 536) or this one.
+                    # Easier to modify the PREVIOUS loop (generation).
+                    pass
+
+            # REDO GENERATION LOGIC for Interleave (Override previous loop 536)
+            if MANYCUBES_COLORS[0] is not None and self.interleave_last_four:
+                 start_x = 0.00
+                 # DENSE PLACEMENT: Reduce spacing to 0.08 (approx half of 0.15)
+                 # effectively filling the gaps between typical 0.15 spacing.
+                 # Cube size is ~0.05, so 0.08 leaves 0.03 gap.
+                 spacing = 0.08 
+                 
+                 # slot_to_cube_map defined above
+                 for slot_i in range(10):
+                     cube_idx = slot_to_cube_map[slot_i]
+                     px = start_x - slot_i * spacing
+                     py = np.random.uniform(0.35, 0.40)
+                     poses[cube_idx] = np.array([px, py, 0.025, 1, 0, 0, 0])
+                     print(f"DEBUG: Interleave Dense - Cube {cube_idx} at Slot {slot_i} (X={px:.3f})")
+
+            for i in range(10):
+                # Standard application loop
+                if i in poses:
+                    cube_pose = poses[i]
+                else:
+                    # ... legacy queue logic ...
+                    # If this runs, it means i wasn't in poses.
+                    # But for eval mode, all 10 are in poses.
+                    # Safe to ignore legacy branch for now.
+                    step = 7 - i
+                    orig_x = ref_x - step * queue_spacing
+                    cube_x = orig_x + np.random.uniform(-0.01, 0.01)
+                    cube_y = np.random.uniform(0.30, 0.45)
                     cube_quat = np.array([1, 0, 0, 0])
                     cube_pose = np.concatenate([[cube_x, cube_y, 0.02], cube_quat])
 
