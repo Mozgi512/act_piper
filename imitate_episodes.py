@@ -105,7 +105,8 @@ def main(args):
         'num_rollouts': args['num_rollouts'],
         'ckpt_interval': args['ckpt_interval'],
         'image_width': args['image_width'],
-        'image_height': args['image_height']
+        'image_height': args['image_height'],
+        'load_ckpt': args['load_ckpt']
     }
 
     if is_eval:
@@ -408,6 +409,15 @@ def train_bc(train_dataloader, val_dataloader, config):
 
     policy = make_policy(policy_class, policy_config)
     policy.cuda()
+    
+    if config['load_ckpt']:
+        ckpt_path = config['load_ckpt']
+        print(f'Loading checkpoint from {ckpt_path}...')
+        state_dict = torch.load(ckpt_path)
+        loading_status = policy.load_state_dict(state_dict)
+        print(loading_status)
+        print(f'Successfully loaded model weights from {ckpt_path}')
+
     if config.get('use_cuda_graph', False):
         print("Compiling model with torch.compile (mode='reduce-overhead')...")
         policy = torch.compile(policy, mode="reduce-overhead")
@@ -532,6 +542,7 @@ if __name__ == '__main__':
     parser.add_argument('--eval_epoch', action='store', type=int, help='specific epoch to eval', required=False)
     parser.add_argument('--start_epoch', action='store', type=int, help='start epoch for range evaluation', required=False)
     parser.add_argument('--ckpt_interval', action='store', type=int, help='checkpoint saving interval', required=False, default=1000)
+    parser.add_argument('--load_ckpt', action='store', type=str, help='Checkpoint path to load weights from', default=None)
 
     # for ACT
     parser.add_argument('--kl_weight', action='store', type=int, help='KL Weight', required=False)

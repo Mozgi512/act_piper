@@ -213,30 +213,52 @@ def main(args):
     # episode_len = task_config['episode_len']
     camera_names = task_config['camera_names']
 
-    print("Loading Dual Policy...")
-    policy_dual, stats_dual = load_policy_and_stats(ckpt_dual, policy_class, args, override_state_dim=14)
-    
-    # Optional: Load Independent Dual Policy matches stats of Dual (Coop) usually? 
-    # Or does it have its own stats? Likely its own.
-    policy_independent_dual = None
-    stats_independent_dual = None
-    if args.ckpt_independent_dual:
-        print("Loading Independent Dual Policy...")
-        policy_independent_dual, stats_independent_dual = load_policy_and_stats(args.ckpt_independent_dual, policy_class, args, override_state_dim=14)
-    
-    policy_left = None
-    stats_left = None
-    policy_right = None
-    stats_right = None
-    
-    if not args.ckpt_independent_dual:
-        # Legacy mode: Load Left/Right
-        if not args.ckpt_left or not args.ckpt_right:
-             raise ValueError("If --ckpt_independent_dual is not specified, --ckpt_left and --ckpt_right are required.")
-        print("Loading Left Policy...")
-        policy_left, stats_left = load_policy_and_stats(ckpt_left, policy_class, args, override_state_dim=7, override_arm='left')
-        print("Loading Right Policy...")
-        policy_right, stats_right = load_policy_and_stats(ckpt_right, policy_class, args, override_state_dim=7, override_arm='right')
+    camera_names = task_config['camera_names']
+
+    # E2E Mode Logic
+    if args.ckpt_e2e:
+        print(f"Loading E2E Policy from {args.ckpt_e2e}...")
+        policy_e2e, stats_e2e = load_policy_and_stats(args.ckpt_e2e, policy_class, args, override_state_dim=14)
+        
+        # Alias both modes to E2E policy
+        policy_dual = policy_e2e
+        stats_dual = stats_e2e
+        
+        policy_independent_dual = policy_e2e
+        stats_independent_dual = stats_e2e
+        
+        # Dummy placeholders for legacy to avoid errors (though not sure if needed if logic flows right)
+        policy_left = None
+        stats_left = None
+        policy_right = None
+        stats_right = None
+        
+    else:
+        # Standard Switching Mode
+        print("Loading Dual Policy...")
+        policy_dual, stats_dual = load_policy_and_stats(ckpt_dual, policy_class, args, override_state_dim=14)
+        
+        # Optional: Load Independent Dual Policy matches stats of Dual (Coop) usually? 
+        # Or does it have its own stats? Likely its own.
+        policy_independent_dual = None
+        stats_independent_dual = None
+        if args.ckpt_independent_dual:
+            print("Loading Independent Dual Policy...")
+            policy_independent_dual, stats_independent_dual = load_policy_and_stats(args.ckpt_independent_dual, policy_class, args, override_state_dim=14)
+        
+        policy_left = None
+        stats_left = None
+        policy_right = None
+        stats_right = None
+        
+        if not args.ckpt_independent_dual:
+            # Legacy mode: Load Left/Right
+            if not args.ckpt_left or not args.ckpt_right:
+                 raise ValueError("If --ckpt_independent_dual (or --ckpt_e2e) is not specified, --ckpt_left and --ckpt_right are required.")
+            print("Loading Left Policy...")
+            policy_left, stats_left = load_policy_and_stats(ckpt_left, policy_class, args, override_state_dim=7, override_arm='left')
+            print("Loading Right Policy...")
+            policy_right, stats_right = load_policy_and_stats(ckpt_right, policy_class, args, override_state_dim=7, override_arm='right')
 
     pre_process_dual = lambda s_qpos: (s_qpos - stats_dual['qpos_mean']) / stats_dual['qpos_std']
     post_process_dual = lambda a: a * stats_dual['action_std'] + stats_dual['action_mean']
@@ -646,10 +668,11 @@ def main(args):
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument('--task_name', action='store', type=str, default='sim_many_cubes')
-    parser.add_argument('--ckpt_dual', action='store', type=str, required=True)
+    parser.add_argument('--ckpt_dual', action='store', type=str, required=False)
     parser.add_argument('--ckpt_left', action='store', type=str, required=False)
     parser.add_argument('--ckpt_right', action='store', type=str, required=False)
     parser.add_argument('--ckpt_independent_dual', action='store', type=str, required=False, help='Unified Dual policy for Independent tasks')
+    parser.add_argument('--ckpt_e2e', action='store', type=str, required=False, help='Single E2E policy for ALL tasks (replaces others)')
     
     parser.add_argument('--commands', action='store', type=str, help='Command sequence (e.g. ICI)', required=True)
     parser.add_argument('--color_sequence', action='store', type=str, help='Color sequence', default=None)
