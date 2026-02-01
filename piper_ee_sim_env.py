@@ -78,7 +78,7 @@ def make_ee_sim_env(task_name, camera_names=None):
         xml_path = os.path.join(XML_DIR, f'bimanual_piper_ee_many_cubes.xml')
         physics = mujoco.Physics.from_xml_path(xml_path)
         task = ManyCubesEETask(random=False, camera_names=camera_names)
-        env = control.Environment(physics, task, time_limit=2000, control_timestep=DT,
+        env = control.Environment(physics, task, time_limit=4000, control_timestep=DT,
                                   n_sub_steps=None, flat_observation=False)
     else:
         raise NotImplementedError

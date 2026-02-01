@@ -102,8 +102,8 @@ def main(args):
                 right_free = policy.is_arm_free(False, step)
                 if left_free and right_free:
                     print(f"  [EE] All tasks completed. Terminating at step {step}")
-                    break
-            
+                    break # Break from loop, then finalize and print
+
             action = policy(ts)
             ts = env.step(action)
             episode.append(ts)
@@ -117,6 +117,10 @@ def main(args):
                     cv2.imshow(window_name, img_bgr)
                     cv2.waitKey(1)
  
+
+        # Finalize any open segments in the policy metadata
+        policy.finalize(step)
+        print(f"  [EE] Episode finished at step {step}")
 
         # Capture Env State for Replay
         # env_state includes robot state + object poses
@@ -182,8 +186,8 @@ def main(args):
              print(f"WARNING: Large joint jump detected! Max: {max_jump:.3f} rad/step")
 
         # Save task segment metadata before deleting policy
-        left_segments = policy.left_segments.copy() if policy.left_segments else []
-        right_segments = policy.right_segments.copy() if policy.right_segments else []
+        left_segments = policy.left_segments.copy()
+        right_segments = policy.right_segments.copy()
 
         del env
         del policy
@@ -358,14 +362,22 @@ def main(args):
                 
                 # Save task segment metadata
                 metadata = root.create_group('metadata')
-                # Convert segment lists to structured array
+                # Convert segment lists to structured array with new fields
                 if left_segments:
-                    left_seg_data = np.array([(s['start'], s['end'], s['type']) for s in left_segments],
-                                             dtype=[('start', 'i4'), ('end', 'i4'), ('type', 'S16')])
+                    left_seg_data = np.array([
+                        (s['start'], s['end'], s['type'], 
+                         s.get('top_arm', ''), s.get('coop_split') if s.get('coop_split') is not None else -1)
+                        for s in left_segments
+                    ], dtype=[('start', 'i4'), ('end', 'i4'), ('type', 'S16'), 
+                             ('top_arm', 'S8'), ('coop_split', 'i4')])
                     metadata.create_dataset('left_segments', data=left_seg_data)
                 if right_segments:
-                    right_seg_data = np.array([(s['start'], s['end'], s['type']) for s in right_segments],
-                                              dtype=[('start', 'i4'), ('end', 'i4'), ('type', 'S16')])
+                    right_seg_data = np.array([
+                        (s['start'], s['end'], s['type'],
+                         s.get('top_arm', ''), s.get('coop_split') if s.get('coop_split') is not None else -1)
+                        for s in right_segments
+                    ], dtype=[('start', 'i4'), ('end', 'i4'), ('type', 'S16'),
+                             ('top_arm', 'S8'), ('coop_split', 'i4')])
                     metadata.create_dataset('right_segments', data=right_seg_data)
 
                 for name, array in data_dict.items():

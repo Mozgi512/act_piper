@@ -324,3 +324,11 @@ python3 pad_dataset.py --input_dir data/I_right_merged --output_dir data/I_right
 
 python3 shuffle_dataset.py --dataset_dir data/my_dataset
 
+# 元のデータ可視化
+python3 visualize_episodes.py --dataset_dir data/test_coop --episode_idx 0
+
+# 分割データ可視化
+python3 independent_visualize_episodes.py --dataset_dir data/test_coop_left_independent --episode_idx 0 --seg_idx 0
+
+# 協調組み立て可視化（14次元データ）
+python3 visualize_episodes.py --dataset_dir data/test_coop_cooperative_assembly --episode_idx 0 --seg_idx 1

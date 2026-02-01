@@ -142,17 +142,29 @@ class InteractivePolicy(VariableCoopPolicy):
     def is_arm_free(self, is_left, current_step):
         traj = self.left_trajectory if is_left else self.right_trajectory
         # Last waypoint time. If existing plan ends in future, arm is busy.
-        # But wait, initial 'tail' is at 100000. We must ignore the tail?
-        # Standard logic changes 'tail' time when appending.
-        # So we can check the *true* last action end.
-        
-        # Safest check: look at second to last point (real end) vs tail.
-        # If there's only 1 point (the initial tail), it's free.
+        # Note: We have a semantic 'tail' waypoint at traj[-1] at 100,000.
+        # We must check traj[-2] for the actual end of the last action.
         if len(traj) > 1:
-            end_t = traj[-2]['t'] # Second to last point is the end of the last actual action
-            # Buffer: ensure previous task is FULLY done.
-            return current_step >= end_t
+            end_t = traj[-2]['t']
+            is_free = current_step >= end_t
+            if is_free and (self.left_was_busy if is_left else self.right_was_busy):
+                 print(f"DEBUG: {'Left' if is_left else 'Right'} arm became free at step {current_step} (last_t={end_t})")
+            return is_free
         return True # Only initial tail exists, arm is free
+
+    def finalize(self, step_count):
+        """Close any remaining open segments at the end of the episode."""
+        if self.current_left_segment:
+            print(f"[Step {step_count}] Finalizing Left Segment (Start={self.current_left_segment['start']})")
+            self.current_left_segment['end'] = step_count
+            self.left_segments.append(self.current_left_segment)
+            self.current_left_segment = None
+            
+        if self.current_right_segment:
+            print(f"[Step {step_count}] Finalizing Right Segment (Start={self.current_right_segment['start']})")
+            self.current_right_segment['end'] = step_count
+            self.right_segments.append(self.current_right_segment)
+            self.current_right_segment = None
 
     def process_command_buffer(self, ts):
         if not self.command_buffer: 
@@ -259,13 +271,15 @@ class InteractivePolicy(VariableCoopPolicy):
                         print(f"[Step {self.step_count}] Scheduling Coop Assembly G:{greens[0][0]} + B:{blues[0][0]}")
                         self.picked_objects.add(greens[0][0])
                         self.picked_objects.add(blues[0][0])
+                        
+                        # Start cooperative segments for both arms BEFORE planning
+                        # Will be updated with split point during plan_cooperative_assembly
+                        self.current_left_segment = {'start': self.step_count, 'type': 'cooperative', 'top_arm': None, 'coop_split': None}
+                        self.current_right_segment = {'start': self.step_count, 'type': 'cooperative', 'top_arm': None, 'coop_split': None}
+                        
                         self.plan_cooperative_assembly(greens[0], blues[0], np.array(ts.observation['env_state']))
                         self.left_was_busy = True
                         self.right_was_busy = True
-                        
-                        # Start cooperative segments for both arms
-                        self.current_left_segment = {'start': self.step_count, 'type': 'cooperative'}
-                        self.current_right_segment = {'start': self.step_count, 'type': 'cooperative'}
                         
                         # Remove C
                         self.command_buffer.pop(i)
@@ -298,31 +312,28 @@ class InteractivePolicy(VariableCoopPolicy):
                     # Right Arm always takes reds[0] (global Right-most).
                     # Left Arm should take the Right-most candidate that is NOT reds[0].
             
-                    candidates = [r for r in reds if r[1] < 0]
-                    # print(f"DEBUG: All Reds: {reds}")
-                    # print(f"DEBUG: Safe Candidates (X<0): {candidates}")
+                    # Left arm can reach slightly into the right side to avoid idle time
+                    candidates = [r for r in reds if r[1] < -0.1]
             
                     if not candidates:
                          blocked_l = True
                          i += 1
                          continue
             
-                    r_reserved_idx = reds[0][0] # ID of Right Arm's potential target
+                    r_reserved_idx = None
+                    if self.is_arm_free(False, self.step_count):
+                        # Only reserve for Right arm if it's within its reach (X > -0.05)
+                        if reds[0][1] > -0.05:
+                            r_reserved_idx = reds[0][0]
             
                     target = None
-                    # Iterate candidates from R->L (index 0 is Right-most in candidates)
                     for c in candidates:
                         if c[0] == r_reserved_idx:
-                            # This object is reserved for Right Arm (it's the global right-most)
-                            # Skip it to avoid collision
                             continue
                         target = c
-                        break # Found the right-most non-reserved object
+                        break # Take right-most non-reserved candidate
             
                     if target is None:
-                        # All candidates were reserved (e.g. only 1 object exists and it's in safe zone)
-                        # In this case, if Right Arm is busy, maybe we can steal it? 
-                        # For now, strict separation: Left leaves Global Right-most for Right.
                         blocked_l = True 
                         i += 1
                         continue
@@ -355,6 +366,8 @@ class InteractivePolicy(VariableCoopPolicy):
                 
                 if self.is_arm_free(False, self.step_count):
                     reds = self.scan_conveyor(ts, 'r')
+                    # Right arm should not cross too far into left side
+                    reds = [r for r in reds if r[1] > -0.05]
                     if reds:
                          target = reds[0] # Right-most
                          
@@ -466,8 +479,12 @@ class InteractivePolicy(VariableCoopPolicy):
         # Role assignment: Green holder = Top, Blue holder = Base
         
         # Use Geometry to decide assignment to prevent collision
+        print(f"[Step {self.step_count}] Cooperative Assignment:")
+        print(f"  Green X: {g_xyz[0]:.3f}, Blue X: {b_xyz[0]:.3f}")
+        
         if g_xyz[0] < b_xyz[0]:
             # Green is to the Left of Blue
+            print(f"  -> Green is Left. Assignment: Left=Top (Green), Right=Base (Blue)")
             # Left gets Green (Top), Right gets Blue (Base)
             self.add_pick_top(self.left_trajectory, t_start, g_target[0], meet_xyz, belt_speed, is_left=True)
             self.add_pick_base(self.right_trajectory, t_start, b_target[0], meet_xyz, None, belt_speed, is_left=False)
@@ -478,6 +495,7 @@ class InteractivePolicy(VariableCoopPolicy):
             self.base_arm = 'right'
         else:
             # Blue is to the Left of Green
+            print(f"  -> Blue is Left. Assignment: Left=Base (Blue), Right=Top (Green)")
             # Left gets Blue (Base), Right gets Green (Top)
             self.add_pick_base(self.left_trajectory, t_start, b_target[0], meet_xyz, None, belt_speed, is_left=True)
             self.add_pick_top(self.right_trajectory, t_start, g_target[0], meet_xyz, belt_speed, is_left=False)
@@ -541,6 +559,16 @@ class InteractivePolicy(VariableCoopPolicy):
             right_return_t = t_place_end + 40
             self.right_trajectory.append({"t": right_return_t, "xyz": self.init_right_pose["xyz"], "quat": self.init_right_pose["quat"], "gripper": 1})
             
+            # Record cooperative split point (middle of Top arm's 20-step wait at home)
+            # Store in current segments which will be closed when task completes
+            coop_split_step = t_home_arrival + 10
+            if self.current_left_segment:
+                self.current_left_segment['top_arm'] = 'left'
+                self.current_left_segment['coop_split'] = coop_split_step
+            if self.current_right_segment:
+                self.current_right_segment['top_arm'] = 'left'
+                self.current_right_segment['coop_split'] = coop_split_step
+            
             # Left stays home until end - REMOVED to allow async scheduling
             # self.add_wait(self.left_trajectory, right_return_t)
 
@@ -585,6 +613,15 @@ class InteractivePolicy(VariableCoopPolicy):
             # Left returns home after placing
             left_return_t = t_place_end + 40
             self.left_trajectory.append({"t": left_return_t, "xyz": self.init_left_pose["xyz"], "quat": self.init_left_pose["quat"], "gripper": 1})
+            
+            # Record cooperative split point (middle of Top arm's 20-step wait at home)
+            coop_split_step = t_home_arrival + 10
+            if self.current_left_segment:
+                self.current_left_segment['top_arm'] = 'right'
+                self.current_left_segment['coop_split'] = coop_split_step
+            if self.current_right_segment:
+                self.current_right_segment['top_arm'] = 'right'
+                self.current_right_segment['coop_split'] = coop_split_step
             
             # Right stays home until end - REMOVED
             # self.add_wait(self.right_trajectory, left_return_t)

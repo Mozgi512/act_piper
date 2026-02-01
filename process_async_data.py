@@ -1,9 +1,77 @@
 import os
 import h5py
 import numpy as np
+import cv2
 import argparse
 import time
-from utils import apply_rgb_mask_to_strip, apply_rgb_mask_to_right_strip
+
+
+def apply_rgb_mask_to_strip(image, strip_width=40):
+    """
+    Applies a color mask to the leftmost `strip_width` pixels of the image.
+    Preserves Red, Green, and Blue colors; blacks out everything else.
+    Image is expected to be (H, W, 3) numpy array (uint8).
+    """
+    if image.shape[1] < strip_width:
+        return image
+        
+    strip = image[:, :strip_width, :]
+    
+    lower_red = np.array([100, 0, 0], dtype=np.uint8)
+    upper_red = np.array([255, 100, 100], dtype=np.uint8)
+    
+    lower_green = np.array([0, 100, 0], dtype=np.uint8)
+    upper_green = np.array([100, 255, 100], dtype=np.uint8)
+    
+    # Floor blue max is ~102, so use 150 to be safe
+    lower_blue = np.array([0, 0, 150], dtype=np.uint8)
+    upper_blue = np.array([100, 100, 255], dtype=np.uint8)
+    
+    mask_r = cv2.inRange(strip, lower_red, upper_red)
+    mask_g = cv2.inRange(strip, lower_green, upper_green)
+    mask_b = cv2.inRange(strip, lower_blue, upper_blue)
+    
+    combined_mask = cv2.bitwise_or(mask_r, mask_g)
+    combined_mask = cv2.bitwise_or(combined_mask, mask_b)
+    
+    masked_strip = cv2.bitwise_and(strip, strip, mask=combined_mask)
+    
+    image[:, :strip_width, :] = masked_strip
+    return image
+
+
+def apply_rgb_mask_to_right_strip(image, strip_width=40):
+    """
+    Applies a color mask to the rightmost `strip_width` pixels of the image.
+    Preserves Red, Green, and Blue colors; blacks out everything else.
+    Image is expected to be (H, W, 3) numpy array (uint8).
+    """
+    if image.shape[1] < strip_width:
+        return image
+        
+    strip = image[:, -strip_width:, :]
+    
+    lower_red = np.array([100, 0, 0], dtype=np.uint8)
+    upper_red = np.array([255, 100, 100], dtype=np.uint8)
+    
+    lower_green = np.array([0, 100, 0], dtype=np.uint8)
+    upper_green = np.array([100, 255, 100], dtype=np.uint8)
+    
+    # Floor blue max is ~102, so use 150 to be safe
+    lower_blue = np.array([0, 0, 150], dtype=np.uint8)
+    upper_blue = np.array([100, 100, 255], dtype=np.uint8)
+    
+    mask_r = cv2.inRange(strip, lower_red, upper_red)
+    mask_g = cv2.inRange(strip, lower_green, upper_green)
+    mask_b = cv2.inRange(strip, lower_blue, upper_blue)
+    
+    combined_mask = cv2.bitwise_or(mask_r, mask_g)
+    combined_mask = cv2.bitwise_or(combined_mask, mask_b)
+    
+    masked_strip = cv2.bitwise_and(strip, strip, mask=combined_mask)
+    
+    image[:, -strip_width:, :] = masked_strip
+    return image
 
 
 def process_segment(qpos, qvel, action, images, camera_names, is_left, img_w):
@@ -57,8 +125,12 @@ def process_segment(qpos, qvel, action, images, camera_names, is_left, img_w):
 
 
 def save_hdf5(dataset_path, qpos, qvel, action, images, camera_names):
-    """Save segment to HDF5 file."""
+    """Save segment to HDF5 file WITHOUT metadata group."""
     max_timesteps = qpos.shape[0]
+    
+    # Get actual image dimensions from processed images
+    sample_img = list(images.values())[0]
+    img_height, img_width = sample_img.shape[1:3]  # (T, H, W, C)
     
     with h5py.File(dataset_path + '.hdf5', 'w', rdcc_nbytes=1024**2*2) as root:
         root.attrs['sim'] = True
@@ -70,9 +142,9 @@ def save_hdf5(dataset_path, qpos, qvel, action, images, camera_names):
         for cam_name in camera_names:
             _ = image_group.create_dataset(
                 cam_name, 
-                (max_timesteps, 240, 320, 3), 
+                (max_timesteps, img_height, img_width, 3), 
                 dtype='uint8',
-                chunks=(1, 240, 320, 3),
+                chunks=(1, img_height, img_width, 3),
             )
         
         # For independent segments: 7-dim actions
@@ -88,6 +160,8 @@ def save_hdf5(dataset_path, qpos, qvel, action, images, camera_names):
         root['/observations/qpos'][...] = qpos
         root['/observations/qvel'][...] = qvel
         root['/action'][...] = action
+        
+        # NOTE: Metadata group is intentionally NOT included in processed files
 
 
 def process_episode(episode_idx, dataset_dir, camera_names, output_dirs):
@@ -95,7 +169,8 @@ def process_episode(episode_idx, dataset_dir, camera_names, output_dirs):
     Process one episode: split into segments based on metadata.
     
     Args:
-        output_dirs: {'left_independent': path, 'right_independent': path, 'cooperative': path}
+        output_dirs: {'left_independent': path, 'right_independent': path, 
+                     'cooperative_assembly': path, 'cooperative_place': path}
     """
     dataset_path = os.path.join(dataset_dir, f'episode_{episode_idx}.hdf5')
     
@@ -124,63 +199,126 @@ def process_episode(episode_idx, dataset_dir, camera_names, output_dirs):
     sample_img = list(images.values())[0]
     img_h, img_w, _ = sample_img.shape[1:]
     
-    segment_count = 0
-    
-    # Process left independent segments
+    # 1. Merge and group metadata
+    all_raw_segs = []
     for seg in left_segments:
-        start, end, seg_type = int(seg['start']), int(seg['end']), seg['type'].decode('utf-8')
-        
-        if seg_type == 'independent':
-            seg_qpos, seg_qvel, seg_action, seg_images = process_segment(
-                qpos[start:end],
-                qvel[start:end],
-                action[start:end],
-                {k: v[start:end] for k, v in images.items()},
-                camera_names,
-                is_left=True,
-                img_w=img_w
-            )
-            
-            output_path = os.path.join(output_dirs['left_independent'], f'episode_{episode_idx}_seg_{segment_count}')
-            os.makedirs(output_dirs['left_independent'], exist_ok=True)
-            save_hdf5(output_path, seg_qpos, seg_qvel, seg_action, seg_images, camera_names)
-            segment_count += 1
-    
-    # Process right independent segments
+        s = {'start': int(seg['start']), 'end': int(seg['end']), 
+             'type': seg['type'].decode('utf-8') if isinstance(seg['type'], bytes) else seg['type'],
+             'top_arm': seg['top_arm'].decode('utf-8') if seg['top_arm'] else '',
+             'coop_split': int(seg['coop_split']), 'arm': 'left'}
+        all_raw_segs.append(s)
     for seg in right_segments:
-        start, end, seg_type = int(seg['start']), int(seg['end']), seg['type'].decode('utf-8')
+        s = {'start': int(seg['start']), 'end': int(seg['end']), 
+             'type': seg['type'].decode('utf-8') if isinstance(seg['type'], bytes) else seg['type'],
+             'top_arm': seg['top_arm'].decode('utf-8') if seg['top_arm'] else '',
+             'coop_split': int(seg['coop_split']), 'arm': 'right'}
+        all_raw_segs.append(s)
+
+    # Group cooperative tasks by start time, keep independent tasks separate
+    merged_segs = []
+    coop_groups = {} # start -> list of segments
+    
+    for s in all_raw_segs:
+        if s['type'] == 'cooperative':
+            if s['start'] not in coop_groups:
+                coop_groups[s['start']] = []
+            coop_groups[s['start']].append(s)
+        else:
+            merged_segs.append(s)
+            
+    for start, seg_list in coop_groups.items():
+        # Merge cooperative info: pick MAX end and MAX coop_split
+        max_end = max(s['end'] for s in seg_list)
+        max_split = max(s['coop_split'] for s in seg_list)
+        # Find the top_arm (should be same in both, but pick first non-empty)
+        top_arm = next((s['top_arm'] for s in seg_list if s['top_arm']), '')
+        
+        merged_segs.append({
+            'type': 'cooperative',
+            'start': start,
+            'end': max_end,
+            'coop_split': max_split,
+            'top_arm': top_arm,
+            'arm': 'both'
+        })
+    
+    # Sort merged segments by start time for consistent episode indexing
+    merged_segs.sort(key=lambda x: x['start'])
+    
+    segment_count = 0
+    for seg in merged_segs:
+        start, end, seg_type = seg['start'], seg['end'], seg['type']
+        top_arm = seg['top_arm']
+        coop_split = seg['coop_split']
+        arm = seg['arm']
         
         if seg_type == 'independent':
+            # Independent: [start-10 : end+10]
+            adj_start = max(0, start - 10)
+            adj_end = min(len(qpos), end + 10)
+            is_left = (arm == 'left')
+            
             seg_qpos, seg_qvel, seg_action, seg_images = process_segment(
-                qpos[start:end],
-                qvel[start:end],
-                action[start:end],
-                {k: v[start:end] for k, v in images.items()},
+                qpos[adj_start:adj_end],
+                qvel[adj_start:adj_end],
+                action[adj_start:adj_end],
+                {k: v[adj_start:adj_end] for k, v in images.items()},
                 camera_names,
-                is_left=False,
+                is_left=is_left,
                 img_w=img_w
             )
             
-            output_path = os.path.join(output_dirs['right_independent'], f'episode_{episode_idx}_seg_{segment_count}')
-            os.makedirs(output_dirs['right_independent'], exist_ok=True)
+            out_dir = output_dirs['left_independent'] if is_left else output_dirs['right_independent']
+            output_path = os.path.join(out_dir, f'episode_{episode_idx}_seg_{segment_count}')
+            os.makedirs(out_dir, exist_ok=True)
             save_hdf5(output_path, seg_qpos, seg_qvel, seg_action, seg_images, camera_names)
             segment_count += 1
-    
-    # Process cooperative segments (from left_segments, they should match right_segments)
-    for seg in left_segments:
-        start, end, seg_type = int(seg['start']), int(seg['end']), seg['type'].decode('utf-8')
-        
-        if seg_type == 'cooperative':
-            # For cooperative: keep full 14-dim data
-            seg_qpos = qpos[start:end]
-            seg_qvel = qvel[start:end]
-            seg_action = action[start:end]
-            seg_images = {k: v[start:end] for k, v in images.items()}
             
-            output_path = os.path.join(output_dirs['cooperative'], f'episode_{episode_idx}_seg_{segment_count}')
-            os.makedirs(output_dirs['cooperative'], exist_ok=True)
-            save_hdf5(output_path, seg_qpos, seg_qvel, seg_action, seg_images, camera_names)
-            segment_count += 1
+        elif seg_type == 'cooperative':
+            # Cooperative task: split into assembly + placement
+            
+            # Assembly: [start : coop_split+10] (dual-arm until Top returns home)
+            if coop_split > 0:
+                adj_split_end = min(len(qpos), coop_split + 10)
+                
+                # Assembly is always 14-dim (both arms)
+                seg_qpos = qpos[start:adj_split_end]
+                seg_qvel = qvel[start:adj_split_end]
+                seg_action = action[start:adj_split_end]
+                seg_images = {k: v[start:adj_split_end] for k, v in images.items()}
+                
+                output_path = os.path.join(output_dirs['cooperative_assembly'], f'episode_{episode_idx}_seg_{segment_count}')
+                os.makedirs(output_dirs['cooperative_assembly'], exist_ok=True)
+                save_hdf5(output_path, seg_qpos, seg_qvel, seg_action, seg_images, camera_names)
+                segment_count += 1
+                
+                # Placement: [coop_split+10 : end+10] (single-arm Base only)
+                # Determine which arm is base (opposite of top)
+                base_is_left = (top_arm == 'right')  # If top is right, base is left
+                
+                adj_place_start = min(len(qpos), coop_split + 10)
+                adj_place_end = min(len(qpos), end + 10)
+                
+                if adj_place_start < adj_place_end:
+                    seg_qpos, seg_qvel, seg_action, seg_images = process_segment(
+                        qpos[adj_place_start:adj_place_end],
+                        qvel[adj_place_start:adj_place_end],
+                        action[adj_place_start:adj_place_end],
+                        {k: v[adj_place_start:adj_place_end] for k, v in images.items()},
+                        camera_names,
+                        is_left=base_is_left,
+                        img_w=img_w
+                    )
+                    
+                    # Save to appropriate base directory
+                    output_dir = output_dirs['left_independent'] if base_is_left else output_dirs['right_independent']
+                    
+                    output_path = os.path.join(output_dir, f'episode_{episode_idx}_seg_{segment_count}')
+                    os.makedirs(output_dir, exist_ok=True)
+                    save_hdf5(output_path, seg_qpos, seg_qvel, seg_action, seg_images, camera_names)
+                    segment_count += 1
+    
+    return segment_count
     
     return segment_count
 
@@ -193,7 +331,7 @@ def main(args):
     output_dirs = {
         'left_independent': dataset_dir + '_left_independent',
         'right_independent': dataset_dir + '_right_independent',
-        'cooperative': dataset_dir + '_cooperative'
+        'cooperative_assembly': dataset_dir + '_cooperative_assembly',
     }
     
     print(f"Processing async data from {dataset_dir}")

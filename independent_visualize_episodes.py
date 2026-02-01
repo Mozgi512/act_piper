@@ -36,7 +36,13 @@ def load_hdf5(dataset_dir, dataset_name):
 def main(args):
     dataset_dir = args['dataset_dir']
     episode_idx = args['episode_idx']
-    dataset_name = f'episode_{episode_idx}'
+    seg_idx = args.get('seg_idx')
+    
+    # Support both formats: episode_X and episode_X_seg_Y
+    if seg_idx is not None:
+        dataset_name = f'episode_{episode_idx}_seg_{seg_idx}'
+    else:
+        dataset_name = f'episode_{episode_idx}'
 
     qpos, qvel, action, image_dict = load_hdf5(dataset_dir, dataset_name)
     save_videos(image_dict, DT, video_path=os.path.join(dataset_dir, dataset_name + '_video.mp4'))
@@ -146,5 +152,6 @@ def visualize_timestamp(t_list, dataset_path):
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument('--dataset_dir', action='store', type=str, help='Dataset dir.', required=True)
-    parser.add_argument('--episode_idx', action='store', type=int, help='Episode index.', required=False)
+    parser.add_argument('--episode_idx', action='store', type=int, help='Episode index.', required=True)
+    parser.add_argument('--seg_idx', action='store', type=int, help='Segment index (for processed data).', required=False, default=None)
     main(vars(parser.parse_args()))
