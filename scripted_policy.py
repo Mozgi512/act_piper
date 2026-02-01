@@ -853,10 +853,10 @@ class VariableCoopPolicy(BasePolicy):
         place_pos = goal_xyz + [offset_x, 0, 0]
         # Standard Place (Absolute coords)
         # Transition from Hover (Fixed) to Place (Fixed)
-        traj.append({"t": current_t + 80, "xyz": place_pos + [0, 0, 0.08], "quat": q_pick, "gripper": 0})
-        traj.append({"t": current_t + 100, "xyz": place_pos + [0, 0, 0.02], "quat": q_pick, "gripper": 0})
-        traj.append({"t": current_t + 120, "xyz": place_pos + [0, 0, 0.02], "quat": q_pick, "gripper": 1})
-        traj.append({"t": current_t + 140, "xyz": place_pos+ [0, 0, 0.08], "quat": q_pick, "gripper": 1})
+        traj.append({"t": current_t + 80, "xyz": place_pos + [-0.005, 0, 0.08], "quat": q_pick, "gripper": 0})
+        traj.append({"t": current_t + 100, "xyz": place_pos + [-0.005, 0, 0.025], "quat": q_pick, "gripper": 0})
+        traj.append({"t": current_t + 120, "xyz": place_pos + [-0.005, 0, 0.025], "quat": q_pick, "gripper": 1})
+        traj.append({"t": current_t + 140, "xyz": place_pos+ [-0.005, 0, 0.08], "quat": q_pick, "gripper": 1})
         
         return current_t + 140
 
@@ -875,8 +875,12 @@ class VariableCoopPolicy(BasePolicy):
         traj.append({"t": intercept_t + 40, "xyz": None, "quat": q_pick, "gripper": 0,
                      "track_idx": obj_idx, "track_offset": np.array([0, 0, 0.02])})
         # Up (stop tracking after grip)
+        traj.append({"t": intercept_t + 55, "xyz": None, "quat": q_pick, "gripper": 0,
+                     "track_idx": obj_idx, "track_offset": np.array([0, 0, 0.06])})
+
+        # Hover
         traj.append({"t": intercept_t + 60, "xyz": None, "quat": q_pick, "gripper": 0,
-                     "track_idx": obj_idx, "track_offset": np.array([0, 0, 0.08])})
+                     "freeze_snapshot": True})
         
         current_t = intercept_t + 60
         # Move to Meet (+Z offset for Top)
@@ -922,7 +926,7 @@ class VariableCoopPolicy(BasePolicy):
 
     def add_base_transport(self, traj, start_t, goal_xyz, is_left, offset_x=0.0):
         q_pick = self.get_quat(is_left, 'pick')
-        place_pos = goal_xyz + [offset_x, 0, 0.0]
+        place_pos = goal_xyz + [offset_x, 0.05, 0.0]
         traj.append({"t": start_t + 60, "xyz": place_pos + [0, 0, 0.08], "quat": q_pick, "gripper": 0})
         traj.append({"t": start_t + 80, "xyz": place_pos + [0, 0, 0.025], "quat": q_pick, "gripper": 0})
         traj.append({"t": start_t + 100, "xyz": place_pos + [0, 0, 0.025], "quat": q_pick, "gripper": 1})

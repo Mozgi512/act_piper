@@ -84,38 +84,25 @@ def main(args):
                  pass
 
         
-        # Prepare command queue for this episode
-        command_queue = list(command_queue_template)
-        next_trigger = 20 if command_queue else -1
+        
+        # Schedule all commands upfront (new async system)
+        for cmd in command_queue_template:
+            policy.schedule_command(cmd, ts)
         
         # Loop for EE rollout
-        # Use a large max_steps to allow dynamic termination, overriding fixed episode_len
+        # Use a large max_steps to allow dynamic termination
         max_steps = 3000 
         for step in range(max_steps):
-            # Auto Execution Logic
-            if command_queue and step == next_trigger:
-                cmd = command_queue.pop(0).upper()
-                print(f"  [EE] Auto-executing command '{cmd}' at step {step}")
-                policy.schedule_command(cmd, ts)
-                next_trigger = -1 # Reset trigger
+            # Process command buffer (async execution)
+            policy.process_command_buffer(ts)
             
-            # Check for completion to schedule next task
-            # Check for completion to schedule next task
-            if step == policy.last_action_end_t:
-                print(f"  [EE] Subtask completed at step {step}")
-                if command_queue:
-                    next_trigger = step + 20
-                    print(f"  [EE] Next task scheduled at step {next_trigger}")
-                else:
-                    print(f"  [EE] All commands scheduled. Will terminate at step {step + 20}")
-
-            # Dynamic efficiency termination
-            # Terminate 20 steps after the last action is completed (and queue is empty)
-            # Dynamic efficiency termination
-            # Terminate 20 steps after the last action is completed (and queue is empty)
-            if not command_queue and policy.last_action_end_t != -1 and step >= policy.last_action_end_t + 20:
-                 print(f"  [EE] Dynamic Termination at step {step}")
-                 break
+            # Dynamic termination: if buffer is empty and both arms are free, done
+            if not policy.command_buffer:
+                left_free = policy.is_arm_free(True, step)
+                right_free = policy.is_arm_free(False, step)
+                if left_free and right_free:
+                    print(f"  [EE] All tasks completed. Terminating at step {step}")
+                    break
             
             action = policy(ts)
             ts = env.step(action)
@@ -193,6 +180,10 @@ def main(args):
         max_jump = np.max(np.abs(jumps))
         if max_jump > 0.2:
              print(f"WARNING: Large joint jump detected! Max: {max_jump:.3f} rad/step")
+
+        # Save task segment metadata before deleting policy
+        left_segments = policy.left_segments.copy() if policy.left_segments else []
+        right_segments = policy.right_segments.copy() if policy.right_segments else []
 
         del env
         del policy
@@ -364,6 +355,18 @@ def main(args):
                 qpos = obs.create_dataset('qpos', (num_steps_to_save, 14))
                 qvel = obs.create_dataset('qvel', (num_steps_to_save, 14))
                 action = root.create_dataset('action', (num_steps_to_save, 14))
+                
+                # Save task segment metadata
+                metadata = root.create_group('metadata')
+                # Convert segment lists to structured array
+                if left_segments:
+                    left_seg_data = np.array([(s['start'], s['end'], s['type']) for s in left_segments],
+                                             dtype=[('start', 'i4'), ('end', 'i4'), ('type', 'S16')])
+                    metadata.create_dataset('left_segments', data=left_seg_data)
+                if right_segments:
+                    right_seg_data = np.array([(s['start'], s['end'], s['type']) for s in right_segments],
+                                              dtype=[('start', 'i4'), ('end', 'i4'), ('type', 'S16')])
+                    metadata.create_dataset('right_segments', data=right_seg_data)
 
                 for name, array in data_dict.items():
                     root[name][...] = array

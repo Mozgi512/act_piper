@@ -35,8 +35,27 @@ class InteractivePolicy(VariableCoopPolicy):
         self.initialized = False
         
         self.picked_objects = set()
-        self.sequence_idx = 0 # Points to the *next* object in COLOR_SEQUENCE to process
-        self.task_count = 0  # Counter for Y-offset calculation (5cm per task) - DEPRECATED, use specific counters
+        
+        # Asynchronous Scheduling State
+        self.command_buffer = [] # Queue of commands ['L', 'R', 'C', ...]
+        
+        # Dynamic Role Assignment
+        # Default: Left is Top (Green), Right is Base (Blue) until swapped
+        self.top_arm = 'left' 
+        self.base_arm = 'right'
+        
+        self.previous_buffer_state = []
+        
+        # Arm busy state tracking for completion logging
+        self.left_was_busy = False
+        self.right_was_busy = False
+        
+        # Task segment metadata for data processing
+        self.left_segments = []  # List of {'start': step, 'end': step, 'type': 'independent'/'cooperative'}
+        self.right_segments = []
+        self.current_left_segment = None
+        self.current_right_segment = None
+        
         self.last_action_end_t = -1
 
     def generate_trajectory(self, ts_first):
@@ -109,128 +128,300 @@ class InteractivePolicy(VariableCoopPolicy):
         # Fallback to init pose reference if even current is missing (unlikely)
         return {"t": 0, "xyz": [0,0,0], "quat": [1,0,0,0], "gripper": 1}
 
-    def schedule_command(self, cmd, ts):
-        if not self.initialized: self.init_pose(ts)
-        
-        work_info = np.array(ts.observation['env_state'])
-        cubes_state = work_info
-        
-        if cmd == 'I': # Independent: Pick next 2 Reds
-            # Look for next 2 Reds in sequence starting from current check
-            # BUT user said "Independent left and right pick NEXT TWO RED OBJECTS"
-            # Does this mean from global sequence?
-            # "现時点コンベア上に乗っている物体だけを次に掴む目標物体とする"
-            # Target only objects currently on conveyor.
-            
-            # Find Reds on conveyor
-            reds = self.scan_conveyor(ts, 'r')
-            
-            if len(reds) < 2:
-                print(f"Not enough Reds on conveyor! Found {len(reds)}")
-                return
-            
-            # Pick first 2 available Reds
-            r1 = reds[0] # Right-most
-            r2 = reds[1] # Next Right-most
-            
-            print(f"Independent: Scheduling Red {r1[0]} (R-Arm) and Red {r2[0]} (L-Arm)")
-            # Note: Heuristic logic. Right-most (Highest X) to Right Arm?
-            # Let's assign based on X position like previously.
-            
-            targets = [r1, r2]
-            # Remove from tracking
-            self.picked_objects.add(r1[0])
-            self.picked_objects.add(r2[0])
-            
-            self.plan_independent_pick(targets, cubes_state)
+    def schedule_command(self, cmd, ts=None):
+        """Adds a high-level command to the buffer."""
+        # Normalize input
+        cmd = cmd.upper()
+        if cmd not in ['I', 'C', 'L', 'R', 'T', 'B']:
+            print(f"Ignored unknown command: {cmd}")
+            return
 
-        elif cmd == 'C': # Cooperative: Assemble G and B
-            greens = self.scan_conveyor(ts, 'g')
-            blues = self.scan_conveyor(ts, 'b')
+        print(f"Received Command: {cmd}")
+        self.command_buffer.append(cmd)
+
+    def is_arm_free(self, is_left, current_step):
+        traj = self.left_trajectory if is_left else self.right_trajectory
+        # Last waypoint time. If existing plan ends in future, arm is busy.
+        # But wait, initial 'tail' is at 100000. We must ignore the tail?
+        # Standard logic changes 'tail' time when appending.
+        # So we can check the *true* last action end.
+        
+        # Safest check: look at second to last point (real end) vs tail.
+        # If there's only 1 point (the initial tail), it's free.
+        if len(traj) > 1:
+            end_t = traj[-2]['t'] # Second to last point is the end of the last actual action
+            # Buffer: ensure previous task is FULLY done.
+            return current_step >= end_t
+        return True # Only initial tail exists, arm is free
+
+    def process_command_buffer(self, ts):
+        if not self.command_buffer: 
+            if self.previous_buffer_state:
+                # print("DEBUG: Buffer Empty")
+                self.previous_buffer_state = []
+            return
+
+        if self.command_buffer != self.previous_buffer_state:
+            # print(f"DEBUG: Buffer Changed: {self.command_buffer}")
+            # Use a copy to store state
+            self.previous_buffer_state = list(self.command_buffer)
+        
+        # Check for task completion (arms transitioning from busy to free)
+        left_free = self.is_arm_free(True, self.step_count)
+        right_free = self.is_arm_free(False, self.step_count)
+        
+        if self.left_was_busy and left_free:
+            print(f"[Step {self.step_count}] Left Arm Task Completed")
+            self.left_was_busy = False
+            # Close current segment
+            if self.current_left_segment:
+                self.current_left_segment['end'] = self.step_count
+                self.left_segments.append(self.current_left_segment)
+                self.current_left_segment = None
             
-            if not greens or not blues:
-                print(f"Missing parts for Assembly! G:{len(greens)}, B:{len(blues)}")
-                return
+        if self.right_was_busy and right_free:
+            print(f"[Step {self.step_count}] Right Arm Task Completed")
+            self.right_was_busy = False
+            # Close current segment
+            if self.current_right_segment:
+                self.current_right_segment['end'] = self.step_count
+                self.right_segments.append(self.current_right_segment)
+                self.current_right_segment = None
+        
+        # 1. Expand/Resolve phase (Head only? or as deep as possible?)
+        # We need to resolve pending I/T/B to know which physical arm they use.
+        # But role assignments change after C.
+        # So we can only safe resolve up to the first C.
+        
+        # Let's just do a scan loop.
+        i = 0
+        while i < len(self.command_buffer):
+            cmd = self.command_buffer[i]
+            
+            if cmd == 'I':
+                # Expand I -> T, B at position i
+                self.command_buffer.pop(i)
+                self.command_buffer.insert(i, 'B')
+                self.command_buffer.insert(i, 'T')
+                continue # Re-process new i (T)
+            
+            if cmd == 'T':
+                target = 'L' if self.top_arm == 'left' else 'R'
+                self.command_buffer[i] = target
+                continue # Re-process
                 
-            g = greens[0]
-            b = blues[0]
+            if cmd == 'B':
+                target = 'L' if self.base_arm == 'left' else 'R'
+                self.command_buffer[i] = target
+                continue
+
+            if cmd == 'C':
+                # Barrier: Role assignments might change after C.
+                # Stop resolving subsequent commands until C is executed/popped.
+                break
             
-            print(f"Cooperative: Scheduling Assembly G:{g[0]} + B:{b[0]}")
-            self.picked_objects.add(g[0])
-            self.picked_objects.add(b[0])
+            # If C, L, or R, move to next
+            i += 1
             
-            self.plan_cooperative_assembly(g, b, cubes_state)
+        # 2. Execution Phase (Look-ahead)
+        # We want to execute the first available valid command for each arm.
+        # But we must respect order: If L1 is queued before L2, L2 cannot run before L1.
+        # C blocks everything after it because it swaps roles? 
+        # C needs both arms. So C blocks L and R after it.
+        # L blocks L after it. R blocks R after it.
+        
+        blocked_l = False
+        blocked_r = False
+        
+        indices_to_pop = []
+        
+        # Snapshot buffer state to avoid modification issues during iteration
+        # We need to act on the live buffer though.
+        # Let's iterate and collect actions.
+        
+        i = 0
+        while i < len(self.command_buffer):
+            cmd = self.command_buffer[i]
             
+            if cmd == 'C':
+                # C acts as a barrier.
+                # If either arm is already busy/blocked by previous task in queue, C cannot start.
+                if blocked_l or blocked_r:
+                    # C is blocked. And C blocks everything after it.
+                    break 
+                
+                # Check physical availability
+                if self.is_arm_free(True, self.step_count) and self.is_arm_free(False, self.step_count):
+                     # Check resources
+                    greens = self.scan_conveyor(ts, 'g')
+                    blues = self.scan_conveyor(ts, 'b')
+                    if greens and blues:
+                        print(f"[Step {self.step_count}] Scheduling Coop Assembly G:{greens[0][0]} + B:{blues[0][0]}")
+                        self.picked_objects.add(greens[0][0])
+                        self.picked_objects.add(blues[0][0])
+                        self.plan_cooperative_assembly(greens[0], blues[0], np.array(ts.observation['env_state']))
+                        self.left_was_busy = True
+                        self.right_was_busy = True
+                        
+                        # Start cooperative segments for both arms
+                        self.current_left_segment = {'start': self.step_count, 'type': 'cooperative'}
+                        self.current_right_segment = {'start': self.step_count, 'type': 'cooperative'}
+                        
+                        # Remove C
+                        self.command_buffer.pop(i)
+                        # Don't increment i, next item shifts down
+                        # C uses both arms, so we are done for this step
+                        blocked_l = True
+                        blocked_r = True
+                        break
+                    else:
+                        # Resources missing. C waits. C blocks following.
+                        blocked_l = True
+                        blocked_r = True
+                        break
+                else:
+                    # Physical arms busy.
+                    blocked_l = True
+                    blocked_r = True
+                    break
+
+            elif cmd == 'L':
+                if blocked_l:
+                    i += 1
+                    continue
+                
+                # Check physical availability
+                if self.is_arm_free(True, self.step_count):
+                    reds = self.scan_conveyor(ts, 'r')
+                    
+                    # Strategy: Pick Right-most safe object to avoid skipping, BUT avoid Right Arm's target.
+                    # Right Arm always takes reds[0] (global Right-most).
+                    # Left Arm should take the Right-most candidate that is NOT reds[0].
+            
+                    candidates = [r for r in reds if r[1] < 0]
+                    # print(f"DEBUG: All Reds: {reds}")
+                    # print(f"DEBUG: Safe Candidates (X<0): {candidates}")
+            
+                    if not candidates:
+                         blocked_l = True
+                         i += 1
+                         continue
+            
+                    r_reserved_idx = reds[0][0] # ID of Right Arm's potential target
+            
+                    target = None
+                    # Iterate candidates from R->L (index 0 is Right-most in candidates)
+                    for c in candidates:
+                        if c[0] == r_reserved_idx:
+                            # This object is reserved for Right Arm (it's the global right-most)
+                            # Skip it to avoid collision
+                            continue
+                        target = c
+                        break # Found the right-most non-reserved object
+            
+                    if target is None:
+                        # All candidates were reserved (e.g. only 1 object exists and it's in safe zone)
+                        # In this case, if Right Arm is busy, maybe we can steal it? 
+                        # For now, strict separation: Left leaves Global Right-most for Right.
+                        blocked_l = True 
+                        i += 1
+                        continue
+                 
+                    # Calculate actual last action time (not tail)
+                    traj_l = self.left_trajectory
+                    t_last_l = traj_l[-2]['t'] if len(traj_l) > 1 else 0
+                    start_t = max(t_last_l, self.step_count) + 20
+                    print(f"[Step {self.step_count}] Scheduling Left Pick (Red {target[0]}) -> Starts at Step {start_t}")
+                    self.picked_objects.add(target[0])
+                    self.plan_single_pick(target, is_left=True, cubes_state=np.array(ts.observation['env_state']))
+                    self.left_was_busy = True
+                    
+                    # Start independent segment for left arm
+                    self.current_left_segment = {'start': self.step_count, 'type': 'independent'}
+                    self.command_buffer.pop(i)
+                    # Do NOT increment i
+                    blocked_l = True 
+                    continue
+
+                else:
+                    blocked_l = True
+                
+                i += 1
+
+            elif cmd == 'R':
+                if blocked_r:
+                    i += 1
+                    continue
+                
+                if self.is_arm_free(False, self.step_count):
+                    reds = self.scan_conveyor(ts, 'r')
+                    if reds:
+                         target = reds[0] # Right-most
+                         
+                         # Calculate actual last action time (not tail)
+                         traj_r = self.right_trajectory
+                         t_last_r = traj_r[-2]['t'] if len(traj_r) > 1 else 0
+                         start_t = max(t_last_r, self.step_count) + 20
+                         print(f"[Step {self.step_count}] Scheduling Right Pick (Red {target[0]}) -> Starts at Step {start_t}")
+                         self.picked_objects.add(target[0])
+                         self.plan_single_pick(target, is_left=False, cubes_state=np.array(ts.observation['env_state']))
+                         self.right_was_busy = True
+                         
+                         # Start independent segment for right arm
+                         self.current_right_segment = {'start': self.step_count, 'type': 'independent'}
+                         self.command_buffer.pop(i)
+                         blocked_r = True
+                         continue
+                    else:
+                         blocked_r = True
+                else:
+                    blocked_r = True
+                    
+                i += 1
+
+            else:
+                 # Should be resolved already
+                 i += 1
+
+
     def plan_independent_pick(self, targets, cubes_state):
-        # targets: list of (idx, x, color)
-        # Assign to arms based on X split
-        # Simply: Right-most -> Right Arm, Next -> Left Arm?
-        # Or split at center 0.0?
+        # This method is deprecated by the new async scheduling.
+        # The logic has been moved to plan_single_pick and process_command_buffer.
+        pass
+            
+    def plan_single_pick(self, target, is_left, cubes_state):
+        # target: (idx, x, color)
         
-        # Remove tails
-        if self.left_trajectory: self.left_trajectory.pop()
-        if self.right_trajectory: self.right_trajectory.pop()
+        # Remove tail
+        traj = self.left_trajectory if is_left else self.right_trajectory
+        if traj: traj.pop()
         
-        last_l = self.get_last_waypoint(is_left=True)
-        last_r = self.get_last_waypoint(is_left=False)
+        last_wp = self.get_last_waypoint(is_left)
+        t_last = last_wp['t']
         
-        t_left_end = last_l['t']
-        t_right_end = last_r['t']
+        offset = target[0] * 7
+        # target_xyz = cubes_state[offset : offset+3] 
         
         belt_speed = BELT_MOVE_SPEED
-        # Calculate Y-offset: 5cm per Independent task to prevent collisions
-        # Base position is 0.05m, so 1st task: 0.05m, 2nd: 0.10m, 3rd: 0.15m...
+        # Fixed Goal for independent tasks? Or offset?
+        # User output implies previous logic used [0, 0.10, 0.025]
         goal_xyz = np.array([0, 0.10, 0.025])
         
-        # Sort targets by X descending
-        targets.sort(key=lambda x: x[1], reverse=True)
+        # Start time: max(last_end, current) + buffer
+        start_t = max(t_last, self.step_count) + 20
         
-        # Assign Strategy:
-        # If both X > 0: Right picks 1st, then Left picks 2nd (Cross?) or Right picks both?
-        # "Left and Right each pick" implies split.
-        # Let's force split: Left Arm takes one, Right Arm takes one.
-        # Which one?
-        # Right Arm is at +Y/+X side. Left Arm is at +Y/-X side.
-        # Right Arm should take the one with larger X (Right-most).
-        # Left Arm should take the one with smaller X.
+        offset_x = -0.08 if is_left else 0.08
         
-        t_right_target = targets[0] # Max X
-        t_left_target = targets[1]  # Min X
+        t_end = self.add_pick_place(traj, start_t, target[0], goal_xyz, belt_speed, is_left, offset_x=offset_x)
         
-        # Right Arm Plan
-        offset = t_right_target[0] * 7
-        obj_xyz = cubes_state[offset : offset+3] # Still needed? No, logic moved to helper.
-        # But we pass obj_idx = t_right_target[0]
-        # Sync Start: Ensure we start from current time or last connection
-        # Add 20 steps buffer to allow smooth transition from Loading/Holding to Reach
-        start_t = max(t_right_end, self.step_count) + 20
-        # If gap exists, fill it with hold (handled by get_last_waypoint/interpolate fallback?)
-        # Better: Explicitly hold until start_t? 
-        # Actually base policy interpolates. If we define start_t > last_t, it interpolates.
-        if start_t > t_right_end:
-             # Ensure last waypoint is preserved until start_t for smooth takeoff? 
-             # No, simple interpolation from last_waypoint to first pick_waypoint is sufficient 
-             # IF duration is long enough. 20 steps (0.4s) is good.
-             pass
-
-        self.add_pick_place(self.right_trajectory, start_t, t_right_target[0], goal_xyz, belt_speed, is_left=False, offset_x=0.08)
+        # Return Home
+        return_t = t_end + 60
+        init_pose = self.init_left_pose if is_left else self.init_right_pose
+        traj.append({"t": return_t, "xyz": init_pose["xyz"], "quat": init_pose["quat"], "gripper": 1})
         
-        # Left Arm Plan
-        offset = t_left_target[0] * 7
-        obj_xyz = cubes_state[offset : offset+3]
-        start_t = max(t_left_end, self.step_count) + 20
-        self.add_pick_place(self.left_trajectory, start_t, t_left_target[0], goal_xyz, belt_speed, is_left=True, offset_x=-0.08)
-
-        # Return to home position
-        return_t = max(self.left_trajectory[-1]['t'], self.right_trajectory[-1]['t']) + 60
-        self.last_action_end_t = return_t
-        self.left_trajectory.append({"t": return_t, "xyz": self.init_left_pose["xyz"], "quat": self.init_left_pose["quat"], "gripper": 1})
-        self.right_trajectory.append({"t": return_t, "xyz": self.init_right_pose["xyz"], "quat": self.init_right_pose["quat"], "gripper": 1})
-        
-        # Restore Tails
-        tail_t = max(self.left_trajectory[-1]['t'], self.right_trajectory[-1]['t']) + 10000
-        self.left_trajectory.append({"t": tail_t, "xyz": self.left_trajectory[-1]['xyz'], "quat": self.left_trajectory[-1]['quat'], "gripper": self.left_trajectory[-1]['gripper']})
-        self.right_trajectory.append({"t": tail_t, "xyz": self.right_trajectory[-1]['xyz'], "quat": self.right_trajectory[-1]['quat'], "gripper": self.right_trajectory[-1]['gripper']})
+        # Restore Tail
+        tail_t = return_t + 100000
+        traj.append({"t": tail_t, "xyz": init_pose["xyz"], "quat": init_pose["quat"], "gripper": 1})
 
     def plan_cooperative_assembly(self, g_target, b_target, cubes_state):
         # G (Top) -> Green
@@ -262,20 +453,41 @@ class InteractivePolicy(VariableCoopPolicy):
         if t_right < t_start: 
              self.right_trajectory.append({"t": t_start, "xyz": last_r['xyz'], "quat": last_r['quat'], "gripper": last_r['gripper']})
         
+        # Role assignment: Green holder = Top
+        # Logic: Assign Green to arm that is strictly CLOSER or based on X?
+        # Original Logic: Left gets Green if G.x < B.x.
+        # BUT we have `self.top_arm` state now!
+        # Should we respect the state?
+        # "Also, update who T and B point to after each Coop task."
+        # The user implies dynamic role assignment based on the TASK itself, OR simply alternating?
+        # "Initially check G/B positions to assign roles. After every C task, swap roles."
         # Dynamic Assignment (Prevent Crossing)
         # Left Arm -> Left (Min X), Right Arm -> Right (Max X)
         # Role assignment: Green holder = Top, Blue holder = Base
+        
+        # Use Geometry to decide assignment to prevent collision
         if g_xyz[0] < b_xyz[0]:
+            # Green is to the Left of Blue
             # Left gets Green (Top), Right gets Blue (Base)
             self.add_pick_top(self.left_trajectory, t_start, g_target[0], meet_xyz, belt_speed, is_left=True)
             self.add_pick_base(self.right_trajectory, t_start, b_target[0], meet_xyz, None, belt_speed, is_left=False)
             left_holds_green = True  # Left has green = Left is Top
+            
+            # Update Role State
+            self.top_arm = 'left'
+            self.base_arm = 'right'
         else:
+            # Blue is to the Left of Green
             # Left gets Blue (Base), Right gets Green (Top)
             self.add_pick_base(self.left_trajectory, t_start, b_target[0], meet_xyz, None, belt_speed, is_left=True)
             self.add_pick_top(self.right_trajectory, t_start, g_target[0], meet_xyz, belt_speed, is_left=False)
             left_holds_green = False  # Right has green = Right is Top
+            
+            # Update Role State
+            self.top_arm = 'right'
+            self.base_arm = 'left'
 
+        print(f"Cooperative Assignment: Top(G)={self.top_arm}, Base(B)={self.base_arm}")
         # Sync at Meet
         t_l_mid = self.left_trajectory[-1]['t']
         t_r_mid = self.right_trajectory[-1]['t']
@@ -308,9 +520,30 @@ class InteractivePolicy(VariableCoopPolicy):
             self.left_trajectory.append({"t": t_retreat, "xyz": meet_xyz + [0,0,0.1], "quat": q_l, "gripper": 1}) # Up
             self.right_trajectory.append({"t": t_retreat, "xyz": meet_xyz, "quat": q_r, "gripper": 0}) # Hold
             
+            # --- New Logic: Both Return Home -> Wait -> Base Place ---
+            t_home_start = t_retreat
+            t_home_arrival = t_home_start + 60
+            
+            # Both return home (Base keeps holding)
+            self.left_trajectory.append({"t": t_home_arrival, "xyz": self.init_left_pose["xyz"], "quat": self.init_left_pose["quat"], "gripper": 1})
+            self.right_trajectory.append({"t": t_home_arrival, "xyz": self.init_right_pose["xyz"], "quat": self.init_right_pose["quat"], "gripper": 0})
+
+            # Wait 20 steps
+            t_wait_end = t_home_arrival + 20
+            # self.add_wait(self.left_trajectory, t_wait_end) # Top Arm should NOT wait
+            self.add_wait(self.right_trajectory, t_wait_end)
+
             # Place (Right carries Blue base)
-            t_place_start = t_retreat
-            self.add_place(self.right_trajectory, t_place_start, np.array([0, 0.05, 0.025]), is_left=False)
+            t_place_start = t_wait_end
+            t_place_end = self.add_place(self.right_trajectory, t_place_start, np.array([0, 0.05, 0.025]), is_left=False)
+            
+            # Right returns home after placing
+            right_return_t = t_place_end + 40
+            self.right_trajectory.append({"t": right_return_t, "xyz": self.init_right_pose["xyz"], "quat": self.init_right_pose["quat"], "gripper": 1})
+            
+            # Left stays home until end - REMOVED to allow async scheduling
+            # self.add_wait(self.left_trajectory, right_return_t)
+
         else:
             # Right has Green = Right is Top (Insertion)
             self.right_trajectory.append({"t": t_done, "xyz": meet_xyz + [0,0,0.04], "quat": q_r, "gripper": 1}) # Insert
@@ -324,27 +557,37 @@ class InteractivePolicy(VariableCoopPolicy):
             self.right_trajectory.append({"t": t_retreat, "xyz": meet_xyz + [0,0,0.1], "quat": q_r, "gripper": 1}) # Up
             self.left_trajectory.append({"t": t_retreat, "xyz": meet_xyz, "quat": q_l, "gripper": 0}) # Hold
             
+            # --- New Logic: Both Return Home -> Wait -> Base Place ---
+            t_home_start = t_retreat
+            t_home_arrival = t_home_start + 60
+            
+            # Both return home (Base keeps holding)
+            self.right_trajectory.append({"t": t_home_arrival, "xyz": self.init_right_pose["xyz"], "quat": self.init_right_pose["quat"], "gripper": 1})
+            self.left_trajectory.append({"t": t_home_arrival, "xyz": self.init_left_pose["xyz"], "quat": self.init_left_pose["quat"], "gripper": 0})
+
+            # Wait 20 steps
+            t_wait_end = t_home_arrival + 20
+            self.add_wait(self.right_trajectory, t_wait_end) # Top Arm (Right) should NOT wait? No, Right is Top here... Wait.
+            # If Right has Green (Top), Right is Top.
+            # Base is Left.
+            # Wait, line 372/381 block was "Left has Green (Top)". So Left shouldn't wait.
+            
+            # Block starting line 444 is "Else" (Right has Green = Top).
+            # So Right (Top) shouldn't wait. Left (Base) should wait.
+            
+            # self.add_wait(self.right_trajectory, t_wait_end) # REMOVE WAIT
+            self.add_wait(self.left_trajectory, t_wait_end) # Base waits
+
             # Place (Left carries Blue base)
-            t_place_start = t_retreat
-            self.add_place(self.left_trajectory, t_place_start, np.array([0, 0.05, 0.025]), is_left=True)
-        
-        # Increment Cooperative task counter for next placement        
-        # Return to home position
-        # Placing arm returns first, other arm returns later
-        if left_holds_green:
-            # Right arm placed the object, so it returns first
-            right_return_t = self.right_trajectory[-1]['t'] + 40
-            self.right_trajectory.append({"t": right_return_t, "xyz": self.init_right_pose["xyz"], "quat": self.init_right_pose["quat"], "gripper": 1})
-            # Left arm returns later
-            left_return_t = right_return_t -70
+            t_place_start = t_wait_end
+            t_place_end = self.add_place(self.left_trajectory, t_place_start, np.array([0, 0.05, 0.025]), is_left=True)
+
+            # Left returns home after placing
+            left_return_t = t_place_end + 40
             self.left_trajectory.append({"t": left_return_t, "xyz": self.init_left_pose["xyz"], "quat": self.init_left_pose["quat"], "gripper": 1})
-        else:
-            # Left arm placed the object, so it returns first
-            left_return_t = self.left_trajectory[-1]['t'] + 40
-            self.left_trajectory.append({"t": left_return_t, "xyz": self.init_left_pose["xyz"], "quat": self.init_left_pose["quat"], "gripper": 1})
-            # Right arm returns later
-            right_return_t = left_return_t -70
-            self.right_trajectory.append({"t": right_return_t, "xyz": self.init_right_pose["xyz"], "quat": self.init_right_pose["quat"], "gripper": 1})
+            
+            # Right stays home until end - REMOVED
+            # self.add_wait(self.right_trajectory, left_return_t)
         
         
         # Calculate completion time
@@ -355,7 +598,6 @@ class InteractivePolicy(VariableCoopPolicy):
         tail_t = max(self.left_trajectory[-1]['t'], self.right_trajectory[-1]['t']) + 10000
         self.left_trajectory.append({"t": tail_t, "xyz": self.left_trajectory[-1]['xyz'], "quat": self.left_trajectory[-1]['quat'], "gripper": self.left_trajectory[-1]['gripper']})
         self.right_trajectory.append({"t": tail_t, "xyz": self.right_trajectory[-1]['xyz'], "quat": self.right_trajectory[-1]['quat'], "gripper": self.right_trajectory[-1]['gripper']})
-
 
         
     def add_place(self, traj, start_t, goal_xyz, is_left):
@@ -373,17 +615,33 @@ def main():
     import argparse
     parser = argparse.ArgumentParser()
     parser.add_argument('-c', '--commands', type=str, help='Sequence of commands (e.g. "ICI")', default="")
+    parser.add_argument('--color_sequence', type=str, help='Custom color sequence (e.g. "rrgbrrgbrr")', default=None)
     args = parser.parse_args()
     
-    command_queue = list(args.commands)
-    # Next, trigger at step 20 for the first command
-    next_trigger = 20 if command_queue else -1
+    # Pre-populate command buffer
+    initial_commands = list(args.commands)
+    # Note: Logic moved to schedule_command/process loop
+    
+    # MANYCUBES_COLORS[0] is modified in place if arg provided, else uses default import
+    if args.color_sequence:
+        seq = list(args.color_sequence.lower())
+        if len(seq) == 10 and all(c in ['r','g','b'] for c in seq):
+            MANYCUBES_COLORS[0] = seq
+            print(f"Using custom color sequence: {seq}")
+        else:
+            print("Invalid color sequence provided. Using default.")
 
-    MANYCUBES_COLORS[0] = COLOR_SEQUENCE
+    if not args.color_sequence:
+        MANYCUBES_COLORS[0] = COLOR_SEQUENCE
     
     task_name = 'sim_many_cubes'
     env = make_ee_sim_env(task_name, camera_names=['top'])
-    policy = InteractivePolicy(inject_noise=False)
+    # Pass the (potentially modified) color sequence to the policy
+    policy = InteractivePolicy(inject_noise=False, color_sequence=MANYCUBES_COLORS[0])
+    
+    # Fill policy buffer
+    for c in initial_commands:
+        policy.schedule_command(c)
     
     # Render setup
     import cv2
@@ -406,32 +664,29 @@ def main():
     policy.init_pose(ts)
     
     print("\n\n=== INTERACTIVE POLICY STARTED ===")
-    print(f"Sequence: {COLOR_SEQUENCE}")
+    print(f"Sequence: {policy.color_sequence}")
     print("Commands:")
-    print("  'I': Independent Pick (Next 2 Reds)")
-    print("  'C': Cooperative Assembly (Next Green & Blue)")
+    print("  'I': Independent Pick (Splits into T then B)")
+    print("  'C': Cooperative Assembly (Swaps after completion)")
+    print("  'L'/'R': Explicit Left/Right Pick")
+    print("  'T'/'B': Explicit Top/Base Role Pick")
     print("  'q': Quit")
     
     step = 0
     try:
         while True:
-            # Auto Execution Logic
-            if command_queue and step == next_trigger:
-                cmd = command_queue.pop(0).upper()
-                print(f"Auto-executing command '{cmd}' at step {step}")
-                policy.schedule_command(cmd, ts)
-                # Next trigger will be set upon completion
-                next_trigger = -1
+            # Process Buffer
+            policy.process_command_buffer(ts)
 
             # Non-blocking stdin read
             if select.select([sys.stdin], [], [], 0.0)[0]:
                 line = sys.stdin.readline().strip().upper()
                 if line == 'Q':
                     break
-                elif line in ['I', 'C']:
+                elif line in ['I', 'C', 'L', 'R']: # T and B are internal resolution, not direct user input
                     policy.schedule_command(line, ts)
                 else:
-                    print("Unknown command. Use I, C or Q.")
+                    print("Unknown command. Use I, C, L, R or Q.")
             
             action = policy(ts)
             ts = env.step(action)
@@ -449,11 +704,8 @@ def main():
                 if key == ord('q'):
                     break
              
-            if step == policy.last_action_end_t:
-                print(f"Subtask completed at timestep {step}")
-                if command_queue:
-                    next_trigger = step + 20
-                    print(f"Next task scheduled at step {next_trigger}")
+            # Deprecated: last_action_end_t check is less useful with async
+            # if step == policy.last_action_end_t: ...
 
             step += 1
             
