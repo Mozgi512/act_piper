@@ -37,6 +37,150 @@ MODE_COOP = '2'
 
 COLOR_SEQUENCE = ['r', 'r', 'g', 'b', 'r', 'r', 'g', 'b', 'r', 'g']
 
+
+class TaskScheduler:
+    def __init__(self, sequence_str, duration_config):
+        self.sequence_str = sequence_str
+        self.config = duration_config
+        self.mode_schedule = {} # step -> mode
+        self.hold_schedule = {'left': [], 'right': []} 
+        
+        self.timeline_left = [] # List of {'start':, 'end':, 'type':, 'info':}
+        self.timeline_right = []
+        
+        self.max_timesteps = 0
+        
+        self.MODE_INDEPENDENT = MODE_INDEPENDENT
+        self.MODE_COOP = MODE_COOP
+        
+        self._calculate_schedule()
+
+    def _calculate_schedule(self):
+        time_l = 0
+        time_r = 0
+        
+        n = len(self.sequence_str)
+        for i in range(n):
+            char = self.sequence_str[i]
+            
+            if char == 'I':
+                dur = self.config.get('I', 0)
+                if dur == 0: print(f"WARNING: Duration for 'I' is 0!")
+                
+                # Independent Parallel
+                start_l = time_l
+                end_l = start_l + dur
+                self.timeline_left.append({'start': start_l, 'end': end_l, 'type': 'INDEP', 'info': 'Parallel I'})
+                time_l = end_l
+                
+                start_r = time_r
+                end_r = start_r + dur
+                self.timeline_right.append({'start': start_r, 'end': end_r, 'type': 'INDEP', 'info': 'Parallel I'})
+                time_r = end_r
+                
+            elif char == 'L':
+                dur = self.config.get('Single', 0)
+                # Left Only
+                start_l = time_l
+                end_l = start_l + dur
+                self.timeline_left.append({'start': start_l, 'end': end_l, 'type': 'INDEP', 'info': 'Single L'})
+                time_l = end_l
+                
+            elif char == 'R':
+                dur = self.config.get('Single', 0)
+                # Right Only
+                start_r = time_r
+                end_r = start_r + dur
+                self.timeline_right.append({'start': start_r, 'end': end_r, 'type': 'INDEP', 'info': 'Single R'})
+                time_r = end_r
+
+            elif char == 'C':
+                len_assembly = self.config.get('C_assembly', 0)
+                len_place = self.config.get('C_place', 0)
+                
+                # Sync Point
+                start_coop = max(time_l, time_r)
+                
+                # Schedule Holds
+                if time_l < start_coop:
+                    self.timeline_left.append({'start': time_l, 'end': start_coop, 'type': 'HOLD', 'info': 'Sync Wait'})
+                    time_l = start_coop
+                
+                if time_r < start_coop:
+                    self.timeline_right.append({'start': time_r, 'end': start_coop, 'type': 'HOLD', 'info': 'Sync Wait'})
+                    time_r = start_coop
+                
+                # Mode Switch Registration
+                self.mode_schedule[start_coop] = self.MODE_COOP
+                
+                # Phase 1: Assembly (Coop Mode)
+                end_assembly = start_coop + len_assembly
+                self.timeline_left.append({'start': start_coop, 'end': end_assembly, 'type': 'COOP', 'info': 'Phase 1 (Assembly)'})
+                self.timeline_right.append({'start': start_coop, 'end': end_assembly, 'type': 'COOP', 'info': 'Phase 1 (Assembly)'})
+                
+                # Phase 2: Placement (Indep Mode)
+                self.mode_schedule[end_assembly] = self.MODE_INDEPENDENT
+                
+                # Lookahead for Role Assignment
+                base_arm = 'right' # Default
+                if i + 1 < n:
+                    next_char = self.sequence_str[i+1]
+                    if next_char == 'L':
+                        base_arm = 'right'
+                    elif next_char == 'R':
+                        base_arm = 'left'
+                    else:
+                        base_arm = 'right'
+                
+                end_place = end_assembly + len_place
+                
+                if base_arm == 'left':
+                    # Left blocked (Base), Right free (Top)
+                    self.timeline_left.append({'start': end_assembly, 'end': end_place, 'type': 'INDEP', 'info': 'Phase 2 (Place-Base)'})
+                    time_l = end_place
+                    time_r = end_assembly # Right free immediately
+                else:
+                    # Right blocked (Base), Left free (Top)
+                    self.timeline_right.append({'start': end_assembly, 'end': end_place, 'type': 'INDEP', 'info': 'Phase 2 (Place-Base)'})
+                    time_r = end_place
+                    time_l = end_assembly # Left free immediately
+                
+        self.max_timesteps = max(time_l, time_r)
+        
+    def print_schedule(self):
+        print("\n=== Left Arm Schedule ===")
+        print(f"{'Start':<6} | {'End':<6} | {'Type':<10} | {'Info'}")
+        for item in self.timeline_left:
+            print(f"{item['start']:<6} | {item['end']:<6} | {item['type']:<10} | {item['info']}")
+        print("\n=== Right Arm Schedule ===")
+        print(f"{'Start':<6} | {'End':<6} | {'Type':<10} | {'Info'}")
+        for item in self.timeline_right:
+            print(f"{item['start']:<6} | {item['end']:<6} | {item['type']:<10} | {item['info']}")
+        print("=======================\n")
+
+    def get_mode_at_step(self, t):
+        current = self.MODE_INDEPENDENT
+        sorted_steps = sorted(self.mode_schedule.keys())
+        for step in sorted_steps:
+            if step <= t:
+                current = self.mode_schedule[step]
+            else:
+                break
+        return current
+
+    def get_arm_state(self, t, arm):
+        timeline = self.timeline_left if arm == 'left' else self.timeline_right
+        
+        for item in timeline:
+            if item['start'] <= t < item['end']:
+                return item['type'], item['info']
+        
+        return 'HOLD', 'Idle/Finished'
+    
+    def should_hold(self, t, arm):
+        state, info = self.get_arm_state(t, arm)
+        return state == 'HOLD'
+
 def make_policy(policy_class, policy_config):
     if policy_class == 'ACT':
         policy = ACTPolicy(policy_config)
@@ -60,22 +204,21 @@ def get_image_independent(ts, camera_names, arm):
         curr_image = ts.observation['images'][cam_name]
         h, w, _ = curr_image.shape
         
-        # Calculate offset based on width (base 640 -> 40)
-        offset = int(40 * (w / 640))
-
         if arm == 'left':
-            # Left Arm: masks the RIGHT side (overlap region)
-            curr_image = curr_image[:, :w//2, :].copy()
-            curr_image = apply_rgb_mask_to_right_strip(curr_image, strip_width=offset)
+            # Left Arm: Left Half
+            curr_image = curr_image[:, :w//2, :]
+            # Mask Right Strip (Overlap with Right)
+            # Need to convert to HWC for helper
+            curr_image_np = curr_image.cpu().numpy().transpose(1, 2, 0)
+            curr_image_np = apply_rgb_mask_to_right_strip(curr_image_np, strip_width=40)
+            curr_image = torch.from_numpy(curr_image_np.transpose(2, 0, 1)).cuda()
         else:
-            # Shift based on width (adaptive)
-            start = w//2 - offset
-            end = w - offset
-            # Right Arm: masks the LEFT side (overlap region)
-            curr_image = curr_image[:, start:end, :].copy()
-            
-            # Apply RGB mask
-            curr_image = apply_rgb_mask_to_strip(curr_image, strip_width=offset)
+            # Right Arm: Right Half
+            curr_image = curr_image[:, w//2:, :]
+            # Mask Left Strip (Overlap with Left)
+            curr_image_np = curr_image.cpu().numpy().transpose(1, 2, 0)
+            curr_image_np = apply_rgb_mask_to_strip(curr_image_np, strip_width=40)
+            curr_image = torch.from_numpy(curr_image_np.transpose(2, 0, 1)).cuda()
             
         curr_image = rearrange(curr_image, 'h w c -> c h w')
         curr_images.append(curr_image)
@@ -283,15 +426,21 @@ def main(args):
 
     # Calculate required time limit
     # Default is 20s (1000 steps). We need more for sequences like ICI (1320 steps).
-    total_steps_needed = 0
-    for cmd in command_queue:
-        if cmd.upper() == 'I': total_steps_needed += args.step_i
-        else: total_steps_needed += args.step_c
+    # Initialize TaskScheduler
+    # Assuming config for duration
+    duration_config = {
+        'I': args.step_i,
+        'C_assembly': int(args.step_c * 0.6) if args.step_c else 300, 
+        'C_place': int(args.step_c * 0.4) if args.step_c else 220,    
+        'Single': 200      
+    }
     
-    # Add buffer
-    total_steps_needed += 500
-    time_limit = total_steps_needed * DT
-
+    scheduler = TaskScheduler(command_queue, duration_config)
+    scheduler.print_schedule()
+    
+    # Calculate required time limit from Scheduler
+    time_limit = (scheduler.max_timesteps + 200) * DT 
+    
     # Pass camera_names to avoid rendering default 5 cameras (huge speedup)
     # Pass time_limit to avoid 1000 step reset
     env = make_sim_env(task_name, camera_names=camera_names, time_limit=time_limit, interleave_last_four=args.interleave_objects)
@@ -311,12 +460,9 @@ def main(args):
     # Initialize Temporal Aggregation
     temporal_agg = not args.no_temporal_agg
     num_queries = args.chunk_size
-    # We need a large buffer, or rolling buffer. Since max_timesteps is dynamic (sum of subtasks), let's make it large enough.
-    # Assumed max total steps = 4000 -> Reduced to 3000 to save memory for ICI tasks
-    MAX_BUFFER_STEPS = 3000
-    if total_steps_needed > MAX_BUFFER_STEPS:
-         print(f"Warning: total steps ({total_steps_needed}) > MAX_BUFFER_STEPS ({MAX_BUFFER_STEPS}). Increasing buffer.")
-         MAX_BUFFER_STEPS = total_steps_needed + 500
+    
+    MAX_BUFFER_STEPS = scheduler.max_timesteps + 500
+    if MAX_BUFFER_STEPS < 3000: MAX_BUFFER_STEPS = 3000 # Minimum safety
 
     float_nan = float('nan')
     all_time_actions_dual = torch.full([MAX_BUFFER_STEPS, MAX_BUFFER_STEPS+num_queries, 14], float_nan).cuda()
@@ -326,6 +472,18 @@ def main(args):
     episode_count = 0
     success_count = 0
     total_rewards = []
+    
+    # Prepare Home Pose for Holding
+    # We need START_ARM_POSE. Assuming it is imported.
+    # If not, let's play safe and init zero, but START_ARM_POSE is standard.
+    home_pose = np.zeros(14)
+    # Safe fallback if START_ARM_POSE not in scope, but it should be based on policy_switcher copy
+    try:
+        from piper_constants import START_ARM_POSE
+        home_pose[:6] = START_ARM_POSE[:6]
+        home_pose[7:13] = START_ARM_POSE[7:13]
+    except ImportError:
+        print("Warning: START_ARM_POSE not found. Using default zeros for Hold.")
     
     try:
         while episode_count < args.num_rollouts:
@@ -345,125 +503,29 @@ def main(args):
             current_action_chunk_dual = None
             current_action_chunk_left = None
             current_action_chunk_right = None
-            # If unified dual policy is used, we reuse the dual chunk variable? 
-            # Or simpler: keep using current_action_chunk_dual for any dual policy (Coop or Indep)
             
             video_frames = []
             
-            # Execution Queue
-            current_queue = list(command_queue)
-            current_subtask_end = -1
-            current_mode = None # 'I' or 'C'
-            current_cube_idx = 0 # Track which cubes are being processed (2 per task)
             current_touched_cubes = set() # Track cubes touched during this subtask
+            current_mode = scheduler.get_mode_at_step(0)
             
-            print(f"\nEpisode {episode_count} Started. Queue: {current_queue}")
+            print(f"\nEpisode {episode_count} Started.")
             
-            # Initial Task Setup
-            if current_queue:
-                cmd = current_queue.pop(0).upper()
-                if cmd == 'I':
-                    current_mode = MODE_INDEPENDENT
-                    current_subtask_end = t + args.step_i
-                else:
-                    current_mode = MODE_COOP
-                    current_subtask_end = t + args.step_c
-                print(f"[Step {t}] Starting First Task: {cmd} (End: {current_subtask_end})")
-            else:
-                print("No commands provided.")
-                break
-
             while True:
                 # -------------------------------
-                # Auto-Switching Logic
+                # Auto-Switching Logic via Scheduler
                 # -------------------------------
-                if t >= current_subtask_end:
-                    # Subtask Finished
-                    old_mode = current_mode
-                    
-                    # Remove used cubes (based on contact history)
-                    if len(current_touched_cubes) > 0:
-                        print(f"[Step {t}] Subtask finished. Removing touched cubes: {current_touched_cubes}")
-                        remove_cubes(env.physics, list(current_touched_cubes))
-                    else:
-                        print(f"[Step {t}] Subtask finished. No cubes touched.")
-                    
-                    # Clear for next task
-                    current_touched_cubes = set()
-                    
-                    if current_queue:
-                        cmd = current_queue.pop(0).upper()
-                        if cmd == 'I':
-                            current_mode = MODE_INDEPENDENT
-                            current_subtask_end = t + args.step_i
-                        else:
-                            current_mode = MODE_COOP
-                            current_subtask_end = t + args.step_c
-                        
-                        print(f"[Step {t}] Switching to Task: {cmd} (End: {current_subtask_end})")
-                        step_in_chunk = 0 # Force replan on switch
-                        
-                        # Buffer Inheritance Logic (Smoother transitions)
-                        if args.inherit_temporal_buffer and temporal_agg:
-                            # Optimize: Only process relevant time window [t : t+num_queries]
-                            # Processing entire buffer causes OOM (5000x5100x14)
-                            start_col = t
-                            end_col = min(t + args.chunk_size, all_time_actions_dual.shape[1])
-                            
-                            # Case 1: Dual <-> Dual (Unified Indep Policy)
-                            # Implicit inheritance via shared buffer 'all_time_actions_dual'.
-                            # No explicit copy needed!
-                            if policy_independent_dual:
-                                 # print("DEBUG: Implicit buffer inheritance for Dual <-> Dual switch")
-                                 pass
-                            
-                            # Case 2: Legacy Split Policies
-                            elif old_mode == MODE_COOP and current_mode == MODE_INDEPENDENT:
-                                # Dual -> Indep
-                                # Slice only relevant columns
-                                input_slice = all_time_actions_dual[:, start_col:end_col, :]
-                                dual_mask_slice = ~torch.isnan(input_slice)
-                                
-                                input_slice_safe = torch.nan_to_num(input_slice, nan=0.0)
-                                denorm_slice = input_slice_safe * stats_dual_torch['action_std'] + stats_dual_torch['action_mean']
-                                
-                                # Left
-                                denorm_left = denorm_slice[:, :, :7]
-                                renorm_left = (denorm_left - stats_left_torch['action_mean']) / stats_left_torch['action_std']
-                                val_inherit_left = renorm_left.clone()
-                                val_inherit_left[~dual_mask_slice[:, :, :7]] = float('nan')
-                                all_time_actions_left[:, start_col:end_col, :].copy_(val_inherit_left)
-                                
-                                # Right
-                                denorm_right = denorm_slice[:, :, 7:]
-                                renorm_right = (denorm_right - stats_right_torch['action_mean']) / stats_right_torch['action_std']
-                                val_inherit_right = renorm_right.clone()
-                                val_inherit_right[~dual_mask_slice[:, :, 7:]] = float('nan')
-                                all_time_actions_right[:, start_col:end_col, :].copy_(val_inherit_right)
-                                
-                            elif old_mode == MODE_INDEPENDENT and current_mode == MODE_COOP:
-                                # Indep -> Dual
-                                input_left_slice = all_time_actions_left[:, start_col:end_col, :]
-                                input_right_slice = all_time_actions_right[:, start_col:end_col, :]
-                                left_mask = ~torch.isnan(input_left_slice)
-                                right_mask = ~torch.isnan(input_right_slice)
-                                combined_mask = torch.cat([left_mask, right_mask], dim=2)
-                                
-                                input_left_safe = torch.nan_to_num(input_left_slice, nan=0.0)
-                                input_right_safe = torch.nan_to_num(input_right_slice, nan=0.0)
-                                denorm_left = input_left_safe * stats_left_torch['action_std'] + stats_left_torch['action_mean']
-                                denorm_right = input_right_safe * stats_right_torch['action_std'] + stats_right_torch['action_mean']
-                                
-                                denorm_dual = torch.cat([denorm_left, denorm_right], dim=2)
-                                renorm_dual = (denorm_dual - stats_dual_torch['action_mean']) / stats_dual_torch['action_std']
-                                
-                                val_inherit_dual = renorm_dual.clone()
-                                val_inherit_dual[~combined_mask] = float('nan')
-                                all_time_actions_dual[:, start_col:end_col, :].copy_(val_inherit_dual)
-
-                    else:
-                        print(f"[Step {t}] All commands finished.")
-                        break
+                new_mode = scheduler.get_mode_at_step(t)
+                
+                if new_mode != current_mode:
+                    print(f"[Step {t}] Switching Mode: {current_mode} -> {new_mode}")
+                    current_mode = new_mode
+                    step_in_chunk = 0 # Replan
+                
+                # Check End
+                if t >= scheduler.max_timesteps:
+                     print(f"[Step {t}] Reached End of Schedule.")
+                     break
 
                 # -------------------------------
                 # Render & Obs
@@ -479,7 +541,7 @@ def main(args):
                 if args.save_video:
                      # User requested 480p (640x480) for video, but obs is 320x240.
                      # We must re-render for high quality video.
-                     video_frame_highres = env._physics.render(height=480, width=640, camera_id='top')
+                     video_frame_highres = env._physics.render(height=240, width=320, camera_id=onscreen_cam)
                      video_frames.append(video_frame_highres) 
                 
                 obs = ts.observation
@@ -610,6 +672,15 @@ def main(args):
                         action_left = post_process_left(raw_action_l)
                         action_right = post_process_right(raw_action_r)
                         target_qpos = np.concatenate([action_left, action_right])
+
+                # Apply Scheduler Holds
+                hold_l = scheduler.should_hold(t, 'left')
+                hold_r = scheduler.should_hold(t, 'right')
+                
+                if hold_l:
+                    target_qpos[:7] = home_pose[:7]
+                if hold_r:
+                    target_qpos[7:] = home_pose[7:]
 
                 ts = env.step(target_qpos)
                 current_reward = env._task.get_reward(env.physics)

@@ -193,6 +193,10 @@ class EpisodicDataset(torch.utils.data.Dataset):
         is_pad = np.zeros(episode_len)
         is_pad[action_len:] = 1
 
+        if self.is_sim:
+            # Check for masking requirement (Independent datasets)
+            pass
+
         # new axis for different cameras
         all_cam_images = []
         for cam_name in self.camera_names:

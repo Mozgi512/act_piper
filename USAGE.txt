@@ -323,7 +323,31 @@ python3 shuffle_dataset.py --dataset_dir data/my_dataset
 python3 visualize_episodes.py --dataset_dir data/test_coop --episode_idx 0
 
 # 分割データ可視化
-python3 independent_visualize_episodes.py --dataset_dir data/test_coop_left_independent --episode_idx 0 --seg_idx 0
+python3 independent_visualize_episodes.py --dataset_dir data/ICTICT/_right_independent/training --episode_idx 0 
 
 # 協調組み立て可視化（14次元データ）
 python3 visualize_episodes.py --dataset_dir data/test_coop_cooperative_assembly --episode_idx 0 --seg_idx 1
+
+python policy_switcher.py \
+    --task_name sim_many_cubes \
+    --ckpt_dual ckpt/unpaired_c \
+    --ckpt_left ckpt/unpaired_left \
+    --ckpt_right ckpt/unpaired_right \
+    --policy_class ACT \
+    --kl_weight 10 --chunk_size 100 --hidden_dim 512 --dim_feedforward 3200 \
+    --command_sequence ICRICL \
+    --task_durations '{"I": 380, "C_assembly": 400, "C_place": 120, "Single": 380}' \
+    --onscreen_render \
+    --inherit_temporal_buffer \
+    --warmup_steps 100 \
+    --num_rollouts 50　--color_sequence rrgbrrrbgr
+
+    python3 independent_imitate_episodes.py \
+    --task_name sim_many_cubes \
+    --ckpt_dir ckpt/unpaired_right \
+    --dataset_dir data/ICTICT/_right_independent/training \
+    --policy_class ACT \
+    --kl_weight 10 --chunk_size 100 --hidden_dim 512 --batch_size 32 --dim_feedforward 3200 \
+    --num_epochs 40000 --lr 1e-5 \
+    --seed 0 --arm right --num_episodes 100 --eval --onscreen_render --color_sequence rrgbrrrbgr
+

@@ -7,6 +7,7 @@ import time
 from copy import deepcopy
 import pickle
 import argparse
+import json
 import matplotlib.pyplot as plt
 import numpy as np
 import torch
@@ -19,7 +20,7 @@ cwd = os.getcwd()
 sys.path.append(os.path.join(cwd, 'detr'))
 
 # Import existing modules
-from piper_constants import DT
+from piper_constants import DT, START_ARM_POSE
 from piper_constants import PUPPET_GRIPPER_JOINT_OPEN
 from utils import load_data
 from utils import sample_redbox_pose, sample_insertion_pose, sample_greenbox_pose, sample_bluebox_pose
@@ -27,13 +28,156 @@ from utils import compute_dict_mean, set_seed, detach_dict
 from policy import ACTPolicy
 
 # Import Sim Env
-from piper_sim_env import REDBOX_POSE, GREENBOX_POSE, BLUEBOX_POSE
+from piper_sim_env import REDBOX_POSE, GREENBOX_POSE, BLUEBOX_POSE, MANYCUBES_COLORS
 from piper_sim_env import make_sim_env
 from piper_ee_sim_env import make_ee_sim_env
-from utils import apply_rgb_mask_to_strip
+from utils import apply_rgb_mask_to_strip, apply_rgb_mask_to_right_strip
 # Constants
 MODE_INDEPENDENT = '1'
 MODE_COOP = '2'
+
+class TaskScheduler:
+    def __init__(self, sequence_str, duration_config):
+        self.sequence_str = sequence_str
+        self.config = duration_config
+        self.mode_schedule = {} # step -> mode
+        self.hold_schedule = {'left': [], 'right': []} 
+        
+        self.timeline_left = [] # List of {'start':, 'end':, 'type':, 'info':}
+        self.timeline_right = []
+        
+        self.max_timesteps = 0
+        
+        self.MODE_INDEPENDENT = MODE_INDEPENDENT
+        self.MODE_COOP = MODE_COOP
+        
+        self._calculate_schedule()
+
+    def _calculate_schedule(self):
+        time_l = 0
+        time_r = 0
+        
+        n = len(self.sequence_str)
+        for i in range(n):
+            char = self.sequence_str[i]
+            
+            if char == 'I':
+                dur = self.config.get('I', 0)
+                if dur == 0: print(f"WARNING: Duration for 'I' is 0!")
+                
+                # Independent Parallel
+                start_l = time_l
+                end_l = start_l + dur
+                self.timeline_left.append({'start': start_l, 'end': end_l, 'type': 'INDEP', 'info': 'Parallel I'})
+                time_l = end_l
+                
+                start_r = time_r
+                end_r = start_r + dur
+                self.timeline_right.append({'start': start_r, 'end': end_r, 'type': 'INDEP', 'info': 'Parallel I'})
+                time_r = end_r
+                
+            elif char == 'L':
+                dur = self.config.get('Single', 0)
+                # Left Only
+                start_l = time_l
+                end_l = start_l + dur
+                self.timeline_left.append({'start': start_l, 'end': end_l, 'type': 'INDEP', 'info': 'Single L'})
+                time_l = end_l
+                
+            elif char == 'R':
+                dur = self.config.get('Single', 0)
+                # Right Only
+                start_r = time_r
+                end_r = start_r + dur
+                self.timeline_right.append({'start': start_r, 'end': end_r, 'type': 'INDEP', 'info': 'Single R'})
+                time_r = end_r
+
+            elif char == 'C':
+                len_assembly = self.config.get('C_assembly', 0)
+                len_place = self.config.get('C_place', 0)
+                
+                # Sync Point
+                start_coop = max(time_l, time_r)
+                
+                # Schedule Holds
+                if time_l < start_coop:
+                    self.timeline_left.append({'start': time_l, 'end': start_coop, 'type': 'HOLD', 'info': 'Sync Wait'})
+                    time_l = start_coop
+                
+                if time_r < start_coop:
+                    self.timeline_right.append({'start': time_r, 'end': start_coop, 'type': 'HOLD', 'info': 'Sync Wait'})
+                    time_r = start_coop
+                
+                # Mode Switch Registration
+                self.mode_schedule[start_coop] = self.MODE_COOP
+                
+                # Phase 1: Assembly (Coop Mode)
+                end_assembly = start_coop + len_assembly
+                self.timeline_left.append({'start': start_coop, 'end': end_assembly, 'type': 'COOP', 'info': 'Phase 1 (Assembly)'})
+                self.timeline_right.append({'start': start_coop, 'end': end_assembly, 'type': 'COOP', 'info': 'Phase 1 (Assembly)'})
+                
+                # Phase 2: Placement (Indep Mode)
+                self.mode_schedule[end_assembly] = self.MODE_INDEPENDENT
+                
+                # Lookahead for Role Assignment
+                base_arm = 'right' # Default
+                if i + 1 < n:
+                    next_char = self.sequence_str[i+1]
+                    if next_char == 'L':
+                        base_arm = 'right'
+                    elif next_char == 'R':
+                        base_arm = 'left'
+                    else:
+                        base_arm = 'right'
+                
+                end_place = end_assembly + len_place
+                
+                if base_arm == 'left':
+                    # Left blocked (Base), Right free (Top)
+                    self.timeline_left.append({'start': end_assembly, 'end': end_place, 'type': 'INDEP', 'info': 'Phase 2 (Place-Base)'})
+                    time_l = end_place
+                    time_r = end_assembly # Right free immediately
+                else:
+                    # Right blocked (Base), Left free (Top)
+                    self.timeline_right.append({'start': end_assembly, 'end': end_place, 'type': 'INDEP', 'info': 'Phase 2 (Place-Base)'})
+                    time_r = end_place
+                    time_l = end_assembly # Left free immediately
+                
+        self.max_timesteps = max(time_l, time_r)
+        
+    def print_schedule(self):
+        print("\n=== Left Arm Schedule ===")
+        print(f"{'Start':<6} | {'End':<6} | {'Type':<10} | {'Info'}")
+        for item in self.timeline_left:
+            print(f"{item['start']:<6} | {item['end']:<6} | {item['type']:<10} | {item['info']}")
+        print("\n=== Right Arm Schedule ===")
+        print(f"{'Start':<6} | {'End':<6} | {'Type':<10} | {'Info'}")
+        for item in self.timeline_right:
+            print(f"{item['start']:<6} | {item['end']:<6} | {item['type']:<10} | {item['info']}")
+        print("=======================\n")
+
+    def get_mode_at_step(self, t):
+        current = self.MODE_INDEPENDENT
+        sorted_steps = sorted(self.mode_schedule.keys())
+        for step in sorted_steps:
+            if step <= t:
+                current = self.mode_schedule[step]
+            else:
+                break
+        return current
+
+    def get_arm_state(self, t, arm):
+        timeline = self.timeline_left if arm == 'left' else self.timeline_right
+        
+        for item in timeline:
+            if item['start'] <= t < item['end']:
+                return item['type'], item['info']
+        
+        return 'HOLD', 'Idle/Finished'
+    
+    def should_hold(self, t, arm):
+        state, info = self.get_arm_state(t, arm)
+        return state == 'HOLD'
 
 def is_data():
     return select.select([sys.stdin], [], [], 0) == ([sys.stdin], [], [])
@@ -67,17 +211,15 @@ def get_image_independent(ts, camera_names, arm):
         h, w, _ = curr_image.shape
         
         if arm == 'left':
+            # Left Arm: Left Half
             curr_image = curr_image[:, :w//2, :]
+            # Mask Right Strip (Overlap with Right)
+            curr_image = apply_rgb_mask_to_right_strip(curr_image, strip_width=40)
         else:
-            # Shift left by 40 pixels
-            offset = 40
-            start = w//2 - offset
-            end = w - offset
-            curr_image = curr_image[:, start:end, :]
-            
-            # Apply RGB mask
-            # curr_image is (H, W, C) which is what the function expects
-            curr_image = apply_rgb_mask_to_strip(curr_image, strip_width=offset)
+            # Right Arm: Right Half
+            curr_image = curr_image[:, w//2:, :]
+            # Mask Left Strip (Overlap with Left)
+            curr_image = apply_rgb_mask_to_strip(curr_image, strip_width=40)
             
         curr_image = rearrange(curr_image, 'h w c -> c h w')
         curr_images.append(curr_image)
@@ -165,11 +307,23 @@ def main(args):
     print("Loading Dual Policy...")
     policy_dual, stats_dual = load_policy_and_stats(ckpt_dual, policy_class, args, override_state_dim=14)
     
+    # Handle Color Sequence
+    if args.color_sequence:
+        color_seq = list(args.color_sequence.lower())
+        if len(color_seq) != 10:
+             print(f"WARNING: Color sequence must be 10 chars. Got {len(color_seq)}. Using default.")
+        elif any(c not in ['r', 'g', 'b'] for c in color_seq):
+             print(f"WARNING: Invalid chars in color sequence. Using default.")
+        else:
+             print(f"Setting Color Sequence: {color_seq}")
+             MANYCUBES_COLORS[0] = color_seq
+
     print("Loading Left Policy...")
     policy_left, stats_left = load_policy_and_stats(ckpt_left, policy_class, args, override_state_dim=7, override_arm='left')
     
     print("Loading Right Policy...")
     policy_right, stats_right = load_policy_and_stats(ckpt_right, policy_class, args, override_state_dim=7, override_arm='right')
+    print(f"Stats Right Action Std Mean: {stats_right['action_std'].mean()}")
 
     pre_process_dual = lambda s_qpos: (s_qpos - stats_dual['qpos_mean']) / stats_dual['qpos_std']
     post_process_dual = lambda a: a * stats_dual['action_std'] + stats_dual['action_mean']
@@ -198,7 +352,7 @@ def main(args):
     if onscreen_render:
         plt.ion()
         ax = plt.subplot()
-        plt_img = ax.imshow(env._physics.render(height=480, width=640, camera_id='top'))
+        plt_img = ax.imshow(env._physics.render(height=240, width=320, camera_id='top'))
     
     def reset_with_new_pose():
         # Pose sampling based on task name
@@ -266,9 +420,55 @@ def main(args):
         
         current_episode_rewards = []
         
+        # Initialize Task Scheduler
+        scheduler = None
+        if args.command_sequence and args.task_durations:
+            try:
+                durations = json.loads(args.task_durations)
+                print(f"Initializing Task Scheduler with Sequence: {args.command_sequence}")
+                scheduler = TaskScheduler(args.command_sequence, durations)
+                print(f"Total Scheduled Duration: {scheduler.max_timesteps}")
+                scheduler.print_schedule()
+            except Exception as e:
+                print(f"Error initializing scheduler: {e}")
+        
+
+        
+
+        
+        # Prepare Home Pose for Holding (14 dim)
+        home_pose = np.zeros(14)
+        home_pose[:6] = START_ARM_POSE[:6]
+        home_pose[6] = START_ARM_POSE[6]
+        home_pose[7:13] = START_ARM_POSE[8:14]
+        home_pose[13] = START_ARM_POSE[14]
+
+        # Tracking for status logging
+        last_l_state = None
+        last_r_state = None
+
         while True:
-            # Auto-switch logic
-            if args.switch_step is not None and t == args.switch_step:
+            # Task Scheduler Mode Logic
+            if scheduler:
+                # 1. Mode Switch
+                sched_mode = scheduler.get_mode_at_step(t)
+                if sched_mode != current_mode:
+                    current_mode = sched_mode
+                    step_in_chunk = 0
+                    print(f"[Step {t}] Scheduler switched to {current_mode} mode")
+                
+                # 2. Status Logging (Per Arm)
+                l_state, l_info = scheduler.get_arm_state(t, 'left')
+                r_state, r_info = scheduler.get_arm_state(t, 'right')
+                
+                # Print only on change or periodically
+                if (l_state, l_info) != last_l_state or (r_state, r_info) != last_r_state:
+                     print(f"[Step {t}] Left: {l_state} ({l_info}) | Right: {r_state} ({r_info})")
+                     last_l_state = (l_state, l_info)
+                     last_r_state = (r_state, r_info)
+
+            # Auto-switch logic (Legacy)
+            elif args.switch_step is not None and t == args.switch_step: # Only if scheduler NOT active
                 if current_mode != MODE_INDEPENDENT:
                     current_mode = MODE_INDEPENDENT
                     step_in_chunk = 0 # Force replan on switch
@@ -434,7 +634,7 @@ def main(args):
                 
             # Render update matching imitate_episodes.py timing
             if onscreen_render:
-                image = env._physics.render(height=480, width=640, camera_id='top')
+                image = env._physics.render(height=240, width=320, camera_id='top')
                 plt_img.set_data(image)
                 plt.pause(DT)
 
@@ -443,7 +643,7 @@ def main(args):
                  # Usually users want both or just video. 
                  # Let's reuse 'image' if available, else render.
                  if not onscreen_render:
-                      image = env._physics.render(height=480, width=640, camera_id='top')
+                      image = env._physics.render(height=240, width=320, camera_id='top')
                  video_frames.append(image) 
             
             obs = ts.observation
@@ -515,6 +715,9 @@ def main(args):
                          
                          if args.policy_class == 'ACT':
                              action_chunk_r = policy_right(qpos_right, curr_image_right)
+                             
+
+
                              if temporal_agg:
                                  all_time_actions_right[[t], t:t+num_queries] = action_chunk_r
                              else:
@@ -594,6 +797,23 @@ def main(args):
                     action_right = post_process_right(raw_action_r)
                     target_qpos = np.concatenate([action_left, action_right])
             
+            # Apply Scheduler Holds
+            if scheduler:
+                hold_l = scheduler.should_hold(t, 'left')
+                hold_r = scheduler.should_hold(t, 'right')
+                
+                if hold_l:
+                    # Override Left Arm to Home
+                    target_qpos[:7] = home_pose[:7]
+                
+                if hold_r:
+                    # Override Right Arm to Home
+                    target_qpos[7:] = home_pose[7:]
+
+
+
+
+
             ts = env.step(target_qpos)
             current_episode_rewards.append(ts.reward)
             
@@ -681,6 +901,9 @@ if __name__ == '__main__':
     parser.add_argument('--save_video', action='store_true', help='Save execution video to mp4')
     parser.add_argument('--num_rollouts', action='store', type=int, default=1, help='Number of evaluation episodes')
     parser.add_argument('--phase2_offset', action='store', type=int, default=0, help='Execute Phase 2 actions N steps earlier')
-    
+    parser.add_argument('--command_sequence', action='store', type=str, default=None, help='Scheduler: Task sequence (e.g. ICLR)')
+    parser.add_argument('--task_durations', action='store', type=str, default=None, help='Scheduler: JSON string of durations')
+    parser.add_argument('--color_sequence', action='store', type=str, default=None, help='Color sequence (e.g. rrgbrrgbrr)')
+
     args = parser.parse_args()
     main(args)
