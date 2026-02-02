@@ -81,13 +81,13 @@ SIM_TASK_CONFIGS = {
     'sim_dataset_i': {
         'dataset_dir': DATA_DIR + '/sim_dataset_i',
         'num_episodes': 100,
-        'episode_len': 400,
+        'episode_len': 380,
         'camera_names': ['top']
     },
     'sim_dataset_c': {
         'dataset_dir': DATA_DIR + '/sim_dataset_c',
         'num_episodes': 100,
-        'episode_len': 520,
+        'episode_len': 400,
         'camera_names': ['top']
     },
 }

@@ -926,7 +926,7 @@ class VariableCoopPolicy(BasePolicy):
 
     def add_base_transport(self, traj, start_t, goal_xyz, is_left, offset_x=0.0):
         q_pick = self.get_quat(is_left, 'pick')
-        place_pos = goal_xyz + [offset_x, 0.05, 0.0]
+        place_pos = goal_xyz + [offset_x, 0.1, 0.0]
         traj.append({"t": start_t + 60, "xyz": place_pos + [0, 0, 0.08], "quat": q_pick, "gripper": 0})
         traj.append({"t": start_t + 80, "xyz": place_pos + [0, 0, 0.025], "quat": q_pick, "gripper": 0})
         traj.append({"t": start_t + 100, "xyz": place_pos + [0, 0, 0.025], "quat": q_pick, "gripper": 1})
@@ -965,7 +965,7 @@ class FourObjectPolicy(BasePolicy):
         #gripper_pick_quat_left = gripper_pick_quat_left * Quaternion(axis=[0.0, 1.0, 0.0], degrees=30)
         
         assemble_xyz = np.array([0.02, 0.25, 0.1])
-        place_xyz = np.array([0, 0.1, 0.025])
+        place_xyz = np.array([0, 0.15, 0.025])
         
         # ==============================================================================
         # Left Trajectory

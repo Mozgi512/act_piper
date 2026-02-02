@@ -440,7 +440,7 @@ class ManyCubesTask(BimanualPiperTask):
         self.init_phase = init_phase
         self.color_sequence = None  # Will be set from MANYCUBES_COLORS during initialize_episode
         # Track completed tasks cumulatively (survives object removal)
-        self.completed_independent_pairs = set()  # Set of (cube_i, cube_j) tuples
+        self.completed_independent_cubes = set()  # Set of cube_i indices
         self.completed_cooperative_pairs = set()  # Set of (green_idx, blue_idx) tuples
 
     def initialize_episode(self, physics):
@@ -687,19 +687,17 @@ class ManyCubesTask(BimanualPiperTask):
             if MANYCUBES_COLORS[0] is not None:
                 self.color_sequence = MANYCUBES_COLORS[0]
                 # Set max_reward based on expected task count (if provided)
-                if MANYCUBES_TASK_COUNT[0] is not None:
-                    self.max_reward = MANYCUBES_TASK_COUNT[0]
-                else:
-                    # Fallback: calculate from color sequence
-                    red_count = self.color_sequence.count('r')
-                    green_count = self.color_sequence.count('g')
-                    blue_count = self.color_sequence.count('b')
-                    independent_pairs = red_count // 2
-                    cooperative_pairs = min(green_count, blue_count)
-                    self.max_reward = independent_pairs + cooperative_pairs
+                # Set max_reward based on color sequence
+                # Ignore MANYCUBES_TASK_COUNT for max_reward value since it doesn't account for weights
+                red_count = self.color_sequence.count('r')
+                green_count = self.color_sequence.count('g')
+                blue_count = self.color_sequence.count('b')
+                independent_pairs = red_count # Individual red tasks
+                cooperative_pairs = min(green_count, blue_count)
+                self.max_reward = 1 * independent_pairs + 2 * cooperative_pairs
             
             # Reset completed task tracking
-            self.completed_independent_pairs = set()
+            self.completed_independent_cubes = set()
             self.completed_cooperative_pairs = set()
                 
         super().initialize_episode(physics)
@@ -750,15 +748,12 @@ class ManyCubesTask(BimanualPiperTask):
             elif color == 'b' and in_goal:
                 blue_in_goal.append(i)  # Only blues in goal
         
-        # Mark new Independent pairs as completed
-        # Sort to create consistent pairs (e.g., always (smaller, larger))
-        red_in_goal_sorted = sorted(red_in_goal)
-        for i in range(0, len(red_in_goal_sorted) - 1, 2):
-            pair = tuple(sorted([red_in_goal_sorted[i], red_in_goal_sorted[i+1]]))
-            if pair not in self.completed_independent_pairs:
-                self.completed_independent_pairs.add(pair)
-                print(f"  [Reward] Completed Independent pair: R{pair[0]} + R{pair[1]}")
-        
+        # Mark new Independent items as completed
+        for i in red_in_goal:
+            if i not in self.completed_independent_cubes:
+                self.completed_independent_cubes.add(i)
+                print(f"  [Reward] Completed Independent task: R{i}")
+
         # Mark new Cooperative pairs as completed
         # Success condition: G-B assembled AND B in goal (G doesn't need to be in goal)
         used_blues = set()
@@ -777,7 +772,7 @@ class ManyCubesTask(BimanualPiperTask):
                     break  # Each green can only pair once
         
         # Return total completed tasks
-        total_reward = len(self.completed_independent_pairs) + len(self.completed_cooperative_pairs)
+        total_reward = 1 * len(self.completed_independent_cubes) + 2 * len(self.completed_cooperative_pairs)
         return total_reward
     
     def _get_reward_legacy(self, physics):

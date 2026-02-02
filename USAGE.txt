@@ -248,25 +248,36 @@ python3 independent_imitate_episodes.py \
     python3 visualize_episodes.py --dataset_dir ./data/ICI_phase3_right --episode_idx 0
     python3 visualize_episodes.py --dataset_dir ./data/ICI_phase3_left --episode_idx 0
 
-python3 merge_datasets.py --input_dirs data/C --output_dir data/C_merged
-python3 merge_datasets.py --input_dirs data/I_left --output_dir data/I_left_merged
-python3 merge_datasets.py --input_dirs data/I_right --output_dir data/I_right_merged
+python3 merge_datasets.py --input_dirs data/ICTICT/_left_independent/seg_0 data/ICTICT/_left_independent/seg_4 data/ICTICT/_left_independent/seg_6 --output_dir data/ICTICT/_left_independent/red
+python3 merge_datasets.py --input_dirs data/ICTICT/_right_independent/seg_1 data/ICTICT/_right_independent/seg_5 data/ICTICT/_right_independent/seg_9 --output_dir data/ICTICT/_right_independent/red
+python3 shuffle_dataset.py --dataset_dir data/ICTICT/_right_independent/red
+python3 shuffle_dataset.py --dataset_dir data/ICTICT/_left_independent/red
+xx
+python3 merge_datasets.py --input_dirs data/ICTICT/_left_independent/seg_8 data/ICTICT/_left_independent/red --output_dir data/ICTICT/_left_independent/merged
+python3 merge_datasets.py --input_dirs data/ICTICT/_right_independent/seg_3 data/ICTICT/_right_independent/red --output_dir data/ICTICT/_right_independent/merged
+python3 pad_dataset.py --input_dir data/ICTICT/_left_independent/merged --output_dir data/ICTICT/_left_independent/training
+python3 pad_dataset.py --input_dir data/ICTICT/_right_independent/merged --output_dir data/ICTICT/_right_independent/training
+python3 shuffle_dataset.py --dataset_dir data/ICTICT/_left_independent/training
+python3 shuffle_dataset.py --dataset_dir data/ICTICT/_right_independent/training
 
-python3 pad_dataset.py --input_dir data/C_merged --output_dir data/C_training
-python3 pad_dataset.py --input_dir data/I_left_merged --output_dir data/I_left_training
-python3 pad_dataset.py --input_dir data/I_right_merged --output_dir data/I_right_training
+
+python3 merge_datasets.py --input_dirs data/ICTICT/_cooperative_assembly/seg_2 data/ICTICT/_cooperative_assembly/seg_7 --output_dir data/ICTICT/_cooperative_assembly/merged
+python3 pad_dataset.py --input_dir data/ICTICT/_cooperative_assembly/merged --output_dir data/ICTICT/_cooperative_assembly/training
+python3 shuffle_dataset.py --dataset_dir data/ICTICT/_cooperative_assembly/training
+
+
 
 
     CUDA_LAUNCH_BLOCKING=0 TORCH_CUDNN_V8_API_ENABLED=1
 
     python3 independent_imitate_episodes.py \
     --task_name sim_dataset_i \
-    --ckpt_dir ckpt/i_left \
-    --dataset_dir data/I_left_training \
+    --ckpt_dir ckpt/unpaired_left \
+    --dataset_dir data/ICTICT/_left_independent/training \
     --policy_class ACT \
     --kl_weight 10 --chunk_size 100 --hidden_dim 512 --batch_size 32 --dim_feedforward 3200 \
     --num_epochs 40000 --lr 1e-5 \
-    --seed 0 --arm left --num_episodes 80 --num_workers 4 \
+    --seed 0 --arm left --num_episodes 100 --num_workers 4 \
     --persistent_workers \
     --prefetch_factor 2 \
     --use_cache \
@@ -275,12 +286,12 @@ python3 pad_dataset.py --input_dir data/I_right_merged --output_dir data/I_right
 
     python3 independent_imitate_episodes.py \
     --task_name sim_dataset_i \
-    --ckpt_dir ckpt/i_right \
-    --dataset_dir data/I_right_training \
+    --ckpt_dir ckpt/unpaired_right \
+    --dataset_dir data/ICTICT/_right_independent/training \
     --policy_class ACT \
     --kl_weight 10 --chunk_size 100 --hidden_dim 512 --batch_size 32 --dim_feedforward 3200 \
     --num_epochs 40000 --lr 1e-5 \
-    --seed 0 --arm right --num_episodes 80 --num_workers 4 \
+    --seed 0 --arm right --num_episodes 100 --num_workers 4 \
     --persistent_workers \
     --prefetch_factor 2 \
     --use_cache \
@@ -289,8 +300,8 @@ python3 pad_dataset.py --input_dir data/I_right_merged --output_dir data/I_right
 
     python3 imitate_episodes.py \
     --task_name sim_dataset_c \
-    --ckpt_dir ckpt/c \
-    --dataset_dir data/C_training \
+    --ckpt_dir ckpt/unpaired_c \
+    --dataset_dir data/ICTICT/_cooperative_assembly/training \
     --policy_class ACT --kl_weight 10 --chunk_size 100 --hidden_dim 512 \
     --batch_size 32 \
     --dim_feedforward 3200 \
@@ -301,23 +312,7 @@ python3 pad_dataset.py --input_dir data/I_right_merged --output_dir data/I_right
     --prefetch_factor 2 \
     --use_cache \
     --use_cuda_graph \
-    --validation_interval 100 --num_episodes 80 
-
-    python3 imitate_episodes.py \
-    --task_name sim_dataset_i \
-    --ckpt_dir ckpt/i \
-    --dataset_dir data/I_training \
-    --policy_class ACT --kl_weight 10 --chunk_size 100 --hidden_dim 512 \
-    --batch_size 32 \
-    --dim_feedforward 3200 \
-    --num_epochs 40000 --lr 1e-5 \
-    --seed 0 \
-    --num_workers 4 \
-    --persistent_workers \
-    --prefetch_factor 2 \
-    --use_cache \
-    --use_cuda_graph \
-    --validation_interval 100 --num_episodes 80 
+    --validation_interval 100 --num_episodes 100
 
 
 

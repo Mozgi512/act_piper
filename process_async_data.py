@@ -269,8 +269,11 @@ def process_episode(episode_idx, dataset_dir, camera_names, output_dirs):
             )
             
             out_dir = output_dirs['left_independent'] if is_left else output_dirs['right_independent']
-            output_path = os.path.join(out_dir, f'episode_{episode_idx}_seg_{segment_count}')
-            os.makedirs(out_dir, exist_ok=True)
+            seg_folder_name = f'seg_{segment_count}'
+            seg_full_dir = os.path.join(out_dir, seg_folder_name)
+            os.makedirs(seg_full_dir, exist_ok=True)
+            output_path = os.path.join(seg_full_dir, f'episode_{episode_idx}')
+            
             save_hdf5(output_path, seg_qpos, seg_qvel, seg_action, seg_images, camera_names)
             segment_count += 1
             
@@ -287,8 +290,11 @@ def process_episode(episode_idx, dataset_dir, camera_names, output_dirs):
                 seg_action = action[start:adj_split_end]
                 seg_images = {k: v[start:adj_split_end] for k, v in images.items()}
                 
-                output_path = os.path.join(output_dirs['cooperative_assembly'], f'episode_{episode_idx}_seg_{segment_count}')
-                os.makedirs(output_dirs['cooperative_assembly'], exist_ok=True)
+                seg_folder_name = f'seg_{segment_count}'
+                seg_full_dir = os.path.join(output_dirs['cooperative_assembly'], seg_folder_name)
+                os.makedirs(seg_full_dir, exist_ok=True)
+                output_path = os.path.join(seg_full_dir, f'episode_{episode_idx}')
+                
                 save_hdf5(output_path, seg_qpos, seg_qvel, seg_action, seg_images, camera_names)
                 segment_count += 1
                 
@@ -313,8 +319,11 @@ def process_episode(episode_idx, dataset_dir, camera_names, output_dirs):
                     # Save to appropriate base directory
                     output_dir = output_dirs['left_independent'] if base_is_left else output_dirs['right_independent']
                     
-                    output_path = os.path.join(output_dir, f'episode_{episode_idx}_seg_{segment_count}')
-                    os.makedirs(output_dir, exist_ok=True)
+                    seg_folder_name = f'seg_{segment_count}'
+                    seg_full_dir = os.path.join(output_dir, seg_folder_name)
+                    os.makedirs(seg_full_dir, exist_ok=True)
+                    output_path = os.path.join(seg_full_dir, f'episode_{episode_idx}')
+
                     save_hdf5(output_path, seg_qpos, seg_qvel, seg_action, seg_images, camera_names)
                     segment_count += 1
     
