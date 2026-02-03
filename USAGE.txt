@@ -300,8 +300,8 @@ python3 shuffle_dataset.py --dataset_dir data/ICTICT/_cooperative_merged/trainin
 
     python3 imitate_episodes.py \
     --task_name sim_dataset_c \
-    --ckpt_dir ckpt/merged_c \
-    --dataset_dir data/ICTICT/_cooperative_merged/training \
+    --ckpt_dir ckpt/multitask_async \
+    --dataset_dir data/ICTICT/_cooperative_merged/multitask \
     --policy_class ACT --kl_weight 10 --chunk_size 100 --hidden_dim 512 \
     --batch_size 32 \
     --dim_feedforward 3200 \
@@ -312,7 +312,7 @@ python3 shuffle_dataset.py --dataset_dir data/ICTICT/_cooperative_merged/trainin
     --prefetch_factor 2 \
     --use_cache \
     --use_cuda_graph \
-    --validation_interval 100 --num_episodes 100
+    --validation_interval 100 --num_episodes 130
 
 
 
@@ -320,7 +320,7 @@ python3 shuffle_dataset.py --dataset_dir data/ICTICT/_cooperative_merged/trainin
 python3 shuffle_dataset.py --dataset_dir data/my_dataset
 
 # 元のデータ可視化
-python3 visualize_episodes.py --dataset_dir data/ICTICT/_cooperative_merged/seg_0 --episode_idx 0
+python3 visualize_episodes.py --dataset_dir data/ICTICT_custom_coop/seg_0 --episode_idx 0
 
 # 分割データ可視化
 python3 independent_visualize_episodes.py --dataset_dir data/ICTICT/_right_independent/training --episode_idx 0 
@@ -356,8 +356,8 @@ python3 policy_switcher.py \
   --policy_class ACT \
   --kl_weight 10 --chunk_size 100 --hidden_dim 512 --dim_feedforward 3200 \
   --ckpt_dual ckpt/merged_c \
-  --ckpt_left ckpt/unpaired_left \
-  --ckpt_right ckpt/unpaired_right \
+  --ckpt_left ckpt/pickplace_left \
+  --ckpt_right ckpt/pickplace_right \
   --onscreen_render \
   --use_visual_classifier \
   --inherit_temporal_buffer \
@@ -366,3 +366,9 @@ python3 policy_switcher.py \
   --command_sequence ICRICL \
   --task_durations '{"I": 380, "C_assembly": 400, "C_place": 120, "Single": 380}' \
   --num_rollouts 50
+
+  python3 process_async_data.py --dataset_dir data/ICTICT --num_episodes 50 --extract_custom_coop
+
+  python3 merge_datasets.py --input_dirs data/ICTICT/_cooperative_merged/pick_place data/ICTICT/_cooperative_merged/m  --output_dir data/ICTICT/_cooperative_merged/formultitask
+  python3 shuffle_dataset.py --dataset_dir data/ICTICT/_cooperative_merged/formultitask
+  python3 pad_dataset.py --input_dir data/ICTICT/_cooperative_merged/formultitask --output_dir data/ICTICT/_cooperative_merged/multitask

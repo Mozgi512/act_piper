@@ -164,14 +164,14 @@ def save_hdf5(dataset_path, qpos, qvel, action, images, camera_names):
         # NOTE: Metadata group is intentionally NOT included in processed files
 
 
-def process_episode(episode_idx, dataset_dir, camera_names, output_dirs, only_coop_merged=False):
+def process_episode(episode_idx, dataset_dir, camera_names, output_dirs, args):
     """
     Process one episode: split into segments based on metadata.
     
     Args:
         output_dirs: {'left_independent': path, 'right_independent': path, 
                      'cooperative_assembly': path, 'cooperative_place': path}
-        only_coop_merged: If True, save *only* the merged cooperative segment.
+        args: Dictionary of command line arguments
     """
     dataset_path = os.path.join(dataset_dir, f'episode_{episode_idx}.hdf5')
     
@@ -246,7 +246,48 @@ def process_episode(episode_idx, dataset_dir, camera_names, output_dirs, only_co
     # Sort merged segments by start time for consistent episode indexing
     merged_segs.sort(key=lambda x: x['start'])
     
-    segment_count = 0
+    # --- Custom ICRICL Extraction Logic ---
+    if args.get('extract_custom_coop'):
+        coop_segs = [s for s in merged_segs if s['type'] == 'cooperative']
+        if len(coop_segs) < 2:
+            print(f"Episode {episode_idx}: Expected at least 2 coop tasks for custom extraction, found {len(coop_segs)}")
+            return 0
+        
+        # Range 1: Start to First Coop Phase 1 Start
+        ranges = [
+            {'start': 0, 'inner_end': coop_segs[0]['start'], 'name': 'initial_i'},
+            # Range 2: First Coop Phase 1 End to Second Coop Phase 1 Start
+            {'start': coop_segs[0]['coop_split'], 'inner_end': coop_segs[1]['start'], 'name': 'ri_middle'},
+            # Range 3: Second Coop Phase 1 End to Episode End
+            {'start': coop_segs[1]['coop_split'], 'inner_end': len(qpos), 'name': 'final_l'}
+        ]
+        
+        custom_seg_count = 0
+        for i, r in enumerate(ranges):
+            s_idx = r['start']
+            e_idx = r['inner_end']
+            
+            # Simple margin check
+            adj_start = max(0, s_idx)
+            adj_end = min(len(qpos), e_idx + 10)
+            
+            if adj_start >= adj_end: continue
+            
+            seg_qpos = qpos[adj_start:adj_end]
+            seg_qvel = qvel[adj_start:adj_end]
+            seg_action = action[adj_start:adj_end]
+            seg_images = {k: v[adj_start:adj_end] for k, v in images.items()}
+            
+            # Save into custom_coop folder
+            out_root = output_dirs['custom_coop']
+            seg_folder = os.path.join(out_root, f'seg_{i}_{r["name"]}')
+            os.makedirs(seg_folder, exist_ok=True)
+            output_path = os.path.join(seg_folder, f'episode_{episode_idx}')
+            
+            save_hdf5(output_path, seg_qpos, seg_qvel, seg_action, seg_images, camera_names)
+            custom_seg_count += 1
+        return custom_seg_count
+    # --------------------------------------
     for seg in merged_segs:
         start, end, seg_type = seg['start'], seg['end'], seg['type']
         top_arm = seg['top_arm']
@@ -256,7 +297,7 @@ def process_episode(episode_idx, dataset_dir, camera_names, output_dirs, only_co
 
         if seg_type == 'independent':
             # Skip if user wants only merged cooperative
-            if only_coop_merged:
+            if args.get('only_coop_merged'):
                 continue
 
             # Independent: [start-10 : end+10]
@@ -304,7 +345,7 @@ def process_episode(episode_idx, dataset_dir, camera_names, output_dirs, only_co
             segment_count += 1
             
             # Assembly: [start : coop_split+10] (dual-arm until Top returns home)
-            if not only_coop_merged and coop_split > 0:
+            if not args.get('only_coop_merged') and coop_split > 0:
                 adj_split_end = min(len(qpos), coop_split + 10)
                 
                 # Assembly is always 14-dim (both arms)
@@ -366,6 +407,7 @@ def main(args):
         'right_independent': dataset_dir + '_right_independent',
         'cooperative_assembly': dataset_dir + '_cooperative_assembly',
         'cooperative_merged': dataset_dir + '_cooperative_merged',
+        'custom_coop': dataset_dir + '_custom_coop',
     }
     
     print(f"Processing async data from {dataset_dir}")
@@ -386,7 +428,7 @@ def main(args):
     t0 = time.time()
     
     for i in range(num_episodes):
-        seg_count = process_episode(i, dataset_dir, camera_names, output_dirs, only_coop_merged=only_coop_merged)
+        seg_count = process_episode(i, dataset_dir, camera_names, output_dirs, args)
         total_segments += seg_count
         if (i+1) % 10 == 0:
             print(f"Processed {i+1}/{num_episodes} episodes...")
@@ -402,5 +444,7 @@ if __name__ == '__main__':
                        help='Number of episodes to process')
     parser.add_argument('--only_coop_merged', action='store_true',
                        help='If set, output ONLY the unified merged cooperative segments.')
+    parser.add_argument('--extract_custom_coop', action='store_true',
+                       help='If set, extract ICRICL-specific segments (I, RI, L) as 14-dim data.')
     
     main(vars(parser.parse_args()))

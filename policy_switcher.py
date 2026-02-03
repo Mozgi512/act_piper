@@ -42,9 +42,10 @@ MODE_INDEPENDENT = '1'
 MODE_COOP = '2'
 
 class TaskScheduler:
-    def __init__(self, sequence_str, duration_config):
+    def __init__(self, sequence_str, duration_config, sync_arms=False):
         self.sequence_str = sequence_str
         self.config = duration_config
+        self.sync_arms = sync_arms
         self.mode_schedule = {} # step -> mode
         self.hold_schedule = {'left': [], 'right': []} 
         
@@ -114,33 +115,37 @@ class TaskScheduler:
                 len_assembly = self.config.get('C_assembly', 0)
                 len_place = self.config.get('C_place', 0)
                 
-                # Sync Point
-                start_coop = max(time_l, time_r)
-                
-                # Schedule Holds
-                if time_l < start_coop:
-                    self.timeline_left.append({'start': time_l, 'end': start_coop, 'type': 'HOLD', 'info': 'Sync Wait'})
-                    time_l = start_coop
-                
-                if time_r < start_coop:
-                    self.timeline_right.append({'start': time_r, 'end': start_coop, 'type': 'HOLD', 'info': 'Sync Wait'})
-                    time_r = start_coop
+                if self.sync_arms:
+                    # Sync Point: Both arms wait for each other before starting Phase 1
+                    start_coop = max(time_l, time_r)
+                    
+                    if time_l < start_coop:
+                        self.timeline_left.append({'start': time_l, 'end': start_coop, 'type': 'HOLD', 'info': 'Sync Wait'})
+                        time_l = start_coop
+                    
+                    if time_r < start_coop:
+                        self.timeline_right.append({'start': time_r, 'end': start_coop, 'type': 'HOLD', 'info': 'Sync Wait'})
+                        time_r = start_coop
+                    
+                    start_l = start_coop
+                    start_r = start_coop
+                    start_global = start_coop
+                else:
+                    # No Sync Point - both arms start from their own current time
+                    start_l = time_l
+                    start_r = time_r
+                    start_global = min(start_l, start_r)
                 
                 # Mode Switch Registration
-                self.mode_schedule[start_coop] = self.MODE_COOP
+                self.mode_schedule[start_global] = self.MODE_COOP
                 
                 # Phase 1: Assembly (Coop Mode)
-                end_assembly = start_coop + len_assembly
-                self.timeline_left.append({'start': start_coop, 'end': end_assembly, 'type': 'COOP', 'info': 'Phase 1 (Assembly)'})
-                self.timeline_right.append({'start': start_coop, 'end': end_assembly, 'type': 'COOP', 'info': 'Phase 1 (Assembly)'})
+                end_assembly_l = start_l + len_assembly
+                end_assembly_r = start_r + len_assembly
+                self.timeline_left.append({'start': start_l, 'end': end_assembly_l, 'type': 'COOP', 'info': 'Phase 1 (Assembly)'})
+                self.timeline_right.append({'start': start_r, 'end': end_assembly_r, 'type': 'COOP', 'info': 'Phase 1 (Assembly)'})
                 
                 # Phase 2: Placement (Base stays COOP, Free becomes INDEP)
-                end_place = end_assembly + len_place
-                
-                # Global Mode remains COOP until end_place because one arm is still using Dual Policy
-                self.mode_schedule[end_assembly] = self.MODE_COOP 
-                self.mode_schedule[end_place] = self.MODE_INDEPENDENT
-                
                 # Lookahead for Role Assignment
                 base_arm = 'right' # Default
                 if i + 1 < n:
@@ -154,16 +159,22 @@ class TaskScheduler:
 
                 if base_arm == 'left':
                     # Left blocked (Base) -> Continues COOP
-                    # Right free (Top) -> Goes INDEP immediately
-                    self.timeline_left.append({'start': end_assembly, 'end': end_place, 'type': 'COOP', 'info': 'Phase 2 (Place-Base)'})
-                    time_l = end_place
-                    time_r = end_assembly # Right free immediately
+                    start_l_p2 = end_assembly_l
+                    end_l_p2 = start_l_p2 + len_place
+                    self.timeline_left.append({'start': start_l_p2, 'end': end_l_p2, 'type': 'COOP', 'info': 'Phase 2 (Placement)'})
+                    time_l = end_l_p2
+                    time_r = end_assembly_r # Right free immediately after Assembly
                 else:
-                    # Right blocked (Base) -> Continues COOP
-                    # Left free (Top) -> Goes INDEP immediately
-                    self.timeline_right.append({'start': end_assembly, 'end': end_place, 'type': 'COOP', 'info': 'Phase 2 (Place-Base)'})
-                    time_r = end_place
-                    time_l = end_assembly # Left free immediately
+                    # Right blocked (Base)
+                    start_r_p2 = end_assembly_r
+                    end_r_p2 = start_r_p2 + len_place
+                    self.timeline_right.append({'start': start_r_p2, 'end': end_r_p2, 'type': 'COOP', 'info': 'Phase 2 (Placement)'})
+                    time_r = end_r_p2
+                    time_l = end_assembly_l # Left free immediately
+                
+                # Register mode switch to INDEP at the absolute end of this segment
+                max_end = max(time_l, time_r)
+                self.mode_schedule[max_end] = self.MODE_INDEPENDENT
                 
         self.max_timesteps = max(time_l, time_r)
         
@@ -563,7 +574,7 @@ def main(args):
         try:
             durations = json.loads(args.task_durations)
             print(f"Initializing Task Scheduler with Sequence: {args.command_sequence}")
-            scheduler = TaskScheduler(args.command_sequence, durations)
+            scheduler = TaskScheduler(args.command_sequence, durations, sync_arms=args.sync_arms)
             print(f"Total Scheduled Duration: {scheduler.max_timesteps}")
             scheduler.print_schedule()
             
@@ -627,6 +638,10 @@ def main(args):
     # Tracking for status logging
     last_l_state = None
     last_r_state = None
+    
+    # Tracking for Subtask Reset
+    prev_l_info = ''
+    prev_r_info = ''
     
     # Tracking for Object Removal
     acc_touched_left = set()
@@ -859,6 +874,21 @@ def main(args):
                 l_state, l_info = scheduler.get_arm_state(t, 'left')
                 r_state, r_info = scheduler.get_arm_state(t, 'right')
                 
+                # Check for Subtask Transition
+                if args.reset_on_subtask and temporal_agg:
+                    if l_info != prev_l_info and l_state == 'INDEP':
+                        # New Subtask for Left -> Reset Buffer
+                        print(f"[Step {t}] Left Subtask Change ({prev_l_info} -> {l_info}). Resetting Left Policy Buffer.")
+                        all_time_actions_left.fill_(float_nan)
+                    
+                    if r_info != prev_r_info and r_state == 'INDEP':
+                        # New Subtask for Right -> Reset Buffer
+                        print(f"[Step {t}] Right Subtask Change ({prev_r_info} -> {r_info}). Resetting Right Policy Buffer.")
+                        all_time_actions_right.fill_(float_nan)
+                
+                prev_l_info = l_info
+                prev_r_info = r_info
+                
                 # Print only on change or periodically
                 if (l_state, l_info) != last_l_state or (r_state, r_info) != last_r_state:
                      print(f"[Step {t}] Left: {l_state} ({l_info}) | Right: {r_state} ({r_info})")
@@ -1024,7 +1054,7 @@ def main(args):
                     # Note: post_process_dual does exactly this.
                     # So we process the FULL dual action then slice, or we slice the stats.
                     pass # Handled below by unified processing
-                else:
+                elif l_state == 'INDEP':
                     # Independent Mode for Left
                     if temporal_agg:
                         actions_for_curr_step_l = all_time_actions_left[:, t]
@@ -1043,6 +1073,9 @@ def main(args):
                         current_raw_action_l = raw_action_l.squeeze(0).cpu().numpy()
                     else:
                         current_raw_action_l = current_action_chunk_left[step_in_chunk]
+                else:
+                    # HOLD mode - no raw action needed
+                    current_raw_action_l = None
 
                 # --- 2. Get Right Action ---
                 if r_state == 'COOP':
@@ -1062,7 +1095,7 @@ def main(args):
                         current_raw_action_r = raw_action_dual[7:]
                     else:
                         current_raw_action_r = current_action_chunk_dual[step_in_chunk][7:]
-                else:
+                elif r_state == 'INDEP':
                     # Independent Mode for Right
                     if temporal_agg:
                         actions_for_curr_step_r = all_time_actions_right[:, t]
@@ -1083,6 +1116,9 @@ def main(args):
                              current_raw_action_r = raw_action_r.squeeze(0).cpu().numpy()
                     else:
                         current_raw_action_r = current_action_chunk_right[step_in_chunk]
+                else:
+                    # HOLD mode - no raw action needed
+                    current_raw_action_r = None
 
                 # --- 3. Denormalize & Combine ---
                 # Left
@@ -1091,31 +1127,36 @@ def main(args):
                      # We need to reconstruct full dual to denorm properly OR use dual stats on slice
                      # stats_dual['action_mean'] usually (14,)
                      action_l = current_raw_action_l * stats_dual['action_std'][:7] + stats_dual['action_mean'][:7]
-                else:
+                elif l_state == 'INDEP':
                      action_l = current_raw_action_l * stats_left['action_std'] + stats_left['action_mean']
+                else:
+                     # HOLD Mode: Maintain current joint position
+                     action_l = qpos_numpy[:7]
                 
                 # Right
                 if r_state == 'COOP':
                      action_r = current_raw_action_r * stats_dual['action_std'][7:] + stats_dual['action_mean'][7:]
-                else:
+                elif r_state == 'INDEP':
                      action_r = current_raw_action_r * stats_right['action_std'] + stats_right['action_mean']
+                else:
+                     # HOLD Mode: Maintain current joint position
+                     action_r = qpos_numpy[7:14]
                 
                 # Combine
                 action = np.concatenate([action_l, action_r])
                 target_qpos = action
-            
-            # Apply Scheduler Holds
-            if scheduler:
-                hold_l = scheduler.should_hold(t, 'left')
-                hold_r = scheduler.should_hold(t, 'right')
-                
-                if hold_l:
-                    # Override Left Arm to Home
-                    target_qpos[:7] = home_pose[:7]
-                
-                if hold_r:
-                    # Override Right Arm to Home
-                    target_qpos[7:] = home_pose[7:]
+            # Apply Scheduler Holds (Disabled per user request to prevent high-acceleration snapping)
+            # if scheduler:
+            #     hold_l = scheduler.should_hold(t, 'left')
+            #     hold_r = scheduler.should_hold(t, 'right')
+            #     
+            #     if hold_l:
+            #         # Override Left Arm to Home
+            #         target_qpos[:7] = home_pose[:7]
+            #     
+            #     if hold_r:
+            #         # Override Right Arm to Home
+            #         target_qpos[7:] = home_pose[7:]
 
 
 
@@ -1295,6 +1336,7 @@ if __name__ == '__main__':
     parser.add_argument('--switch_step', action='store', type=int, help='Step to auto-switch from Coop to Independent')
     parser.add_argument('--warmup_steps', action='store', type=int, default=0, help='Number of steps to run independent policy in background before switch')
     parser.add_argument('--inherit_temporal_buffer', action='store_true', help='Inherit temporal aggregation buffer on switch to prevent jerk')
+    parser.add_argument('--reset_on_subtask', action='store_true', help='Reset Independent Policy temporal aggregation buffer on subtask switch')
     parser.add_argument('--save_video', action='store_true', help='Save execution video to mp4')
     parser.add_argument('--num_rollouts', action='store', type=int, default=1, help='Number of evaluation episodes')
     parser.add_argument('--phase2_offset', action='store', type=int, default=0, help='Execute Phase 2 actions N steps earlier')
@@ -1306,6 +1348,7 @@ if __name__ == '__main__':
     parser.add_argument('--use_visual_classifier', action='store_true', help='Use trained ResNet for mode prediction logging/safety')
     parser.add_argument('--classifier_ckpt', type=str, default='mode_classifier_best.pth', help='Path to classifier checkpoint')
     parser.add_argument('--use_blending', action='store_true', help='Blend inherited actions with new policy actions when switching modes (Temporal Aggregation only)')
+    parser.add_argument('--sync_arms', action='store_true', help='Synchronize arms (Sync Wait) before starting Cooperative tasks')
     
     args = parser.parse_args()
     main(args)
