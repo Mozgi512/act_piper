@@ -255,15 +255,15 @@ python3 shuffle_dataset.py --dataset_dir data/ICTICT/_left_independent/red
 xx
 python3 merge_datasets.py --input_dirs data/ICTICT/_left_independent/seg_8 data/ICTICT/_left_independent/red --output_dir data/ICTICT/_left_independent/merged
 python3 merge_datasets.py --input_dirs data/ICTICT/_right_independent/seg_3 data/ICTICT/_right_independent/red --output_dir data/ICTICT/_right_independent/merged
-python3 pad_dataset.py --input_dir data/ICTICT/_left_independent/merged --output_dir data/ICTICT/_left_independent/training
-python3 pad_dataset.py --input_dir data/ICTICT/_right_independent/merged --output_dir data/ICTICT/_right_independent/training
+python3 pad_dataset.py --input_dir data/ICTICT/_left_independent/red --output_dir data/ICTICT/_left_independent/training
+python3 pad_dataset.py --input_dir data/ICTICT/_right_independent/red --output_dir data/ICTICT/_right_independent/training
 python3 shuffle_dataset.py --dataset_dir data/ICTICT/_left_independent/training
 python3 shuffle_dataset.py --dataset_dir data/ICTICT/_right_independent/training
 
 
-python3 merge_datasets.py --input_dirs data/ICTICT/_cooperative_assembly/seg_2 data/ICTICT/_cooperative_assembly/seg_7 --output_dir data/ICTICT/_cooperative_assembly/merged
-python3 pad_dataset.py --input_dir data/ICTICT/_cooperative_assembly/merged --output_dir data/ICTICT/_cooperative_assembly/training
-python3 shuffle_dataset.py --dataset_dir data/ICTICT/_cooperative_assembly/training
+python3 merge_datasets.py --input_dirs data/ICTICT/_cooperative_merged/seg_0 data/ICTICT/_cooperative_merged/seg_1 --output_dir data/ICTICT/_cooperative_merged/merged
+python3 pad_dataset.py --input_dir data/ICTICT/_cooperative_merged/merged --output_dir data/ICTICT/_cooperative_merged/training
+python3 shuffle_dataset.py --dataset_dir data/ICTICT/_cooperative_merged/training
 
 
 
@@ -272,7 +272,7 @@ python3 shuffle_dataset.py --dataset_dir data/ICTICT/_cooperative_assembly/train
 
     python3 independent_imitate_episodes.py \
     --task_name sim_dataset_i \
-    --ckpt_dir ckpt/unpaired_left \
+    --ckpt_dir ckpt/pickplace_left \
     --dataset_dir data/ICTICT/_left_independent/training \
     --policy_class ACT \
     --kl_weight 10 --chunk_size 100 --hidden_dim 512 --batch_size 32 --dim_feedforward 3200 \
@@ -286,7 +286,7 @@ python3 shuffle_dataset.py --dataset_dir data/ICTICT/_cooperative_assembly/train
 
     python3 independent_imitate_episodes.py \
     --task_name sim_dataset_i \
-    --ckpt_dir ckpt/unpaired_right \
+    --ckpt_dir ckpt/pickplace_right \
     --dataset_dir data/ICTICT/_right_independent/training \
     --policy_class ACT \
     --kl_weight 10 --chunk_size 100 --hidden_dim 512 --batch_size 32 --dim_feedforward 3200 \
@@ -300,8 +300,8 @@ python3 shuffle_dataset.py --dataset_dir data/ICTICT/_cooperative_assembly/train
 
     python3 imitate_episodes.py \
     --task_name sim_dataset_c \
-    --ckpt_dir ckpt/unpaired_c \
-    --dataset_dir data/ICTICT/_cooperative_assembly/training \
+    --ckpt_dir ckpt/merged_c \
+    --dataset_dir data/ICTICT/_cooperative_merged/training \
     --policy_class ACT --kl_weight 10 --chunk_size 100 --hidden_dim 512 \
     --batch_size 32 \
     --dim_feedforward 3200 \
@@ -320,7 +320,7 @@ python3 shuffle_dataset.py --dataset_dir data/ICTICT/_cooperative_assembly/train
 python3 shuffle_dataset.py --dataset_dir data/my_dataset
 
 # 元のデータ可視化
-python3 visualize_episodes.py --dataset_dir data/test_coop --episode_idx 0
+python3 visualize_episodes.py --dataset_dir data/ICTICT/_cooperative_merged/seg_0 --episode_idx 0
 
 # 分割データ可視化
 python3 independent_visualize_episodes.py --dataset_dir data/ICTICT/_right_independent/training --episode_idx 0 

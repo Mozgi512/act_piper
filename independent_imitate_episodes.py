@@ -201,49 +201,93 @@ def make_policy(policy_class, policy_config):
     return policy
 
 
-def make_optimizer(policy_class, policy):
-    if policy_class == 'ACT':
-        optimizer = policy.configure_optimizers()
-    elif policy_class == 'CNNMLP':
-        optimizer = policy.configure_optimizers()
+def apply_torch_rgb_mask(images, strip_width=40, arm='right'):
+    """
+    Applies RGB mask to a strip of the images (Batch, Cam, C, H, W) or (C, H, W).
+    Preserves R, G, B colors; blacks out everything else in the strip.
+    arm='right' -> Mask Left Strip (for Right Arm view).
+    arm='left' -> Mask Right Strip (for Left Arm view).
+    """
+    # Handle single image or batch
+    is_single = len(images.shape) == 3
+    if is_single:
+        images = images.unsqueeze(0)
+    
+    # Handle (B, Cam, C, H, W) -> flatten to (B*Cam, C, H, W)
+    orig_shape = images.shape
+    if len(orig_shape) == 5:
+        b, n_cam, c, h, w = orig_shape
+        images = images.view(b * n_cam, c, h, w)
+        
+    B, C, H, W = images.shape
+    
+    # Define Strip indices
+    if arm == 'left':
+        # Mask Right Strip (Overlap with Right Arm)
+        strip_start = W - strip_width
+        strip_end = W
     else:
-        raise NotImplementedError
-    return optimizer
-
+        # Mask Left Strip (Overlap with Left Arm)
+        strip_start = 0
+        strip_end = strip_width
+        
+    strip = images[:, :, :, strip_start:strip_end]
+    
+    # Thresholds (matching utils.py cv2 logic: 100/255=0.392, 150/255=0.588)
+    t_100 = 100.0 / 255.0
+    t_150 = 150.0 / 255.0
+    
+    # Sim Env render gives RGB
+    r = strip[:, 0, :, :]
+    g = strip[:, 1, :, :]
+    b = strip[:, 2, :, :]
+    
+    # Red: R > 100, G < 100, B < 100
+    mask_r = (r > t_100) & (g < t_100) & (b < t_100)
+    # Green: G > 100, R < 100, B < 100
+    mask_g = (g > t_100) & (r < t_100) & (b < t_100)
+    # Blue: B > 150, R < 100, G < 100
+    mask_b = (b > t_150) & (r < t_100) & (g < t_100)
+    
+    combined_mask = mask_r | mask_g | mask_b # [B, H, W_strip]
+    combined_mask = combined_mask.unsqueeze(1).repeat(1, C, 1, 1).float()
+    
+    masked_strip = strip * combined_mask
+    
+    outputs = images.clone()
+    outputs[:, :, :, strip_start:strip_end] = masked_strip
+    
+    if len(orig_shape) == 5:
+        outputs = outputs.view(orig_shape)
+    elif is_single:
+        outputs = outputs.squeeze(0)
+        
+    return outputs
 
 def get_image(ts, camera_names, arm, device='cuda'):  
     curr_images = []
     for cam_name in camera_names:
-        curr_image = rearrange(ts.observation['images'][cam_name], 'h w c -> c h w')
-        # Original: H W C (before rearrange)
-        # Note: rearrange moves channels first.
+        # ts.observation is numpy (H, W, C)
+        curr_image_np = ts.observation['images'][cam_name].copy()
+        h, w, c = curr_image_np.shape
         
-        _, h, w = curr_image.shape
-        # Base offset logic (40px for 640w) -> for 640w image, 40px mask.
-        # If w is 640, we split to 320. Mask 40.
+        # Convert to Tensor (B, C, H, W)
+        curr_image_t = torch.from_numpy(curr_image_np).permute(2, 0, 1).unsqueeze(0).float().to(device) / 255.0
         
         if arm == 'left':
-            # Left Arm: Left Half
-            curr_image = curr_image[:, :, :w//2] 
-            # Mask Right Strip of this half (the overlap with Right arm)
-            # Need to convert to HWC for helper
-            curr_image_np = curr_image.cpu().numpy().transpose(1, 2, 0)
-            curr_image_np = apply_rgb_mask_to_right_strip(curr_image_np, strip_width=40) # Hardcoded 40 as per user implicit request? Or relative? 
-            # User said "Leftmost 40px masking" for Right Arm. So Right Strip for Left Arm?
-            # Assuming symmetry.
-            curr_image = torch.from_numpy(curr_image_np.transpose(2, 0, 1)).to(device)
-
+             # Left Arm: Left Half
+             curr_image_t = curr_image_t[:, :, :, :w//2]
+             # Mask Right Strip (Overlap with Right)
+             curr_image_t = apply_torch_rgb_mask(curr_image_t, strip_width=40, arm='left')
         else:
-            # Right Arm: Right Half
-            curr_image = curr_image[:, :, w//2:]
-            # Mask Left Strip of this half (the overlap with Left arm)
-            curr_image_np = curr_image.cpu().numpy().transpose(1, 2, 0)
-            curr_image_np = apply_rgb_mask_to_strip(curr_image_np, strip_width=40)
-            curr_image = torch.from_numpy(curr_image_np.transpose(2, 0, 1)).to(device)
-            
-        curr_images.append(curr_image)
-    curr_image = np.stack(curr_images, axis=0)
-    curr_image = torch.from_numpy(curr_image / 255.0).float().to(device).unsqueeze(0)
+             # Right Arm: Right Half
+             curr_image_t = curr_image_t[:, :, :, w//2:]
+             # Mask Left Strip (Overlap with Left)
+             curr_image_t = apply_torch_rgb_mask(curr_image_t, strip_width=40, arm='right')
+             
+        curr_images.append(curr_image_t.squeeze(0))
+        
+    curr_image = torch.stack(curr_images, dim=0).unsqueeze(0) # (1, num_cam, C, H, W)
     return curr_image
 
 def eval_bc(config, ckpt_name, save_episode=True):
@@ -497,56 +541,9 @@ def forward_pass(data, policy, arm, device='cuda', target_size=None):
     image_data, qpos_data, action_data, is_pad = data
     image_data, qpos_data, action_data, is_pad = image_data.to(device), qpos_data.to(device), action_data.to(device), is_pad.to(device)
     
-    # Image Data is [Batch, Cam, C, H, W]
-    # Input data from utils.py is already H/2 width? No, check inspect_dataset.
-    # inspect_dataset says 240x160. So it is ALREADY half width.
-    # So we don't need to crop, just MASK.
+    # Apply RGB mask for consistency with inference
+    image_data = apply_torch_rgb_mask(image_data, strip_width=40, arm=arm)
     
-    # Apply Mask to Batch
-    # Converting to numpy for cv2 mask is slow for batch.
-    # But since we need "RGB only transparent" (Black out non-RGB), it is color based.
-    # Color-based masking on GPU is better.
-    
-    # Simple GPU implementation of apply_rgb_mask_to_strip/right_strip
-    # Only if training on UNMASKED data (which we found is true).
-    
-    b, n_cam, c, h, w = image_data.shape
-    
-    mask = torch.ones((b, n_cam, 1, h, w), device=device)
-    strip_width = 40 # Hardcode 40 for 160 width image?
-    # If image is resized? transform happens later?
-    # forward_pass receives original size before resize? 
-    # Yes, resize is below.
-    
-    if arm == 'left':
-        # Mask Right Strip (Indices: w-40 to w)
-        # Check colors? The cv2 function checks if pixel is Red/Green/Blue. If NOT, it blacks it out.
-        # "Preserves Red, Green, Blue colors; blacks out everything else."
-        # This is for removing robot arm? No, removing distraction?
-        # "RGB only transparent" -> Preserves RGB objects (cubes), hides everything else (Background/Robot arm).
-        # Implementing this color filter on GPU is complex.
-        # Maybe assume for Training we just Black Out the strip entirely?
-        # User said "Blacking out, RGB only transparent".
-        # If I just black out, I lose the cubes if they are in the strip.
-        # But usually cubes are in the center. Overlap region might have other arm.
-        pass # Completing logic below
-        
-    # Moving logic to CPU for safety/correctness matching utils, or implementing Color Check on GPU.
-    # Color check: (R > 100 & G < 100 & B < 100) ...
-    # Let's try to implement simple spatial masking first if the user allows?
-    # User said "Leftmost 40px masking (blacked out, RGB only transparent)".
-    # This implies the Color Filter IS important.
-    
-    # Since we can't easily call cv2 on GPU batch, and moving to CPU is slow...
-    # Maybe we should perform this in utils.py (DataLoader)?
-    # But I can't restart the user's process or context easily?
-    # I am editing the script. Modifying utils.py is cleaner.
-    
-    # Let's modify utils.py to apply mask during loading!
-    # This ensures consistency for Training.
-    
-    image_data = image_data.float() / 255.0
-
     if target_size is not None:
         # Resize images: [batch*cam, c, h, w] -> resize
         b, n_cam, c, h, w = image_data.shape

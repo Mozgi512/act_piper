@@ -181,6 +181,14 @@ class TaskScheduler:
         state, info = self.get_arm_state(t, arm)
         return state == 'HOLD'
 
+    def get_task_ending_at(self, t, arm):
+        """Return the task dict that ends EXACTLY at t."""
+        timeline = self.timeline_left if arm == 'left' else self.timeline_right
+        for item in timeline:
+            if item['end'] == t:
+                return item
+        return None
+
 def make_policy(policy_class, policy_config):
     if policy_class == 'ACT':
         policy = ACTPolicy(policy_config)
@@ -188,42 +196,85 @@ def make_policy(policy_class, policy_config):
         raise NotImplementedError
     return policy
 
+def apply_torch_rgb_mask(images, strip_width=40, arm='right'):
+    """
+    Applies RGB mask to a strip of the images (Batch, Cam, C, H, W) or (C, H, W).
+    Preserves R, G, B colors; blacks out everything else in the strip.
+    arm='right' -> Mask Left Strip (for Right Arm view).
+    arm='left' -> Mask Right Strip (for Left Arm view).
+    """
+    is_single = len(images.shape) == 3
+    if is_single:
+        images = images.unsqueeze(0)
+    
+    orig_shape = images.shape
+    if len(orig_shape) == 5:
+        b, n_cam, c, h, w = orig_shape
+        images = images.view(b * n_cam, c, h, w)
+        
+    B, C, H, W = images.shape
+    
+    if arm == 'left':
+        strip_start = W - strip_width
+        strip_end = W
+    else:
+        strip_start = 0
+        strip_end = strip_width
+        
+    strip = images[:, :, :, strip_start:strip_end]
+    
+    t_100 = 100.0 / 255.0
+    t_150 = 150.0 / 255.0
+    
+    r = strip[:, 0, :, :]
+    g = strip[:, 1, :, :]
+    b = strip[:, 2, :, :]
+    
+    mask_r = (r > t_100) & (g < t_100) & (b < t_100)
+    mask_g = (g > t_100) & (r < t_100) & (b < t_100)
+    mask_b = (b > t_150) & (r < t_100) & (g < t_100)
+    
+    combined_mask = mask_r | mask_g | mask_b
+    combined_mask = combined_mask.unsqueeze(1).repeat(1, C, 1, 1).float()
+    
+    masked_strip = strip * combined_mask
+    
+    outputs = images.clone()
+    outputs[:, :, :, strip_start:strip_end] = masked_strip
+    
+    if len(orig_shape) == 5:
+        outputs = outputs.view(orig_shape)
+    elif is_single:
+        outputs = outputs.squeeze(0)
+        
+    return outputs
+
 def get_image_dual(ts, camera_names):
     curr_images = []
     for cam_name in camera_names:
-        curr_image = rearrange(ts.observation['images'][cam_name], 'h w c -> c h w')
-        curr_images.append(curr_image)
-    curr_image = np.stack(curr_images, axis=0)
-    curr_image = torch.from_numpy(curr_image / 255.0).float().cuda().unsqueeze(0)
+        curr_image_np = ts.observation['images'][cam_name].copy()
+        curr_image_t = torch.from_numpy(curr_image_np).permute(2, 0, 1).unsqueeze(0).float().cuda() / 255.0
+        curr_images.append(curr_image_t.squeeze(0))
+    curr_image = torch.stack(curr_images, dim=0).unsqueeze(0)
     return curr_image
 
 def get_image_independent(ts, camera_names, arm):
     curr_images = []
     for cam_name in camera_names:
-        # Original: H W C
-        curr_image = ts.observation['images'][cam_name]
-        h, w, _ = curr_image.shape
+        curr_image_np = ts.observation['images'][cam_name].copy()
+        h, w, c = curr_image_np.shape
+        curr_image_t = torch.from_numpy(curr_image_np).permute(2, 0, 1).unsqueeze(0).float().cuda() / 255.0
         
         if arm == 'left':
-            # Left Arm: Left Half
-            curr_image = curr_image[:, :w//2, :]
-            # Mask Right Strip (Overlap with Right)
-            # Need to convert to HWC for helper
-            curr_image_np = curr_image.cpu().numpy().transpose(1, 2, 0)
-            curr_image_np = apply_rgb_mask_to_right_strip(curr_image_np, strip_width=40)
-            curr_image = torch.from_numpy(curr_image_np.transpose(2, 0, 1)).cuda()
+             curr_image_t = curr_image_t[:, :, :, :w//2]
+             curr_image_t = apply_torch_rgb_mask(curr_image_t, strip_width=40, arm='left')
         else:
-            # Right Arm: Right Half
-            curr_image = curr_image[:, w//2:, :]
-            # Mask Left Strip (Overlap with Left)
-            curr_image_np = curr_image.cpu().numpy().transpose(1, 2, 0)
-            curr_image_np = apply_rgb_mask_to_strip(curr_image_np, strip_width=40)
-            curr_image = torch.from_numpy(curr_image_np.transpose(2, 0, 1)).cuda()
-            
-        curr_image = rearrange(curr_image, 'h w c -> c h w')
-        curr_images.append(curr_image)
-    curr_image = np.stack(curr_images, axis=0)
-    curr_image = torch.from_numpy(curr_image / 255.0).float().cuda().unsqueeze(0)
+             curr_image_t = curr_image_t[:, :, :, w//2:]
+             curr_image_t = apply_torch_rgb_mask(curr_image_t, strip_width=40, arm='right')
+             
+        curr_images.append(curr_image_t.squeeze(0))
+        
+    curr_image = torch.stack(curr_images, dim=0).unsqueeze(0)
     return curr_image
 
 def remove_cubes(physics, indices):
@@ -240,9 +291,9 @@ def remove_cubes(physics, indices):
             # Indices might go out of range if not initialized, ignore
             pass
 
-def get_touched_cubes(physics):
-    """Return set of cube indices that are currently in contact with any gripper."""
-    touched = set()
+def get_touched_cubes_per_arm(physics):
+    """Return dict of sets of cube indices contacted by each gripper."""
+    touched = {'left': set(), 'right': set()}
     for i_contact in range(physics.data.ncon):
         id_geom_1 = physics.data.contact[i_contact].geom1
         id_geom_2 = physics.data.contact[i_contact].geom2
@@ -253,17 +304,20 @@ def get_touched_cubes(physics):
         
         # Check pair (gripper, cube)
         for n1, n2 in [(name_1, name_2), (name_2, name_1)]:
-            if 'gripper' in n1 and 'cube_' in n2:
-                # Extract index from 'cube_X' or 'cube_X_g0' etc.
+            # Check for grippers using known keywords in geom names
+            # Left: l_gripper_finger, Right: r_gripper_finger
+            arm = None
+            if 'l_gripper_finger' in n1: arm = 'left'
+            elif 'r_gripper_finger' in n1: arm = 'right'
+            
+            if arm and 'cube_' in n2:
+                # Extract index
                 try:
-                    # Assumes name structure 'cube_{idx}...'
                     parts = n2.split('_')
-                    # Find 'cube' then next part is index
-                    if 'cube' in parts:
-                        idx_loc = parts.index('cube') + 1
-                        if idx_loc < len(parts):
-                            cube_idx = int(parts[idx_loc])
-                            touched.add(cube_idx)
+                    # Format usually cube_N or cube_N_something
+                    idx_str = parts[1]
+                    idx = int(idx_str)
+                    touched[arm].add(idx)
                 except:
                     pass
     return touched
@@ -506,21 +560,68 @@ def main(args):
             
             video_frames = []
             
-            current_touched_cubes = set() # Track cubes touched during this subtask
+            current_touched_cubes = set() # (Legacy global tracking for reward?)
+            acc_touched_left = set()
+            acc_touched_right = set()
+            
             current_mode = scheduler.get_mode_at_step(0)
             
             print(f"\nEpisode {episode_count} Started.")
             
             while True:
+                def handle_mode_switch(t, from_mode, to_mode):
+                    """Unified mode switch with inheritance for evaluation."""
+                    nonlocal current_mode, step_in_chunk
+                    if from_mode == to_mode: return
+                    
+                    print(f"[Step {t}] Switching Mode: {from_mode} -> {to_mode}")
+                    current_mode = to_mode
+                    step_in_chunk = 0 # Replan
+                    
+                    if not (args.inherit_temporal_buffer and temporal_agg):
+                        return
+                        
+                    if to_mode == MODE_INDEPENDENT:
+                        # Dual -> Indep (Left/Right)
+                        input_actions = all_time_actions_dual
+                        dual_mask_val = ~torch.isnan(input_actions)
+                        input_actions_safe = torch.nan_to_num(input_actions, nan=0.0)
+                        denorm_ac = input_actions_safe * stats_dual_torch['action_std'] + stats_dual_torch['action_mean']
+                        
+                        # Left
+                        denorm_l = denorm_ac[:, :, :7]
+                        renorm_l = (denorm_l - stats_left_torch['action_mean']) / stats_left_torch['action_std']
+                        all_time_actions_left.copy_(renorm_l)
+                        all_time_actions_left[~dual_mask_val[:, :, :7]] = float_nan
+                        
+                        # Right
+                        denorm_r = denorm_ac[:, :, 7:]
+                        renorm_r = (denorm_r - stats_right_torch['action_mean']) / stats_right_torch['action_std']
+                        all_time_actions_right.copy_(renorm_r)
+                        all_time_actions_right[~dual_mask_val[:, :, 7:]] = float_nan
+                        
+                    elif to_mode == MODE_COOP:
+                        # Indep -> Dual
+                        input_l = all_time_actions_left
+                        input_r = all_time_actions_right
+                        l_mask = ~torch.isnan(input_l)
+                        r_mask = ~torch.isnan(input_r)
+                        comb_mask = torch.cat([l_mask, r_mask], dim=2)
+                        
+                        denom_l = torch.nan_to_num(input_l, nan=0.0) * stats_left_torch['action_std'] + stats_left_torch['action_mean']
+                        denom_r = torch.nan_to_num(input_r, nan=0.0) * stats_right_torch['action_std'] + stats_right_torch['action_mean']
+                        denom_dual = torch.cat([denom_l, denom_r], dim=2)
+                        
+                        ren_dual = (denom_dual - stats_dual_torch['action_mean']) / stats_dual_torch['action_std']
+                        all_time_actions_dual.copy_(ren_dual)
+                        all_time_actions_dual[~comb_mask] = float_nan
+
                 # -------------------------------
                 # Auto-Switching Logic via Scheduler
                 # -------------------------------
                 new_mode = scheduler.get_mode_at_step(t)
-                
                 if new_mode != current_mode:
-                    print(f"[Step {t}] Switching Mode: {current_mode} -> {new_mode}")
-                    current_mode = new_mode
-                    step_in_chunk = 0 # Replan
+                    handle_mode_switch(t, current_mode, new_mode)
                 
                 # Check End
                 if t >= scheduler.max_timesteps:
@@ -686,8 +787,31 @@ def main(args):
                 current_reward = env._task.get_reward(env.physics)
                 
                 # Track touched cubes
-                new_touches = get_touched_cubes(env.physics)
-                current_touched_cubes.update(new_touches)
+                # Track touched cubes
+                new_touches = get_touched_cubes_per_arm(env.physics)
+                acc_touched_left.update(new_touches['left'])
+                acc_touched_right.update(new_touches['right'])
+                
+                # Check for task completion & Remove objects
+                # Left
+                ended_task_l = scheduler.get_task_ending_at(t + 1, 'left') # t increments below
+                if ended_task_l:
+                    if 'Phase 1' not in ended_task_l['info']:
+                        print(f"[Step {t}] Left Task Ended ({ended_task_l['info']}). Removing objects: {acc_touched_left}")
+                        remove_cubes(env.physics, list(acc_touched_left))
+                        acc_touched_left.clear()
+                    else:
+                        print(f"[Step {t}] Left Phase 1 Ended. Persisting objects {acc_touched_left} for Phase 2.")
+                
+                # Right
+                ended_task_r = scheduler.get_task_ending_at(t + 1, 'right')
+                if ended_task_r:
+                    if 'Phase 1' not in ended_task_r['info']:
+                        print(f"[Step {t}] Right Task Ended ({ended_task_r['info']}). Removing objects: {acc_touched_right}")
+                        remove_cubes(env.physics, list(acc_touched_right))
+                        acc_touched_right.clear()
+                    else:
+                        print(f"[Step {t}] Right Phase 1 Ended. Persisting objects {acc_touched_right} for Phase 2.")
                 
                 step_in_chunk += 1
                 t += 1
@@ -763,6 +887,7 @@ if __name__ == '__main__':
     parser.add_argument('--interleave_objects', action='store_true', help='Interleave last 4 objects among first 5 (High Difficulty)')
     parser.add_argument('--save_video', action='store_true', help='Save execution video')
     parser.add_argument('--num_rollouts', action='store', type=int, default=1, help='Number of evaluation episodes')
+    parser.add_argument('--episode_len', action='store', type=int, default=None, help='Override episode length')
     
     args = parser.parse_args()
     main(args)

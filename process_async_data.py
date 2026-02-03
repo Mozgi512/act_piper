@@ -164,13 +164,14 @@ def save_hdf5(dataset_path, qpos, qvel, action, images, camera_names):
         # NOTE: Metadata group is intentionally NOT included in processed files
 
 
-def process_episode(episode_idx, dataset_dir, camera_names, output_dirs):
+def process_episode(episode_idx, dataset_dir, camera_names, output_dirs, only_coop_merged=False):
     """
     Process one episode: split into segments based on metadata.
     
     Args:
         output_dirs: {'left_independent': path, 'right_independent': path, 
                      'cooperative_assembly': path, 'cooperative_place': path}
+        only_coop_merged: If True, save *only* the merged cooperative segment.
     """
     dataset_path = os.path.join(dataset_dir, f'episode_{episode_idx}.hdf5')
     
@@ -252,7 +253,12 @@ def process_episode(episode_idx, dataset_dir, camera_names, output_dirs):
         coop_split = seg['coop_split']
         arm = seg['arm']
         
+
         if seg_type == 'independent':
+            # Skip if user wants only merged cooperative
+            if only_coop_merged:
+                continue
+
             # Independent: [start-10 : end+10]
             adj_start = max(0, start - 10)
             adj_end = min(len(qpos), end + 10)
@@ -280,8 +286,25 @@ def process_episode(episode_idx, dataset_dir, camera_names, output_dirs):
         elif seg_type == 'cooperative':
             # Cooperative task: split into assembly + placement
             
+            # 1. Unified Merged Segment (Full Duration) which user requested
+            adj_full_end = min(len(qpos), end + 10)
+            seg_folder_name = f'seg_{segment_count}'
+            # Save full merged
+            seg_full_dir = os.path.join(output_dirs['cooperative_merged'], seg_folder_name)
+            os.makedirs(seg_full_dir, exist_ok=True)
+            output_path = os.path.join(seg_full_dir, f'episode_{episode_idx}')
+            
+            # Full segment is 14-dim, no masking (same as assembly)
+            save_hdf5(output_path, 
+                      qpos[start:adj_full_end], 
+                      qvel[start:adj_full_end], 
+                      action[start:adj_full_end], 
+                      {k: v[start:adj_full_end] for k, v in images.items()}, 
+                      camera_names)
+            segment_count += 1
+            
             # Assembly: [start : coop_split+10] (dual-arm until Top returns home)
-            if coop_split > 0:
+            if not only_coop_merged and coop_split > 0:
                 adj_split_end = min(len(qpos), coop_split + 10)
                 
                 # Assembly is always 14-dim (both arms)
@@ -335,12 +358,14 @@ def process_episode(episode_idx, dataset_dir, camera_names, output_dirs):
 def main(args):
     dataset_dir = args['dataset_dir']
     num_episodes = args['num_episodes']
+    only_coop_merged = args.get('only_coop_merged', False)
     
     # Output directories
     output_dirs = {
         'left_independent': dataset_dir + '_left_independent',
         'right_independent': dataset_dir + '_right_independent',
         'cooperative_assembly': dataset_dir + '_cooperative_assembly',
+        'cooperative_merged': dataset_dir + '_cooperative_merged',
     }
     
     print(f"Processing async data from {dataset_dir}")
@@ -361,7 +386,7 @@ def main(args):
     t0 = time.time()
     
     for i in range(num_episodes):
-        seg_count = process_episode(i, dataset_dir, camera_names, output_dirs)
+        seg_count = process_episode(i, dataset_dir, camera_names, output_dirs, only_coop_merged=only_coop_merged)
         total_segments += seg_count
         if (i+1) % 10 == 0:
             print(f"Processed {i+1}/{num_episodes} episodes...")
@@ -375,5 +400,7 @@ if __name__ == '__main__':
                        help='Directory containing raw episodes with metadata')
     parser.add_argument('--num_episodes', action='store', type=int, required=True,
                        help='Number of episodes to process')
+    parser.add_argument('--only_coop_merged', action='store_true',
+                       help='If set, output ONLY the unified merged cooperative segments.')
     
     main(vars(parser.parse_args()))

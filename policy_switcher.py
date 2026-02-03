@@ -179,6 +179,14 @@ class TaskScheduler:
         state, info = self.get_arm_state(t, arm)
         return state == 'HOLD'
 
+    def get_task_ending_at(self, t, arm):
+        """Return the task dict that ends EXACTLY at t."""
+        timeline = self.timeline_left if arm == 'left' else self.timeline_right
+        for item in timeline:
+            if item['end'] == t:
+                return item
+        return None
+
 def is_data():
     return select.select([sys.stdin], [], [], 0) == ([sys.stdin], [], [])
 
@@ -194,37 +202,144 @@ def make_policy(policy_class, policy_config):
         raise NotImplementedError
     return policy
 
+def apply_torch_rgb_mask(images, strip_width=40, arm='right'):
+    """
+    Applies RGB mask to a strip of the images (Batch, Cam, C, H, W) or (C, H, W).
+    Preserves R, G, B colors; blacks out everything else in the strip.
+    arm='right' -> Mask Left Strip (for Right Arm view).
+    arm='left' -> Mask Right Strip (for Left Arm view).
+    """
+    is_single = len(images.shape) == 3
+    if is_single:
+        images = images.unsqueeze(0)
+    
+    # Flatten if (B, Cam, C, H, W)
+    orig_shape = images.shape
+    if len(orig_shape) == 5:
+        b, n_cam, c, h, w = orig_shape
+        images = images.view(b * n_cam, c, h, w)
+        
+    B, C, H, W = images.shape
+    
+    if arm == 'left':
+        # Mask Right Strip
+        strip_start = W - strip_width
+        strip_end = W
+    else:
+        # Mask Left Strip
+        strip_start = 0
+        strip_end = strip_width
+        
+    strip = images[:, :, :, strip_start:strip_end]
+    
+    # Thresholds (matching independent_imitate_episodes.py)
+    t_100 = 100.0 / 255.0
+    t_150 = 150.0 / 255.0
+    
+    r = strip[:, 0, :, :]
+    g = strip[:, 1, :, :]
+    b = strip[:, 2, :, :]
+    
+    mask_r = (r > t_100) & (g < t_100) & (b < t_100)
+    mask_g = (g > t_100) & (r < t_100) & (b < t_100)
+    mask_b = (b > t_150) & (r < t_100) & (g < t_100)
+    
+    combined_mask = mask_r | mask_g | mask_b
+    combined_mask = combined_mask.unsqueeze(1).repeat(1, C, 1, 1).float()
+    
+    masked_strip = strip * combined_mask
+    
+    outputs = images.clone()
+    outputs[:, :, :, strip_start:strip_end] = masked_strip
+    
+    if len(orig_shape) == 5:
+        outputs = outputs.view(orig_shape)
+    elif is_single:
+        outputs = outputs.squeeze(0)
+        
+    return outputs
+
+def remove_cubes(physics, indices):
+    """Teleport cubes to z=-10 to effectively remove them."""
+    if not indices: return
+    for i in indices:
+        try:
+            start_idx = physics.model.name2id(f'cube_{i}_joint', 'joint')
+            qpos_adr = physics.model.jnt_qposadr[start_idx]
+            # Set Z to -10, and also move X/Y far away to be safe
+            physics.data.qpos[qpos_adr + 0] = 10.0 + i # X far
+            physics.data.qpos[qpos_adr + 1] = 10.0 + i # Y far
+            physics.data.qpos[qpos_adr + 2] = -10.0    # Z under
+            print(f"Removed cube {i}")
+        except Exception as e:
+            pass
+
+def get_touched_cubes_per_arm(physics):
+    """Return dict of sets of cube indices contacted by each gripper."""
+    touched = {'left': set(), 'right': set()}
+    for i_contact in range(physics.data.ncon):
+        id_geom_1 = physics.data.contact[i_contact].geom1
+        id_geom_2 = physics.data.contact[i_contact].geom2
+        name_1 = physics.model.id2name(id_geom_1, 'geom')
+        name_2 = physics.model.id2name(id_geom_2, 'geom')
+        
+        if name_1 is None or name_2 is None: continue
+        
+        # Check pair (gripper, cube)
+        for n1, n2 in [(name_1, name_2), (name_2, name_1)]:
+            # Check for grippers using known keywords in geom names
+            # Left: l_gripper_finger, Right: r_gripper_finger
+            arm = None
+            if 'l_gripper_finger' in n1: arm = 'left'
+            elif 'r_gripper_finger' in n1: arm = 'right'
+            
+            if arm and 'cube_' in n2:
+                # Extract index
+                try:
+                    parts = n2.split('_')
+                    # Format usually cube_N or cube_N_something
+                    idx_str = parts[1]
+                    idx = int(idx_str)
+                    touched[arm].add(idx)
+                except:
+                    pass
+    return touched
+
 def get_image_dual(ts, camera_names):
     curr_images = []
     for cam_name in camera_names:
-        curr_image = rearrange(ts.observation['images'][cam_name], 'h w c -> c h w')
-        curr_images.append(curr_image)
-    curr_image = np.stack(curr_images, axis=0)
-    curr_image = torch.from_numpy(curr_image / 255.0).float().cuda().unsqueeze(0)
+        # Sim Env render (H, W, C)
+        curr_image_np = ts.observation['images'][cam_name].copy()
+        # Convert to Tensor (1, C, H, W)
+        curr_image_t = torch.from_numpy(curr_image_np).permute(2, 0, 1).unsqueeze(0).float().cuda() / 255.0
+        curr_images.append(curr_image_t.squeeze(0))
+    curr_image = torch.stack(curr_images, dim=0).unsqueeze(0) # (1, num_cam, C, H, W)
     return curr_image
 
 def get_image_independent(ts, camera_names, arm):
     curr_images = []
     for cam_name in camera_names:
-        # Original: H W C
-        curr_image = ts.observation['images'][cam_name]
-        h, w, _ = curr_image.shape
+        # Sim Env render (H, W, C)
+        curr_image_np = ts.observation['images'][cam_name].copy()
+        h, w, c = curr_image_np.shape
+        
+        # Convert to Tensor (1, C, H, W)
+        curr_image_t = torch.from_numpy(curr_image_np).permute(2, 0, 1).unsqueeze(0).float().cuda() / 255.0
         
         if arm == 'left':
-            # Left Arm: Left Half
-            curr_image = curr_image[:, :w//2, :]
-            # Mask Right Strip (Overlap with Right)
-            curr_image = apply_rgb_mask_to_right_strip(curr_image, strip_width=40)
+             # Left Arm: Left Half
+             curr_image_t = curr_image_t[:, :, :, :w//2]
+             # Mask Right Strip (Overlap with Right)
+             curr_image_t = apply_torch_rgb_mask(curr_image_t, strip_width=40, arm='left')
         else:
-            # Right Arm: Right Half
-            curr_image = curr_image[:, w//2:, :]
-            # Mask Left Strip (Overlap with Left)
-            curr_image = apply_rgb_mask_to_strip(curr_image, strip_width=40)
-            
-        curr_image = rearrange(curr_image, 'h w c -> c h w')
-        curr_images.append(curr_image)
-    curr_image = np.stack(curr_images, axis=0)
-    curr_image = torch.from_numpy(curr_image / 255.0).float().cuda().unsqueeze(0)
+             # Right Arm: Right Half
+             curr_image_t = curr_image_t[:, :, :, w//2:]
+             # Mask Left Strip (Overlap with Left)
+             curr_image_t = apply_torch_rgb_mask(curr_image_t, strip_width=40, arm='right')
+             
+        curr_images.append(curr_image_t.squeeze(0))
+        
+    curr_image = torch.stack(curr_images, dim=0).unsqueeze(0) # (1, num_cam, C, H, W)
     return curr_image
 
 def load_policy_and_stats(ckpt_dir, policy_class, args, override_state_dim=None, override_arm=None):
@@ -347,7 +462,34 @@ def main(args):
     print(f"Diff Dual[:7] vs Left: {torch.norm(stats_dual_torch['action_mean'][:7] - stats_left_torch['action_mean'])}")
     print("-------------------\n")
 
-    env = make_sim_env(task_name)
+    chunk_size = args.chunk_size
+    # Default duration from task config
+    max_timesteps = episode_len
+    # Override if requested
+    if args.episode_len is not None:
+        max_timesteps = args.episode_len
+    
+    # Initialize Task Scheduler EARLY to determine total time
+    scheduler = None
+    if args.command_sequence and args.task_durations:
+        try:
+            durations = json.loads(args.task_durations)
+            print(f"Initializing Task Scheduler with Sequence: {args.command_sequence}")
+            scheduler = TaskScheduler(args.command_sequence, durations)
+            print(f"Total Scheduled Duration: {scheduler.max_timesteps}")
+            scheduler.print_schedule()
+            
+            # Update max_timesteps to scheduler's duration if larger
+            if scheduler.max_timesteps > max_timesteps:
+                print(f"Updating max_timesteps from {max_timesteps} to {scheduler.max_timesteps} (Scheduler dictated)")
+                max_timesteps = scheduler.max_timesteps
+        except Exception as e:
+            print(f"Error initializing scheduler: {e}")
+
+    # Now create Env with correct time_limit
+    time_limit = (max_timesteps + 200) * DT # Add safety buffer steps
+    print(f"Creating Simulation Environment with time_limit={time_limit:.2f}s ({max_timesteps} steps + buffer)")
+    env = make_sim_env(task_name, time_limit=time_limit)
     
     if onscreen_render:
         plt.ion()
@@ -380,8 +522,7 @@ def main(args):
     except:
         print("Not a TTY, manual control disabled")
     
-    # Default to Independent logic or Dual logic depending on request?
-    # User changed it to MODE_COOP in Step 162. Keeping MODE_COOP.
+    # Default to Cooperative logic unless overridden by scheduler later
     current_mode = MODE_COOP
     
     print("\n\nReady!")
@@ -389,15 +530,26 @@ def main(args):
     print("Press '2' for Cooperative Mode")
     print("Press 'q' to quit")
     
-    chunk_size = args.chunk_size
-    # Use episode_len directly as per imitate_episodes (eval_bc)
-    max_timesteps = episode_len
-    
     # State tracking for chunk execution
     step_in_chunk = 0
     current_action_chunk_dual = None
     current_action_chunk_left = None
     current_action_chunk_right = None
+    
+    # Tracking for status logging
+    last_l_state = None
+    last_r_state = None
+    
+    # Tracking for Object Removal
+    acc_touched_left = set()
+    acc_touched_right = set()
+    
+    # Initialize current_mode
+    if scheduler:
+        current_mode = scheduler.get_mode_at_step(0)
+        print(f"Initial mode set from scheduler: {current_mode}")
+    else:
+        current_mode = MODE_COOP
     
     # Initialize Temporal Aggregation Logic
     temporal_agg = not args.no_temporal_agg
@@ -407,7 +559,6 @@ def main(args):
         all_time_actions_dual = torch.full([max_timesteps, max_timesteps+num_queries, 14], float_nan).cuda()
         all_time_actions_left = torch.full([max_timesteps, max_timesteps+num_queries, 7], float_nan).cuda()
         all_time_actions_right = torch.full([max_timesteps, max_timesteps+num_queries, 7], float_nan).cuda()
-
 
     try:
         t = 0
@@ -420,18 +571,6 @@ def main(args):
         
         current_episode_rewards = []
         
-        # Initialize Task Scheduler
-        scheduler = None
-        if args.command_sequence and args.task_durations:
-            try:
-                durations = json.loads(args.task_durations)
-                print(f"Initializing Task Scheduler with Sequence: {args.command_sequence}")
-                scheduler = TaskScheduler(args.command_sequence, durations)
-                print(f"Total Scheduled Duration: {scheduler.max_timesteps}")
-                scheduler.print_schedule()
-            except Exception as e:
-                print(f"Error initializing scheduler: {e}")
-        
 
         
 
@@ -443,19 +582,101 @@ def main(args):
         home_pose[7:13] = START_ARM_POSE[8:14]
         home_pose[13] = START_ARM_POSE[14]
 
-        # Tracking for status logging
-        last_l_state = None
-        last_r_state = None
+        def handle_mode_switch(t, from_mode, to_mode):
+            """Unified mode switch with inheritance and blending."""
+            nonlocal current_mode, step_in_chunk
+            if from_mode == to_mode: return
+            
+            print(f"[Step {t}] Switching from {from_mode} to {to_mode}")
+            current_mode = to_mode
+            step_in_chunk = 0 # Force replan
+            
+            if not (args.inherit_temporal_buffer and temporal_agg):
+                return
+                
+            if to_mode == MODE_INDEPENDENT:
+                print(f"[Step {t}] Inheriting temporal buffer (Dual -> Indep) with BLENDING")
+                # Un-normalize Dual
+                input_actions = all_time_actions_dual
+                dual_mask_val = ~torch.isnan(input_actions)
+                input_actions_safe = torch.nan_to_num(input_actions, nan=0.0)
+                denorm_actions = input_actions_safe * stats_dual_torch['action_std'] + stats_dual_torch['action_mean']
+                
+                # Re-normalize for Left
+                denorm_left = denorm_actions[:, :, :7]
+                renorm_left = (denorm_left - stats_left_torch['action_mean']) / stats_left_torch['action_std']
+                val_inherit_left = renorm_left.clone()
+                val_inherit_left[~dual_mask_val[:, :, :7]] = float('nan')
+                
+                if args.warmup_steps > 0:
+                    # Fill emtpy slots
+                    empty_mask_l = torch.isnan(all_time_actions_left)
+                    fill_mask_l = empty_mask_l & dual_mask_val[:, :, :7]
+                    all_time_actions_left[fill_mask_l] = val_inherit_left[fill_mask_l]
+                    
+                    # Blend
+                    future_len = min(args.chunk_size, all_time_actions_left.shape[1] - t)
+                    for k in range(future_len):
+                        col_idx = t + k
+                        if col_idx < all_time_actions_left.shape[1]:
+                            alpha = float(k) / float(future_len)
+                            all_time_actions_left[:, col_idx, :] = \
+                                all_time_actions_left[:, col_idx, :] * alpha + \
+                                val_inherit_left[:, col_idx, :] * (1 - alpha)
+                else:
+                    all_time_actions_left.copy_(val_inherit_left)
+                
+                # Re-normalize for Right
+                denorm_right = denorm_actions[:, :, 7:]
+                renorm_right = (denorm_right - stats_right_torch['action_mean']) / stats_right_torch['action_std']
+                val_inherit_right = renorm_right.clone()
+                val_inherit_right[~dual_mask_val[:, :, 7:]] = float('nan')
+                
+                if args.warmup_steps > 0:
+                    empty_mask_r = torch.isnan(all_time_actions_right)
+                    fill_mask_r = empty_mask_r & dual_mask_val[:, :, 7:]
+                    all_time_actions_right[fill_mask_r] = val_inherit_right[fill_mask_r]
+                    
+                    future_len = min(args.chunk_size, all_time_actions_right.shape[1] - t)
+                    for k in range(future_len):
+                        col_idx = t + k
+                        if col_idx < all_time_actions_right.shape[1]:
+                            alpha = float(k) / float(future_len)
+                            all_time_actions_right[:, col_idx, :] = \
+                                all_time_actions_right[:, col_idx, :] * alpha + \
+                                val_inherit_right[:, col_idx, :] * (1 - alpha)
+                else:
+                    all_time_actions_right.copy_(val_inherit_right)
+                    
+            elif to_mode == MODE_COOP:
+                print(f"[Step {t}] Inheriting temporal buffer (Indep -> Dual)")
+                input_left = all_time_actions_left
+                input_right = all_time_actions_right
+                
+                left_mask_val = ~torch.isnan(input_left)
+                right_mask_val = ~torch.isnan(input_right)
+                combined_mask_val = torch.cat([left_mask_val, right_mask_val], dim=2)
+                
+                input_left_safe = torch.nan_to_num(input_left, nan=0.0)
+                input_right_safe = torch.nan_to_num(input_right, nan=0.0)
+                
+                # Fix denorm_dual bug
+                denorm_l = input_left_safe * stats_left_torch['action_std'] + stats_left_torch['action_mean']
+                denorm_r = input_right_safe * stats_right_torch['action_std'] + stats_right_torch['action_mean']
+                denorm_dual_val = torch.cat([denorm_l, denorm_r], dim=2)
+                
+                renorm_dual_val = (denorm_dual_val - stats_dual_torch['action_mean']) / stats_dual_torch['action_std']
+                
+                val_inherit_dual = renorm_dual_val.clone()
+                val_inherit_dual[~combined_mask_val] = float('nan')
+                all_time_actions_dual.copy_(val_inherit_dual)
 
         while True:
             # Task Scheduler Mode Logic
             if scheduler:
-                # 1. Mode Switch
                 sched_mode = scheduler.get_mode_at_step(t)
                 if sched_mode != current_mode:
-                    current_mode = sched_mode
-                    step_in_chunk = 0
-                    print(f"[Step {t}] Scheduler switched to {current_mode} mode")
+                    handle_mode_switch(t, current_mode, sched_mode)
                 
                 # 2. Status Logging (Per Arm)
                 l_state, l_info = scheduler.get_arm_state(t, 'left')
@@ -469,166 +690,15 @@ def main(args):
 
             # Auto-switch logic (Legacy)
             elif args.switch_step is not None and t == args.switch_step: # Only if scheduler NOT active
-                if current_mode != MODE_INDEPENDENT:
-                    current_mode = MODE_INDEPENDENT
-                    step_in_chunk = 0 # Force replan on switch
-                    print(f"[Step {t}] Auto-switched to INDEPENDENT mode (switch_step={args.switch_step})")
-                    
-                    if args.inherit_temporal_buffer and temporal_agg:
-                        print(f"[Step {t}] Inheriting temporal buffer (Dual -> Indep) with BLENDING")
-                        # Un-normalize Dual
-                        # Create mask for valid (non-NaN) entries
-                        input_actions = all_time_actions_dual
-                        dual_mask = ~torch.isnan(input_actions)
-                        
-                        # Temporarily replace NaNs with 0 to safely calculate denorm/renorm
-                        input_actions_safe = torch.nan_to_num(input_actions, nan=0.0)
-                        denorm_actions = input_actions_safe * stats_dual_torch['action_std'] + stats_dual_torch['action_mean']
-                        
-                        # Re-normalize for Left
-                        denorm_left = denorm_actions[:, :, :7]
-                        renorm_left = (denorm_left - stats_left_torch['action_mean']) / stats_left_torch['action_std']
-                        
-                        # Apply mask and BLEND if Warmup exists
-                        val_inherit_left = renorm_left.clone()
-                        val_inherit_left[~dual_mask[:, :, :7]] = float('nan')
-                        if args.warmup_steps > 0:
-                            # Pre-fill empty slots in new buffer with inherited values
-                            # This prevents blending with NaN/0 where new policy has no history
-                            empty_mask = torch.isnan(all_time_actions_left)
-                            # Only fill valid inherited values
-                            valid_inherit_mask = dual_mask[:, :, :7]
-                            # Combine: target is empty AND source is valid
-                            fill_mask = empty_mask & valid_inherit_mask
-                            
-                            all_time_actions_left[fill_mask] = val_inherit_left[fill_mask]
-
-                            # Linear Temporal Blending
-                            # Create alpha weights for columns [t : t+num_queries]
-                            # alpha increases from 0 (Dual) to 1 (Indep)
-                            # all_time_actions shape: [max_time, max_time+queries, dim]
-                            # We only care about the relevant future window
-                            future_len = min(args.chunk_size, all_time_actions_left.shape[1] - t)
-                            if future_len > 0:
-                                alphas = torch.linspace(0, 1, steps=future_len).float().cuda()
-                                alphas = alphas.view(1, -1, 1) # Broadcast: [1, future_len, 1]
-                                
-                                # Apply to the slice [:, t:t+future_len, :]
-                                # Note: val_inherit_left is full size. We need to slice it or apply alpha broadly.
-                                # Actually val_inherit_left matches all_time_actions shape.
-                                
-                                # Create a full-size alpha mask
-                                full_alphas = torch.ones_like(all_time_actions_left) # Default 1 (Indep)
-                                # Set transition window to 0->1
-                                # But we can't easily set diagonal stripes.
-                                # Wait, the buffer is [Time_Query_Generated, Time_Action_Executed].
-                                # Using columns (Time_Action_Executed) is correct for output smoothness.
-                                
-                                # Let's overwrite column by column for the transition window
-                                for k in range(future_len):
-                                    col_idx = t + k
-                                    if col_idx < all_time_actions_left.shape[1]:
-                                        alpha = float(k) / float(future_len)
-                                        # Blend column
-                                        all_time_actions_left[:, col_idx, :] = \
-                                            all_time_actions_left[:, col_idx, :] * alpha + \
-                                            val_inherit_left[:, col_idx, :] * (1 - alpha)
-                                            
-                                # For columns beyond window (k >= future_len), alpha is implicit 1 (keep Warmup)
-                                # For columns before t, we don't care (past).
-                        else:
-                            all_time_actions_left.copy_(val_inherit_left)
-                        
-                        # Re-normalize for Right
-                        denorm_right = denorm_actions[:, :, 7:]
-                        renorm_right = (denorm_right - stats_right_torch['action_mean']) / stats_right_torch['action_std']
-                        
-                        val_inherit_right = renorm_right.clone()
-                        val_inherit_right[~dual_mask[:, :, 7:]] = float('nan')
-                        if args.warmup_steps > 0:
-                            # Pre-fill empty slots in new buffer with inherited values
-                            empty_mask = torch.isnan(all_time_actions_right)
-                            valid_inherit_mask = dual_mask[:, :, 7:]
-                            fill_mask = empty_mask & valid_inherit_mask
-                            
-                            all_time_actions_right[fill_mask] = val_inherit_right[fill_mask]
-
-                            future_len = min(args.chunk_size, all_time_actions_right.shape[1] - t)
-                            for k in range(future_len):
-                                col_idx = t + k
-                                if col_idx < all_time_actions_right.shape[1]:
-                                    alpha = float(k) / float(future_len)
-                                    all_time_actions_right[:, col_idx, :] = \
-                                        all_time_actions_right[:, col_idx, :] * alpha + \
-                                        val_inherit_right[:, col_idx, :] * (1 - alpha)
-                        else:
-                            all_time_actions_right.copy_(val_inherit_right)
-                    
-                    if args.warmup_steps > 0:
-                         print(f"[Step {t}] Switched to INDEPENDENT mode (Warmed up for {args.warmup_steps} steps)")
+                handle_mode_switch(t, current_mode, MODE_INDEPENDENT)
 
             key = None
             if old_settings:
                 key = get_key()
             if key == '1':
-                if current_mode != MODE_INDEPENDENT:
-                    current_mode = MODE_INDEPENDENT
-                    step_in_chunk = 0 # Force replan on switch
-                    print(f"[Step {t}] Switched to INDEPENDENT mode")
-
-                    if args.inherit_temporal_buffer and temporal_agg:
-                        print(f"[Step {t}] Inheriting temporal buffer (Dual -> Indep)")
-                        # Un-normalize Dual
-                        # Create mask for valid (non-NaN) entries
-                        input_actions = all_time_actions_dual
-                        dual_mask = ~torch.isnan(input_actions)
-                        
-                        input_actions_safe = torch.nan_to_num(input_actions, nan=0.0)
-                        denorm_actions = input_actions_safe * stats_dual_torch['action_std'] + stats_dual_torch['action_mean']
-
-                        # Re-normalize Left/Right
-                        denorm_left = denorm_actions[:, :, :7]
-                        renorm_left = (denorm_left - stats_left_torch['action_mean']) / stats_left_torch['action_std']
-                        
-                        val_inherit_left = renorm_left.clone()
-                        val_inherit_left[~dual_mask[:, :, :7]] = float('nan')
-                        all_time_actions_left.copy_(val_inherit_left)
-                        
-                        denorm_right = denorm_actions[:, :, 7:]
-                        renorm_right = (denorm_right - stats_right_torch['action_mean']) / stats_right_torch['action_std']
-                        
-                        val_inherit_right = renorm_right.clone()
-                        val_inherit_right[~dual_mask[:, :, 7:]] = float('nan')
-                        all_time_actions_right.copy_(val_inherit_right)
+                handle_mode_switch(t, current_mode, MODE_INDEPENDENT)
             elif key == '2':
-                if current_mode != MODE_COOP:
-                    current_mode = MODE_COOP
-                    step_in_chunk = 0 # Force replan on switch
-                    print(f"[Step {t}] Switched to COOPERATIVE mode")
-
-                    if args.inherit_temporal_buffer and temporal_agg:
-                        print(f"[Step {t}] Inheriting temporal buffer (Indep -> Dual)")
-                        
-                        input_left = all_time_actions_left
-                        input_right = all_time_actions_right
-                        
-                        # Masks
-                        left_mask = ~torch.isnan(input_left)
-                        right_mask = ~torch.isnan(input_right)
-                        combined_mask = torch.cat([left_mask, right_mask], dim=2)
-                        
-                        input_left_safe = torch.nan_to_num(input_left, nan=0.0)
-                        input_right_safe = torch.nan_to_num(input_right, nan=0.0)
-                        
-                        denorm_left = input_left_safe * stats_left_torch['action_std'] + stats_left_torch['action_mean']
-                        denorm_right = input_right_safe * stats_right_torch['action_std'] + stats_right_torch['action_mean']
-
-                        # Re-normalize for Dual
-                        renorm_dual = (denorm_dual - stats_dual_torch['action_mean']) / stats_dual_torch['action_std']
-                        
-                        val_inherit_dual = renorm_dual.clone()
-                        val_inherit_dual[~combined_mask] = float('nan')
-                        all_time_actions_dual.copy_(val_inherit_dual)
+                handle_mode_switch(t, current_mode, MODE_COOP)
             elif key == 'q':
                 break
                 
@@ -707,21 +777,17 @@ def main(args):
                          else:
                              current_action_chunk_left = action_chunk_l.squeeze(0).cpu().numpy()
                         
-                        # Right
+                         # Right
                          qpos_right_numpy = qpos_numpy[7:14]
                          qpos_right = pre_process_right(qpos_right_numpy)
                          qpos_right = torch.from_numpy(qpos_right).float().cuda().unsqueeze(0)
                          curr_image_right = get_image_independent(ts, camera_names, 'right')
                          
-                         if args.policy_class == 'ACT':
-                             action_chunk_r = policy_right(qpos_right, curr_image_right)
-                             
-
-
-                             if temporal_agg:
-                                 all_time_actions_right[[t], t:t+num_queries] = action_chunk_r
-                             else:
-                                 current_action_chunk_right = action_chunk_r.squeeze(0).cpu().numpy()
+                         action_chunk_r = policy_right(qpos_right, curr_image_right)
+                         if temporal_agg:
+                             all_time_actions_right[[t], t:t+num_queries] = action_chunk_r
+                         else:
+                             current_action_chunk_right = action_chunk_r.squeeze(0).cpu().numpy()
                              
                 
                 # Execute current step of the plan
@@ -817,8 +883,37 @@ def main(args):
             ts = env.step(target_qpos)
             current_episode_rewards.append(ts.reward)
             
+            # --- Object Removal Logic ---
+            new_touches = get_touched_cubes_per_arm(env.physics)
+            acc_touched_left.update(new_touches['left'])
+            acc_touched_right.update(new_touches['right'])
+            
             step_in_chunk += 1
             t += 1
+            
+            # Check for task completion & Remove objects
+            if scheduler:
+                # Left
+                ended_task_l = scheduler.get_task_ending_at(t, 'left')
+                if ended_task_l:
+                    # Logic: Remove unless it is 'Phase 1' (mid-assembly)
+                    if 'Phase 1' not in ended_task_l['info']:
+                        print(f"[Step {t}] Left Task Ended ({ended_task_l['info']}). Removing objects: {acc_touched_left}")
+                        remove_cubes(env.physics, list(acc_touched_left))
+                        acc_touched_left.clear()
+                    else:
+                        print(f"[Step {t}] Left Phase 1 Ended. Persisting objects {acc_touched_left} for Phase 2.")
+                
+                # Right
+                ended_task_r = scheduler.get_task_ending_at(t, 'right')
+                if ended_task_r:
+                    if 'Phase 1' not in ended_task_r['info']:
+                        print(f"[Step {t}] Right Task Ended ({ended_task_r['info']}). Removing objects: {acc_touched_right}")
+                        remove_cubes(env.physics, list(acc_touched_right))
+                        acc_touched_right.clear()
+                    else:
+                        print(f"[Step {t}] Right Phase 1 Ended. Persisting objects {acc_touched_right} for Phase 2.")
+
             
             # Reset logic matches imitate_episodes num_rollouts loop (conceptually)
             if t >= max_timesteps:
@@ -855,13 +950,21 @@ def main(args):
                 ts = reset_with_new_pose()
                 t = 0
                 step_in_chunk = 0
-                current_mode = MODE_COOP # Reset mode to Coop for new episode
+                # Reset mode from scheduler if present
+                if scheduler:
+                    current_mode = scheduler.get_mode_at_step(0)
+                else:
+                    current_mode = MODE_COOP
                 
                 # Reset temp buffers for next episode
                 if temporal_agg:
                     all_time_actions_dual.fill_(float_nan)
                     all_time_actions_left.fill_(float_nan)
                     all_time_actions_right.fill_(float_nan)
+                    
+                # Reset touch tracking
+                acc_touched_left = set()
+                acc_touched_right = set()
                     
         # Summary
         success_rate = np.mean(np.array(highest_rewards) == 4) # Assuming 4 is max reward for coop
@@ -904,6 +1007,7 @@ if __name__ == '__main__':
     parser.add_argument('--command_sequence', action='store', type=str, default=None, help='Scheduler: Task sequence (e.g. ICLR)')
     parser.add_argument('--task_durations', action='store', type=str, default=None, help='Scheduler: JSON string of durations')
     parser.add_argument('--color_sequence', action='store', type=str, default=None, help='Color sequence (e.g. rrgbrrgbrr)')
+    parser.add_argument('--episode_len', action='store', type=int, default=None, help='Override task-specific episode length')
 
     args = parser.parse_args()
     main(args)
