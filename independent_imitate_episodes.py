@@ -550,6 +550,9 @@ def forward_pass(data, policy, arm, device='cuda', target_size=None):
     image_data, qpos_data, action_data, is_pad = data
     image_data, qpos_data, action_data, is_pad = image_data.to(device), qpos_data.to(device), action_data.to(device), is_pad.to(device)
     
+    # Normalize images (uint8 -> float32 [0, 1])
+    image_data = image_data / 255.0
+    
     # Apply RGB mask for consistency with inference
     image_data = apply_torch_rgb_mask(image_data, strip_width=40, arm=arm)
     
