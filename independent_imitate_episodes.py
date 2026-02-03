@@ -200,6 +200,15 @@ def make_policy(policy_class, policy_config):
         raise NotImplementedError
     return policy
 
+def make_optimizer(policy_class, policy):
+    if policy_class == 'ACT':
+        optimizer = policy.configure_optimizers()
+    elif policy_class == 'CNNMLP':
+        optimizer = policy.configure_optimizers()
+    else:
+        raise NotImplementedError
+    return optimizer
+
 
 def apply_torch_rgb_mask(images, strip_width=40, arm='right'):
     """
