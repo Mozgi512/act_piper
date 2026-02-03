@@ -118,30 +118,21 @@ class TaskScheduler:
                 self.timeline_left.append({'start': start_coop, 'end': end_assembly, 'type': 'COOP', 'info': 'Phase 1 (Assembly)'})
                 self.timeline_right.append({'start': start_coop, 'end': end_assembly, 'type': 'COOP', 'info': 'Phase 1 (Assembly)'})
                 
-                # Phase 2: Placement (Indep Mode)
-                self.mode_schedule[end_assembly] = self.MODE_INDEPENDENT
-                
-                # Lookahead for Role Assignment
-                base_arm = 'right' # Default
-                if i + 1 < n:
-                    next_char = self.sequence_str[i+1]
-                    if next_char == 'L':
-                        base_arm = 'right'
-                    elif next_char == 'R':
-                        base_arm = 'left'
-                    else:
-                        base_arm = 'right'
-                
-                end_place = end_assembly + len_place
+                # Phase 2: Placement (Base stays COOP, Free becomes INDEP)
+                # Global Mode remains COOP until end_place
+                self.mode_schedule[end_assembly] = self.MODE_COOP
+                self.mode_schedule[end_place] = self.MODE_INDEPENDENT
                 
                 if base_arm == 'left':
-                    # Left blocked (Base), Right free (Top)
-                    self.timeline_left.append({'start': end_assembly, 'end': end_place, 'type': 'INDEP', 'info': 'Phase 2 (Place-Base)'})
+                    # Left blocked (Base) -> Continues COOP
+                    # Right free (Top) -> Goes INDEP immediately
+                    self.timeline_left.append({'start': end_assembly, 'end': end_place, 'type': 'COOP', 'info': 'Phase 2 (Place-Base)'})
                     time_l = end_place
                     time_r = end_assembly # Right free immediately
                 else:
-                    # Right blocked (Base), Left free (Top)
-                    self.timeline_right.append({'start': end_assembly, 'end': end_place, 'type': 'INDEP', 'info': 'Phase 2 (Place-Base)'})
+                    # Right blocked (Base) -> Continues COOP
+                    # Left free (Top) -> Goes INDEP immediately
+                    self.timeline_right.append({'start': end_assembly, 'end': end_place, 'type': 'COOP', 'info': 'Phase 2 (Place-Base)'})
                     time_r = end_place
                     time_l = end_assembly # Left free immediately
                 
@@ -614,7 +605,9 @@ def main(args):
                         
                         ren_dual = (denom_dual - stats_dual_torch['action_mean']) / stats_dual_torch['action_std']
                         all_time_actions_dual.copy_(ren_dual)
+                        all_time_actions_dual.copy_(ren_dual)
                         all_time_actions_dual[~comb_mask] = float_nan
+
 
                 # -------------------------------
                 # Auto-Switching Logic via Scheduler
@@ -622,6 +615,47 @@ def main(args):
                 new_mode = scheduler.get_mode_at_step(t)
                 if new_mode != current_mode:
                     handle_mode_switch(t, current_mode, new_mode)
+                
+                # --- Per-Arm Inheritance for Overlap (Coop -> Indep while Global is still Coop) ---
+                if args.inherit_temporal_buffer and scheduler and current_mode == MODE_COOP and new_mode == MODE_COOP:
+                     # Check individual arm transitions
+                     prev_l_state, _ = scheduler.get_arm_state(t-1, 'left')
+                     curr_l_state, _ = scheduler.get_arm_state(t, 'left')
+                     
+                     if prev_l_state == 'COOP' and curr_l_state == 'INDEP':
+                         print(f"[Step {t}] Inheriting temporal buffer Left (Dual -> Indep) [Overlap]")
+                         # Inherit Left from Dual
+                         input_dual = all_time_actions_dual
+                         input_dual_l = input_dual[:, :, :7]
+                         
+                         mask_dual = ~torch.isnan(input_dual_l)
+                         input_dual_safe = torch.nan_to_num(input_dual_l, nan=0.0)
+                         
+                         denorm_dual = input_dual_safe * stats_dual_torch['action_std'][:7] + stats_dual_torch['action_mean'][:7]
+                         renorm_l = (denorm_dual - stats_left_torch['action_mean']) / stats_left_torch['action_std']
+                         
+                         val_inherit_l = renorm_l.clone()
+                         val_inherit_l[~mask_dual] = float_nan
+                         all_time_actions_left.copy_(val_inherit_l)
+
+                     prev_r_state, _ = scheduler.get_arm_state(t-1, 'right')
+                     curr_r_state, _ = scheduler.get_arm_state(t, 'right')
+                     
+                     if prev_r_state == 'COOP' and curr_r_state == 'INDEP':
+                         print(f"[Step {t}] Inheriting temporal buffer Right (Dual -> Indep) [Overlap]")
+                         # Inherit Right from Dual
+                         input_dual = all_time_actions_dual
+                         input_dual_r = input_dual[:, :, 7:]
+                         
+                         mask_dual = ~torch.isnan(input_dual_r)
+                         input_dual_safe = torch.nan_to_num(input_dual_r, nan=0.0)
+                         
+                         denorm_dual = input_dual_safe * stats_dual_torch['action_std'][7:] + stats_dual_torch['action_mean'][7:]
+                         renorm_r = (denorm_dual - stats_right_torch['action_mean']) / stats_right_torch['action_std']
+                         
+                         val_inherit_r = renorm_r.clone()
+                         val_inherit_r[~mask_dual] = float_nan
+                         all_time_actions_right.copy_(val_inherit_r)
                 
                 # Check End
                 if t >= scheduler.max_timesteps:
@@ -659,121 +693,149 @@ def main(args):
                     if should_plan:
                         if not temporal_agg: step_in_chunk = 0
 
-                        # UNIFIED DUAL POLICY logic (for both Coop and Independent-Dual)
-                        if current_mode == MODE_COOP or (current_mode == MODE_INDEPENDENT and policy_independent_dual):
+                        if scheduler:
+                             plan_l_state, _ = scheduler.get_arm_state(t, 'left')
+                             plan_r_state, _ = scheduler.get_arm_state(t, 'right')
+                        else:
+                             plan_l_state = 'COOP' if current_mode == MODE_COOP else 'INDEP'
+                             plan_r_state = 'COOP' if current_mode == MODE_COOP else 'INDEP'
+
+                        # 1. Query Dual (Coop)
+                        # NOTE: In eval, we assume 'policy_dual' handles COOP tasks.
+                        if plan_l_state == 'COOP' or plan_r_state == 'COOP':
+                            qpos = pre_process_dual(qpos_numpy)
+                            qpos = torch.from_numpy(qpos).float().cuda().unsqueeze(0)
                             curr_image = get_image_dual(ts, camera_names)
                             
-                            if current_mode == MODE_COOP:
-                                qpos = pre_process_dual(qpos_numpy)
-                                qpos = torch.from_numpy(qpos).float().cuda().unsqueeze(0)
-                                action_chunk = policy_dual(qpos, curr_image)
-                            else:
-                                # Independent (Dual Policy)
-                                qpos = pre_process_independent_dual(qpos_numpy)
-                                qpos = torch.from_numpy(qpos).float().cuda().unsqueeze(0)
-                                action_chunk = policy_independent_dual(qpos, curr_image)
-
+                            action_chunk = policy_dual(qpos, curr_image)
                             if temporal_agg:
-                                # SHARE THE SAME BUFFER for smooth transition
                                 all_time_actions_dual[[t], t:t+num_queries] = action_chunk
                             else:
                                 current_action_chunk_dual = action_chunk.squeeze(0).cpu().numpy()
-                        else:
-                            # Independent (Legacy Split Policy)
-                             # Left
-                             qpos_left_numpy = qpos_numpy[:7]
-                             qpos_left = pre_process_left(qpos_left_numpy)
-                             qpos_left = torch.from_numpy(qpos_left).float().cuda().unsqueeze(0)
-                             curr_image_left = get_image_independent(ts, camera_names, 'left')
-                             
-                             action_chunk_l = policy_left(qpos_left, curr_image_left)
-                             if temporal_agg:
-                                 all_time_actions_left[[t], t:t+num_queries] = action_chunk_l
-                             else:
-                                 current_action_chunk_left = action_chunk_l.squeeze(0).cpu().numpy()
-                            
-                            # Right
-                             qpos_right_numpy = qpos_numpy[7:14]
-                             qpos_right = pre_process_right(qpos_right_numpy)
-                             qpos_right = torch.from_numpy(qpos_right).float().cuda().unsqueeze(0)
-                             curr_image_right = get_image_independent(ts, camera_names, 'right')
-                             
-                             action_chunk_r = policy_right(qpos_right, curr_image_right)
-                             if temporal_agg:
-                                 all_time_actions_right[[t], t:t+num_queries] = action_chunk_r
-                             else:
-                                 current_action_chunk_right = action_chunk_r.squeeze(0).cpu().numpy()
 
-                    # -------------------------------
-                    # Action Combine
-                    # -------------------------------
-                    if current_mode == MODE_COOP or (current_mode == MODE_INDEPENDENT and policy_independent_dual):
-                        if temporal_agg:
-                            actions_for_curr_step = all_time_actions_dual[:, t]
-                            actions_populated = torch.all(~torch.isnan(actions_for_curr_step), axis=1)
-                            actions_for_curr_step = actions_for_curr_step[actions_populated]
-                            k = 0.01
-                            weights_len = len(actions_for_curr_step)
-                            exp_weights = np.exp(-k * (weights_len - 1 - np.arange(weights_len)))
-                            exp_weights = exp_weights / exp_weights.sum()
-                            exp_weights = torch.from_numpy(exp_weights).cuda().unsqueeze(dim=1)
-                            raw_action = (actions_for_curr_step * exp_weights).sum(dim=0, keepdim=True)
-                            raw_action = raw_action.squeeze(0).cpu().numpy()
-                        else:
-                            raw_action = current_action_chunk_dual[step_in_chunk]
-                        
-                        if current_mode == MODE_COOP:
-                             target_qpos = post_process_dual(raw_action)
-                        else:
-                             target_qpos = post_process_independent_dual(raw_action)
-                        
+                        # 2. Query Independent Left
+                        if plan_l_state == 'INDEP':
+                             if policy_left: # Using separate policy
+                                 qpos_left_numpy = qpos_numpy[:7]
+                                 qpos_left = pre_process_left(qpos_left_numpy)
+                                 qpos_left = torch.from_numpy(qpos_left).float().cuda().unsqueeze(0)
+                                 curr_image_left = get_image_independent(ts, camera_names, 'left')
+                                 action_chunk_l = policy_left(qpos_left, curr_image_left)
+                                 
+                                 if temporal_agg:
+                                     all_time_actions_left[[t], t:t+num_queries] = action_chunk_l
+                                 else:
+                                     current_action_chunk_left = action_chunk_l.squeeze(0).cpu().numpy()
+                             elif policy_independent_dual: # Using Unified Independent Policy
+                                  # TODO: Support unified independent in Mixed Mode? 
+                                  # For now assuming user provided --ckpt_left/--ckpt_right as per logic
+                                  pass
+
+                        # 3. Query Independent Right
+                        if plan_r_state == 'INDEP':
+                             if policy_right:
+                                 qpos_right_numpy = qpos_numpy[7:14]
+                                 qpos_right = pre_process_right(qpos_right_numpy)
+                                 qpos_right = torch.from_numpy(qpos_right).float().cuda().unsqueeze(0)
+                                 curr_image_right = get_image_independent(ts, camera_names, 'right')
+                                 
+                                 action_chunk_r = policy_right(qpos_right, curr_image_right)
+                                 if temporal_agg:
+                                     all_time_actions_right[[t], t:t+num_queries] = action_chunk_r
+                                 else:
+                                     current_action_chunk_right = action_chunk_r.squeeze(0).cpu().numpy()
+
+                # --- Execute / Combine ---
+                # Determine state again for execution (same as plan)
+                if scheduler:
+                     l_state, _ = scheduler.get_arm_state(t, 'left')
+                     r_state, _ = scheduler.get_arm_state(t, 'right')
+                else:
+                     l_state = 'COOP' if current_mode == MODE_COOP else 'INDEP'
+                     r_state = 'COOP' if current_mode == MODE_COOP else 'INDEP'
+                
+                # ... get raw actions ...
+                
+                # --- Left ---
+                if l_state == 'COOP':
+                    if temporal_agg:
+                        actions_for_curr_step = all_time_actions_dual[:, t]
+                        actions_populated = torch.all(~torch.isnan(actions_for_curr_step), axis=1)
+                        actions_for_curr_step = actions_for_curr_step[actions_populated]
+                        k = 0.01
+                        weights_len = len(actions_for_curr_step)
+                        exp_weights = np.exp(-k * (weights_len - 1 - np.arange(weights_len)))
+                        exp_weights = exp_weights / exp_weights.sum()
+                        exp_weights = torch.from_numpy(exp_weights).cuda().unsqueeze(dim=1)
+                        raw_action_dual = (actions_for_curr_step * exp_weights).sum(dim=0, keepdim=True)
+                        raw_action_dual = raw_action_dual.squeeze(0).cpu().numpy()
+                        current_raw_action_l = raw_action_dual[:7]
                     else:
-                        # Independent (Legacy)
-                        offset_t = t # No phase2 offset for general eval
-                        
-                        if temporal_agg:
-                            # LEFT
-                            actions_l = all_time_actions_left[:, offset_t]
-                            actions_populated_l = torch.all(~torch.isnan(actions_l), axis=1)
-                            actions_l = actions_l[actions_populated_l]
-                            if len(actions_l) == 0: # Safety fallback
-                                 actions_l = all_time_actions_left[:, t]
-                                 actions_populated_l = torch.all(~torch.isnan(actions_l), axis=1)
-                                 actions_l = actions_l[actions_populated_l]
+                        current_raw_action_l = current_action_chunk_dual[step_in_chunk][:7]
+                else:
+                    if temporal_agg:
+                        actions_for_curr_step_l = all_time_actions_left[:, t] # No offset in eval usually?
+                        actions_populated_l = torch.all(~torch.isnan(actions_for_curr_step_l), axis=1)
+                        actions_for_curr_step_l = actions_for_curr_step_l[actions_populated_l]
+                        if len(actions_for_curr_step_l) == 0:
+                             actions_for_curr_step_l = all_time_actions_left[:, t]
+                        k = 0.01
+                        weights_len_l = len(actions_for_curr_step_l)
+                        exp_weights_l = np.exp(-k * (weights_len_l - 1 - np.arange(weights_len_l)))
+                        exp_weights_l = exp_weights_l / exp_weights_l.sum()
+                        exp_weights_l = torch.from_numpy(exp_weights_l).cuda().unsqueeze(dim=1)
+                        raw_action_l = (actions_for_curr_step_l * exp_weights_l).sum(dim=0, keepdim=True)
+                        current_raw_action_l = raw_action_l.squeeze(0).cpu().numpy()
+                    else:
+                        current_raw_action_l = current_action_chunk_left[step_in_chunk]
 
-                            k = 0.01
-                            weights_len_l = len(actions_l)
-                            exp_weights_l = np.exp(-k * (weights_len_l - 1 - np.arange(weights_len_l)))
-                            exp_weights_l = exp_weights_l / exp_weights_l.sum()
-                            exp_weights_l = torch.from_numpy(exp_weights_l).cuda().unsqueeze(dim=1)
-                            raw_action_l = (actions_l * exp_weights_l).sum(dim=0, keepdim=True)
-                            raw_action_l = raw_action_l.squeeze(0).cpu().numpy()
+                # --- Right ---
+                if r_state == 'COOP':
+                    if temporal_agg:
+                        # Re-calc dual (redundant but safe)
+                        actions_for_curr_step = all_time_actions_dual[:, t]
+                        actions_populated = torch.all(~torch.isnan(actions_for_curr_step), axis=1)
+                        actions_for_curr_step = actions_for_curr_step[actions_populated]
+                        k = 0.01
+                        weights_len = len(actions_for_curr_step)
+                        exp_weights = np.exp(-k * (weights_len - 1 - np.arange(weights_len)))
+                        exp_weights = exp_weights / exp_weights.sum()
+                        exp_weights = torch.from_numpy(exp_weights).cuda().unsqueeze(dim=1)
+                        raw_action_dual = (actions_for_curr_step * exp_weights).sum(dim=0, keepdim=True)
+                        raw_action_dual = raw_action_dual.squeeze(0).cpu().numpy()
+                        current_raw_action_r = raw_action_dual[7:]
+                    else:
+                        current_raw_action_r = current_action_chunk_dual[step_in_chunk][7:]
+                else:
+                    if temporal_agg:
+                        actions_for_curr_step_r = all_time_actions_right[:, t]
+                        actions_populated_r = torch.all(~torch.isnan(actions_for_curr_step_r), axis=1)
+                        actions_for_curr_step_r = actions_for_curr_step_r[actions_populated_r]
+                        if len(actions_for_curr_step_r) == 0:
+                             actions_for_curr_step_r = all_time_actions_right[:, t]
+                        k = 0.01
+                        weights_len_r = len(actions_for_curr_step_r)
+                        exp_weights_r = np.exp(-k * (weights_len_r - 1 - np.arange(weights_len_r)))
+                        exp_weights_r = exp_weights_r / exp_weights_r.sum()
+                        exp_weights_r = torch.from_numpy(exp_weights_r).cuda().unsqueeze(dim=1)
+                        raw_action_r = (actions_for_curr_step_r * exp_weights_r).sum(dim=0, keepdim=True)
+                        current_raw_action_r = raw_action_r.squeeze(0).cpu().numpy()
+                    else:
+                        current_raw_action_r = current_action_chunk_right[step_in_chunk]
 
-                            # RIGHT
-                            actions_r = all_time_actions_right[:, offset_t]
-                            actions_populated_r = torch.all(~torch.isnan(actions_r), axis=1)
-                            actions_r = actions_r[actions_populated_r]
-                            if len(actions_r) == 0:
-                                 actions_r = all_time_actions_right[:, t]
-                                 actions_populated_r = torch.all(~torch.isnan(actions_r), axis=1)
-                                 actions_r = actions_r[actions_populated_r]
-
-                            weights_len_r = len(actions_r)
-                            exp_weights_r = np.exp(-k * (weights_len_r - 1 - np.arange(weights_len_r)))
-                            exp_weights_r = exp_weights_r / exp_weights_r.sum()
-                            exp_weights_r = torch.from_numpy(exp_weights_r).cuda().unsqueeze(dim=1)
-                            raw_action_r = (actions_r * exp_weights_r).sum(dim=0, keepdim=True)
-                            raw_action_r = raw_action_r.squeeze(0).cpu().numpy()
-                        else:
-                            idx = step_in_chunk
-                            if idx >= chunk_size: idx = chunk_size - 1
-                            raw_action_l = current_action_chunk_left[idx]
-                            raw_action_r = current_action_chunk_right[idx]
-
-                        action_left = post_process_left(raw_action_l)
-                        action_right = post_process_right(raw_action_r)
-                        target_qpos = np.concatenate([action_left, action_right])
-
+                # --- Denorm ---
+                if l_state == 'COOP':
+                     action_l = current_raw_action_l * stats_dual['action_std'][:7] + stats_dual['action_mean'][:7]
+                else:
+                     action_l = current_raw_action_l * stats_left['action_std'] + stats_left['action_mean']
+                
+                if r_state == 'COOP':
+                     action_r = current_raw_action_r * stats_dual['action_std'][7:] + stats_dual['action_mean'][7:]
+                else:
+                     action_r = current_raw_action_r * stats_right['action_std'] + stats_right['action_mean']
+                
+                action = np.concatenate([action_l, action_r])
+                target_qpos = action
                 # Apply Scheduler Holds
                 hold_l = scheduler.should_hold(t, 'left')
                 hold_r = scheduler.should_hold(t, 'right')

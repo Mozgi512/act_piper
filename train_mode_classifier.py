@@ -13,47 +13,85 @@ from tqdm import tqdm
 from PIL import Image
 
 class ModeClassificationDataset(Dataset):
-    def __init__(self, independent_dirs, cooperative_dirs, transform=None):
-        self.files = []
-        self.labels = []
+    def __init__(self, dataset_dirs, transform=None):
+        self.samples = [] # List of tuples: (file_path, frame_idx, label)
         self.transform = transform
 
-        # Label 0: Independent
-        for d in independent_dirs:
+        for d in dataset_dirs:
             files = glob.glob(os.path.join(d, 'episode_*.hdf5'))
-            self.files.extend(files)
-            self.labels.extend([0] * len(files))
-            print(f"Found {len(files)} independent episodes in {d}")
+            print(f"Scanning {len(files)} episodes in {d}...")
+            
+            for file_path in tqdm(files, desc=f"Loading Metadata from {os.path.basename(d)}"):
+                try:
+                    with h5py.File(file_path, 'r') as f:
+                        if 'metadata' not in f:
+                            continue
+                            
+                        # Extract total frames
+                        num_frames = f['action'].shape[0] if 'action' in f else 0
+                        
+                        if num_frames == 0:
+                            continue
 
-        # Label 1: Cooperative
-        for d in cooperative_dirs:
-            files = glob.glob(os.path.join(d, 'episode_*.hdf5'))
-            self.files.extend(files)
-            self.labels.extend([1] * len(files))
-            print(f"Found {len(files)} cooperative episodes in {d}")
+                        # Construct frame-wise labels
+                        # Default is Independent (0)
+                        labels = np.zeros(num_frames, dtype=int)
+                        
+                        # Apply Cooperative (1) logic
+                        # "If any arm is cooperative -> 1"
+                        
+                        l_segs = f['metadata/left_segments'][()]
+                        r_segs = f['metadata/right_segments'][()]
+                        
+                        def decode(s):
+                            return s.decode('utf-8') if isinstance(s, bytes) else s
 
-        print(f"Total episodes: {len(self.files)}")
+                        for seg in l_segs:
+                            stype = decode(seg['type'])
+                            if stype == 'cooperative':
+                                start, end = int(seg['start']), int(seg['end'])
+                                # Clamp to range
+                                start = max(0, start)
+                                end = min(num_frames, end)
+                                labels[start:end] = 1
+                        
+                        for seg in r_segs:
+                            stype = decode(seg['type'])
+                            if stype == 'cooperative':
+                                start, end = int(seg['start']), int(seg['end'])
+                                start = max(0, start)
+                                end = min(num_frames, end)
+                                labels[start:end] = 1
+                        
+                        # Store samples
+                        # Strategy: Sample ALL frames? Or strided?
+                        # For efficiency, let's take a strided sample (e.g. every 10 frames)
+                        # or random samples per episode to avoid huge dataset in RAM?
+                        # Actually, we store (path, idx, label) metadata list, not images.
+                        
+                        stride = 5  # Reduce data density slightly
+                        for t in range(0, num_frames, stride):
+                            self.samples.append((file_path, t, labels[t]))
+                            
+                except Exception as e:
+                    print(f"Error reading {file_path}: {e}")
+
+        print(f"Total samples collected: {len(self.samples)}")
 
     def __len__(self):
-        return len(self.files)
+        return len(self.samples)
 
     def __getitem__(self, idx):
-        file_path = self.files[idx]
-        label = self.labels[idx]
+        file_path, t, label = self.samples[idx]
 
         try:
             with h5py.File(file_path, 'r') as f:
-                # Get random frame index
-                # Assuming 'observations/images/top' exists and has shape (T, H, W, 3)
+                # Assuming 'observations/images/top' exists
                 if 'observations/images/top' not in f:
                      raise ValueError(f"No top image in {file_path}")
                 
-                images = f['observations/images/top']
-                num_frames = images.shape[0]
-                
-                # Pick a random frame
-                rand_t = np.random.randint(0, num_frames)
-                image_np = images[rand_t] # (H, W, 3) or (H, W, 3) depending on storage
+                # Retrieve specific frame
+                image_np = f['observations/images/top'][t]
                 
                 # Convert to PIL for transforms
                 image = Image.fromarray(image_np.astype('uint8'))
@@ -63,9 +101,9 @@ class ModeClassificationDataset(Dataset):
                 
                 return image, label
         except Exception as e:
-            print(f"Error loading {file_path}: {e}")
-            # Return a dummy or handle error (here we just retry random another one for simplicity or crash)
-            return self.__getitem__(np.random.randint(0, len(self.files)))
+            print(f"Error loading {file_path} at {t}: {e}")
+            # Retry random
+            return self.__getitem__(np.random.randint(0, len(self.samples)))
 
 def train_model(model, train_loader, val_loader, criterion, optimizer, num_epochs=10, device='cuda'):
     best_acc = 0.0
@@ -122,12 +160,10 @@ def train_model(model, train_loader, val_loader, criterion, optimizer, num_epoch
 
 def main():
     parser = argparse.ArgumentParser(description='Train Task Mode Classifier')
-    parser.add_argument('--independent_dirs', nargs='+', required=True, help='Directories for Independent class')
-    parser.add_argument('--cooperative_dirs', nargs='+', required=True, help='Directories for Cooperative class')
+    parser.add_argument('--dataset_dirs', nargs='+', required=True, help='List of dataset directories (e.g. data/ICTICT)')
     parser.add_argument('--batch_size', type=int, default=32)
     parser.add_argument('--epochs', type=int, default=10)
     parser.add_argument('--lr', type=float, default=0.001)
-    parser.add_argument('--future_steps', type=int, default=0, help='Future steps to predict (currently unused for static labeling)')
     
     args = parser.parse_args()
 
@@ -140,8 +176,7 @@ def main():
 
     # Dataset using list of directories
     dataset = ModeClassificationDataset(
-        independent_dirs=args.independent_dirs,
-        cooperative_dirs=args.cooperative_dirs,
+        dataset_dirs=args.dataset_dirs,
         transform=data_transforms
     )
 

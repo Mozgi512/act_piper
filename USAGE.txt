@@ -351,3 +351,18 @@ python policy_switcher.py \
     --num_epochs 40000 --lr 1e-5 \
     --seed 0 --arm right --num_episodes 100 --eval --onscreen_render --color_sequence rrgbrrrbgr
 
+python3 policy_switcher.py \
+  --task_name sim_many_cubes \
+  --policy_class ACT \
+  --kl_weight 10 --chunk_size 100 --hidden_dim 512 --dim_feedforward 3200 \
+  --ckpt_dual ckpt/merged_c \
+  --ckpt_left ckpt/unpaired_left \
+  --ckpt_right ckpt/unpaired_right \
+  --onscreen_render \
+  --use_visual_classifier \
+  --inherit_temporal_buffer \
+  --warmup_steps 100 \
+  --color_sequence rrgbrrrbgr \
+  --command_sequence ICRICL \
+  --task_durations '{"I": 380, "C_assembly": 400, "C_place": 120, "Single": 380}' \
+  --num_rollouts 50

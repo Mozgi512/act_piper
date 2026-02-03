@@ -177,8 +177,8 @@ class BimanualPiperTask(base.Task):
         raise NotImplementedError
 
 class InsertionTask(BimanualPiperTask):
-    def __init__(self, random=None):
-        super().__init__(random=random)
+    def __init__(self, random=None, camera_names=None):
+        super().__init__(random=random, camera_names=camera_names)
         self.max_reward = 4
 
     def initialize_episode(self, physics):
@@ -238,8 +238,8 @@ class InsertionTask(BimanualPiperTask):
         return reward
 
 class TransferCubeTask(BimanualPiperTask):
-    def __init__(self, random=None):
-        super().__init__(random=random)
+    def __init__(self, random=None, camera_names=None):
+        super().__init__(random=random, camera_names=camera_names)
         self.max_reward = 4
 
     def initialize_episode(self, physics):

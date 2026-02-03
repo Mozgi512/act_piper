@@ -88,34 +88,32 @@ class TaskScheduler:
                 self.timeline_left.append({'start': start_coop, 'end': end_assembly, 'type': 'COOP', 'info': 'Phase 1 (Assembly)'})
                 self.timeline_right.append({'start': start_coop, 'end': end_assembly, 'type': 'COOP', 'info': 'Phase 1 (Assembly)'})
                 
-                # Mode Switch to Indep Logic (Phase 2)
-                self.mode_schedule[end_assembly] = self.MODE_INDEPENDENT
+                # Phase 2: Placement (Base stays COOP, Free becomes INDEP)
+                end_place = end_assembly + len_place
+                
+                # Global Mode remains COOP until end_place
+                self.mode_schedule[end_assembly] = self.MODE_COOP
+                self.mode_schedule[end_place] = self.MODE_INDEPENDENT
                 
                 # Lookahead for Role Assignment
-                # "Add time to Opposite of next arm"
                 base_arm = 'right' # Default
-                
                 if i + 1 < n:
                     next_char = self.sequence_str[i+1]
                     if next_char == 'L':
-                        base_arm = 'right' # Next is L, so Opposite(L)=Right is Base
+                        base_arm = 'right'
                     elif next_char == 'R':
-                        base_arm = 'left'  # Next is R, so Opposite(R)=Left is Base
+                        base_arm = 'left'
                     else:
-                        base_arm = 'right' # Default for I or C
-                
-                end_place = end_assembly + len_place
+                        base_arm = 'right'
                 
                 if base_arm == 'left':
-                    # Left blocked (Base), Right free (Top)
-                    self.timeline_left.append({'start': end_assembly, 'end': end_place, 'type': 'INDEP', 'info': 'Phase 2 (Place-Base)'})
-                    # Right is free, so we don't append a task, just NO time update
-                    # But we explicitly mark it as free? No, just don't add time.
+                    # Left blocked (Base) -> Continues COOP
+                    self.timeline_left.append({'start': end_assembly, 'end': end_place, 'type': 'COOP', 'info': 'Phase 2 (Place-Base)'})
                     time_l = end_place
                     time_r = end_assembly # Right free immediately
                 else:
-                    # Right blocked (Base), Left free (Top)
-                    self.timeline_right.append({'start': end_assembly, 'end': end_place, 'type': 'INDEP', 'info': 'Phase 2 (Place-Base)'})
+                    # Right blocked (Base) -> Continues COOP
+                    self.timeline_right.append({'start': end_assembly, 'end': end_place, 'type': 'COOP', 'info': 'Phase 2 (Place-Base)'})
                     time_r = end_place
                     time_l = end_assembly # Left free immediately
                 
