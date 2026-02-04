@@ -115,6 +115,12 @@ class TaskScheduler:
                 len_assembly = self.config.get('C_assembly', 0)
                 len_place = self.config.get('C_place', 0)
                 
+                # Unified C duration (No split requested)
+                if len_assembly == 0 and len_place == 0 and 'C' in self.config:
+                    total_c = self.config['C']
+                    len_assembly = total_c
+                    len_place = 0
+                
                 if self.sync_arms:
                     # Sync Point: Both arms wait for each other before starting Phase 1
                     start_coop = max(time_l, time_r)
@@ -465,11 +471,18 @@ def load_policy_and_stats(ckpt_dir, policy_class, args, override_state_dim=None,
 
 
 
-    stats_path = os.path.join(ckpt_dir, f'dataset_stats.pkl')
+    if os.path.isfile(ckpt_dir):
+        # User provided a direct file path (e.g. policy_epoch_1000.ckpt)
+        ckpt_path = ckpt_dir
+        parent_dir = os.path.dirname(ckpt_dir)
+        stats_path = os.path.join(parent_dir, f'dataset_stats.pkl')
+    else:
+        # User provided a directory, defaulting to policy_best.ckpt
+        stats_path = os.path.join(ckpt_dir, f'dataset_stats.pkl')
+        ckpt_path = os.path.join(ckpt_dir, 'policy_best.ckpt')
+
     with open(stats_path, 'rb') as f:
         stats = pickle.load(f)
-
-    ckpt_path = os.path.join(ckpt_dir, 'policy_best.ckpt')
     policy = make_policy(policy_class, policy_config)
     loaded_state_dict = torch.load(ckpt_path)
     
@@ -615,10 +628,11 @@ def main(args):
     ts = reset_with_new_pose()
     
     old_settings = None
-    try:
+    if sys.stdin.isatty():
         old_settings = termios.tcgetattr(sys.stdin)
         tty.setcbreak(sys.stdin.fileno())
-    except:
+        print("Ready. Press 'q' to quit.")
+    else:
         print("Not a TTY, manual control disabled")
     
     # Default to Cooperative logic unless overridden by scheduler later
@@ -910,8 +924,12 @@ def main(args):
                 break
                 
             # Render update matching imitate_episodes.py timing
-            # Render update matching imitate_episodes.py timing
             if onscreen_render:
+                # Exit if window is closed
+                if not plt.get_fignums():
+                    print("Window closed. Exiting...")
+                    break
+                    
                 image = env._physics.render(height=240, width=320, camera_id='top')
                 plt_img.set_data(image)
                 
@@ -960,6 +978,10 @@ def main(args):
                 if scheduler:
                      plan_l_state, _ = scheduler.get_arm_state(t, 'left')
                      plan_r_state, _ = scheduler.get_arm_state(t, 'right')
+                     
+                     if args.disable_hold:
+                         if plan_l_state == 'HOLD': plan_l_state = 'INDEP'
+                         if plan_r_state == 'HOLD': plan_r_state = 'INDEP'
                 else:
                      plan_l_state = 'COOP' if current_mode == MODE_COOP else 'INDEP'
                      plan_r_state = 'COOP' if current_mode == MODE_COOP else 'INDEP'
@@ -1025,6 +1047,10 @@ def main(args):
                 if scheduler:
                      l_state, _ = scheduler.get_arm_state(t, 'left')
                      r_state, _ = scheduler.get_arm_state(t, 'right')
+                     
+                     if args.disable_hold:
+                         if l_state == 'HOLD': l_state = 'INDEP'
+                         if r_state == 'HOLD': r_state = 'INDEP'
                 else:
                      # Fallback if no scheduler (shouldn't happen in this logic flow typically)
                      l_state = 'COOP' if current_mode == MODE_COOP else 'INDEP'
@@ -1349,6 +1375,7 @@ if __name__ == '__main__':
     parser.add_argument('--classifier_ckpt', type=str, default='mode_classifier_best.pth', help='Path to classifier checkpoint')
     parser.add_argument('--use_blending', action='store_true', help='Blend inherited actions with new policy actions when switching modes (Temporal Aggregation only)')
     parser.add_argument('--sync_arms', action='store_true', help='Synchronize arms (Sync Wait) before starting Cooperative tasks')
+    parser.add_argument('--disable_hold', action='store_true', help='Override HOLD state with Independent Policy control')
     
     args = parser.parse_args()
     main(args)

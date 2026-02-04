@@ -6,10 +6,10 @@
   <default>
     <default class="piper">
       <joint frictionloss="0.3" armature="0.005"/>
-      <position inheritrange="1" forcerange="-100 100"/>
+      <position inheritrange="0" ctrllimited="false" forcerange="-100 100"/>
       <default class="finger">
         <joint frictionloss="0" type="slide"/>
-        <position forcerange="-10 10"/>
+        <position inheritrange="1" forcerange="-10 10"/>
       </default>
       <default class="visual">
         <geom group="2" type="mesh" contype="0" conaffinity="0" density="0"/>

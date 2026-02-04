@@ -10,14 +10,14 @@
       <body name="r_link1" pos="0 0 0.123" quat="0.707105 0 0 -0.707108" gravcomp="1">
         <inertial pos="0.00131676 0.000310289 -0.00922875" quat="0.557105 0.432155 0.377373 0.600388" mass="0.097868"
           diaginertia="9.25942e-05 8.3083e-05 7.69469e-05"/>
-        <joint name="r_joint1" axis="0 0 1" range="-2.618 2.618"/>
+        <joint name="r_joint1" axis="0 0 1" limited="false"/>
         <geom class="visual" density="0" mesh="link1" material="gray_mat"/>
         <geom class="collision" mesh="link1"/>
         <!body name="r_link2" quat="0.499998 0.5 -0.500002 -0.5" gravcomp="1">
         <body name="r_link2" quat="0.5213 0.4777 -0.5213 -0.4777" gravcomp="1">
           <inertial pos="0.148794 -0.00242027 0.00175155" quat="-0.0249063 0.70684 0.00803509 0.706889" mass="0.290889"
             diaginertia="0.00177549 0.00173142 0.00014552"/>
-          <joint name="r_joint2" axis="0 0 1" range="0 3.14"/>
+          <joint name="r_joint2" axis="0 0 1" limited="false"/>
           <geom mesh="link2_0" material="Gray_Plastic" class="visual"/>
           <geom mesh="link2_1" material="darker_gray_mat" class="visual"/>
           <geom mesh="link2_2" material="darker_gray_mat" class="visual"/>
@@ -54,7 +54,7 @@
           <body name="r_link3" pos="0.28358 0.028726 0" quat="0.998726 0 0 0.0504536" gravcomp="1">
             <inertial pos="-0.0996835 0.0349477 0.000508026" quat="0.0777021 0.702287 -0.0990541 0.700674"
               mass="0.290848" diaginertia="0.000241946 0.000222224 0.000100384"/>
-            <joint name="r_joint3" pos="0 0 0" axis="0 0 1" range="-2.697 0"/>
+            <joint name="r_joint3" pos="0 0 0" axis="0 0 1" limited="false"/>
             <geom mesh="link3_0" material="darker_gray_mat" class="visual"/>
             <geom mesh="link3_1" material="red_mat" class="visual"/>
             <geom mesh="link3_2" material="gray_mat" class="visual"/>
@@ -87,7 +87,7 @@
             <body name="r_link4" pos="-0.24221 0.068514 0" quat="0.544767 -0.544769 -0.450809 0.450808" gravcomp="1">
               <inertial pos="0.000276465 -0.00102804 -0.00472831" quat="0.492305 0.505285 0.503294 0.499017"
                 mass="0.127087" diaginertia="4.87057e-05 4.10595e-05 3.82001e-05"/>
-              <joint name="r_joint4" axis="0 0 1" range="-3.664 0"/>
+              <joint name="r_joint4" axis="0 0 1" limited="false"/>
               <geom mesh="link4_2" material="gray_mat" class="visual"/>
               <geom mesh="link4_3" material="darker_gray_mat" class="visual"/>
               <geom mesh="link4_4" material="gray_mat" class="visual"/>
@@ -97,7 +97,7 @@
               <body name="r_link5" quat="0.707105 0.707108 0 0" gravcomp="1">
                 <inertial pos="8.82262e-05 0.0566829 -0.0019612" quat="0.507447 0.490986 0.506887 0.494466"
                   mass="0.144711" diaginertia="0.001 0.001 0.001"/>
-                <joint name="r_joint5" axis="0 0 1" range="-1.22 1.22"/>
+                <joint name="r_joint5" axis="0 0 1" limited="false"/>
                 <geom mesh="link5_2" material="black_mat" class="visual"/>
                 <geom mesh="link5_3" material="black_mat" class="visual"/>
                 <geom mesh="link5_4" material="darker_gray_mat" class="visual"/>
@@ -117,7 +117,7 @@
                   <camera name="r_wrist" pos="-0.1 0 0.05" fovy="20" mode="targetbody" target="r_camera_focus"/>
                   <inertial pos="0.0010312 0.0121761 0.0315481" quat="0.0230402 0.707091 0.0373344 0.70576" mass="1.2"
                     diaginertia="0.001 0.001 0.001"/>
-                  <joint name="r_joint6" axis="0 0 1" range="-3.14 3.14"/>
+                  <joint name="r_joint6" axis="0 0 1" limited="false"/>
                   <geom quat="0.707105 0 0 0.707108" mesh="link6" material="gray_mat" class="visual"/>
                   <geom quat="0.707105 0 0 0.707108" mesh="link6" class="collision"/>
                   <body name="r_link7" pos="0 0 0.13503" quat="1.89468e-08 1.89469e-08 0.707108 0.707105" gravcomp="1">

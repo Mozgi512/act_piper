@@ -93,6 +93,21 @@ python3 independent_imitate_episodes.py \
     --kl_weight 10 --chunk_size 100 --hidden_dim 512 --batch_size 8 --dim_feedforward 3200 \
     --num_epochs 2000  --lr 1e-5 \
     --seed 0 \
+    --seed 0 \
+    --arm right
+```
+
+### 追加学習 (Fine-tuning)
+既存のチェックポイントから学習を再開するには `--load_ckpt` を使用します。
+```bash
+python3 independent_imitate_episodes.py \
+    --task_name sim_independent_scripted \
+    --ckpt_dir ckpt/independent_right_finetune \
+    --load_ckpt ckpt/independent_right/policy_best.ckpt \
+    --policy_class ACT \
+    --kl_weight 10 --chunk_size 100 --hidden_dim 512 --batch_size 8 --dim_feedforward 3200 \
+    --num_epochs 2000  --lr 1e-5 \
+    --seed 0 \
     --arm right
 ```
 
@@ -272,11 +287,12 @@ python3 shuffle_dataset.py --dataset_dir data/ICTICT/_cooperative_merged/trainin
 
     python3 independent_imitate_episodes.py \
     --task_name sim_dataset_i \
-    --ckpt_dir ckpt/pickplace_left \
-    --dataset_dir data/ICTICT/_left_independent/training \
+    --ckpt_dir ckpt/pickplace_left_finetune \
+    --load_ckpt ckpt/pickplace_left/policy_best.ckpt \
+    --dataset_dir data/ICTICT/_left_independent/seg_4 \
     --policy_class ACT \
     --kl_weight 10 --chunk_size 100 --hidden_dim 512 --batch_size 32 --dim_feedforward 3200 \
-    --num_epochs 40000 --lr 1e-5 \
+    --num_epochs 2000 --lr 1e-5 \
     --seed 0 --arm left --num_episodes 100 --num_workers 4 \
     --persistent_workers \
     --prefetch_factor 2 \
@@ -320,7 +336,7 @@ python3 shuffle_dataset.py --dataset_dir data/ICTICT/_cooperative_merged/trainin
 python3 shuffle_dataset.py --dataset_dir data/my_dataset
 
 # 元のデータ可視化
-python3 visualize_episodes.py --dataset_dir data/ICTICT_custom_coop/seg_0 --episode_idx 0
+python3 visualize_episodes.py --dataset_dir  data/ICTICT/_left_independent/seg_4 --episode_idx 0
 
 # 分割データ可視化
 python3 independent_visualize_episodes.py --dataset_dir data/ICTICT/_right_independent/training --episode_idx 0 
@@ -342,6 +358,22 @@ python policy_switcher.py \
     --warmup_steps 100 \
     --num_rollouts 50　--color_sequence rrgbrrrbgr
 
+python policy_switcher.py \
+    --task_name sim_many_cubes \
+    --ckpt_dual ckpt/c \
+    --ckpt_left ckpt/i_left \
+    --ckpt_right ckpt/i_right \
+    --policy_class ACT \
+    --kl_weight 10 --chunk_size 100 --hidden_dim 512 --dim_feedforward 3200 \
+    --command_sequence IICCI \
+    --task_durations '{"I": 400, "C": 520}' \
+    --onscreen_render \
+    --inherit_temporal_buffer \
+    --warmup_steps 100 \
+    --disable_hold \
+    --num_rollouts 50 --color_sequence rrrrgbgbrr
+
+
     python3 independent_imitate_episodes.py \
     --task_name sim_many_cubes \
     --ckpt_dir ckpt/unpaired_right \
@@ -356,7 +388,7 @@ python3 policy_switcher.py \
   --policy_class ACT \
   --kl_weight 10 --chunk_size 100 --hidden_dim 512 --dim_feedforward 3200 \
   --ckpt_dual ckpt/merged_c \
-  --ckpt_left ckpt/pickplace_left \
+  --ckpt_left ckpt/pickplace_left_finetune \
   --ckpt_right ckpt/pickplace_right \
   --onscreen_render \
   --use_visual_classifier \
@@ -372,3 +404,30 @@ python3 policy_switcher.py \
   python3 merge_datasets.py --input_dirs data/ICTICT/_cooperative_merged/pick_place data/ICTICT/_cooperative_merged/m  --output_dir data/ICTICT/_cooperative_merged/formultitask
   python3 shuffle_dataset.py --dataset_dir data/ICTICT/_cooperative_merged/formultitask
   python3 pad_dataset.py --input_dir data/ICTICT/_cooperative_merged/formultitask --output_dir data/ICTICT/_cooperative_merged/multitask
+
+python3 evaluate_policy_switcher.py \
+    --task_name sim_many_cubes \
+    --commands "IIC" \
+    --color_sequence rrgbrrrbgr \
+    --ckpt_e2e ckpt/multitask_async \
+    --num_rollouts 50 --policy_class ACT \
+    --kl_weight 10 --chunk_size 100 --hidden_dim 512 --dim_feedforward 3200 \
+    --onscreen_render --save_video  --max_timesteps 1300
+
+    python3 imitate_episodes.py \
+    --task_name sim_many_cubes \
+    --ckpt_dir ckpt/end2end \
+    --dataset_dir data/ICTICT/ \
+    --policy_class ACT --kl_weight 10 --chunk_size 100 --hidden_dim 512 \
+    --batch_size 32 \
+    --dim_feedforward 3200 \
+    --num_epochs 40000 --lr 1e-5 \
+    --seed 0 \
+    --eval --onscreen_render --color_sequence rrgbrrrbgr
+
+
+    data/ICTICT/_left_independent/seg_4
+
+ --load_ckpt ckpt/independent_right/policy_best.ckpt \
+
+ 

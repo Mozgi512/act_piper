@@ -283,7 +283,7 @@ def load_data(dataset_dir, num_episodes, camera_names, batch_size_train, batch_s
 def sample_redbox_pose():
     x_range = [-0.45, -0.30]
     y_range = [0.30, 0.4]
-    z_range = [0.01, 0.01]
+    z_range = [0.005, 0.005]
 
     ranges = np.vstack([x_range, y_range, z_range])
     cube_position = np.random.uniform(ranges[:, 0], ranges[:, 1])
@@ -295,7 +295,7 @@ def sample_redbox_pose():
 def sample_greenbox_pose():
     x_range = [-0.25,-0.10]
     y_range = [0.30, 0.4]
-    z_range = [0.01, 0.01]
+    z_range = [0.005, 0.005]
 
     ranges = np.vstack([x_range, y_range, z_range])
     stick_position = np.random.uniform(ranges[:, 0], ranges[:, 1])
@@ -306,7 +306,7 @@ def sample_greenbox_pose():
 def sample_bluebox_pose():
     x_range = [0.00, 0.15]
     y_range = [0.30, 0.4]
-    z_range = [0.01, 0.01]
+    z_range = [0.005, 0.005]
 
     ranges = np.vstack([x_range, y_range, z_range])
     socket_position = np.random.uniform(ranges[:, 0], ranges[:, 1])
@@ -318,7 +318,7 @@ def sample_bluebox_pose():
 def sample_redbox1_pose():
     x_range = [-0.30, -0.25]
     y_range = [0.30, 0.4]
-    z_range = [0.01, 0.01]
+    z_range = [0.005, 0.005]
 
     ranges = np.vstack([x_range, y_range, z_range])
     cube_position = np.random.uniform(ranges[:, 0], ranges[:, 1])
@@ -329,7 +329,7 @@ def sample_redbox1_pose():
 def sample_redbox2_pose():
     x_range = [-0.40, -0.35]
     y_range = [0.30, 0.4]
-    z_range = [0.01, 0.01]
+    z_range = [0.005, 0.005]
 
     ranges = np.vstack([x_range, y_range, z_range])
     cube_position = np.random.uniform(ranges[:, 0], ranges[:, 1])
@@ -340,7 +340,7 @@ def sample_redbox2_pose():
 def sample_greenbox1_pose():
     x_range = [-0.20,-0.05]
     y_range = [0.30, 0.4]
-    z_range = [0.01, 0.01]
+    z_range = [0.005, 0.005]
 
     ranges = np.vstack([x_range, y_range, z_range])
     stick_position = np.random.uniform(ranges[:, 0], ranges[:, 1])
@@ -351,7 +351,7 @@ def sample_greenbox1_pose():
 def sample_bluebox1_pose():
     x_range = [0.00, 0.15]
     y_range = [0.30, 0.4]
-    z_range = [0.01, 0.01]
+    z_range = [0.005, 0.005]
 
     ranges = np.vstack([x_range, y_range, z_range])
     socket_position = np.random.uniform(ranges[:, 0], ranges[:, 1])

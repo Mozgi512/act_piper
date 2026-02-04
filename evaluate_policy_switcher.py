@@ -13,6 +13,8 @@ import torch
 from einops import rearrange
 import IPython
 import cv2
+import collections
+from piper_constants import DT
 
 # Add detr to path
 cwd = os.getcwd()
@@ -98,6 +100,12 @@ class TaskScheduler:
                 len_assembly = self.config.get('C_assembly', 0)
                 len_place = self.config.get('C_place', 0)
                 
+                # Unified C duration (No split requested)
+                if len_assembly == 0 and len_place == 0 and 'C' in self.config:
+                    total_c = self.config['C']
+                    len_assembly = total_c
+                    len_place = 0
+                
                 # Sync Point
                 start_coop = max(time_l, time_r)
                 
@@ -119,10 +127,23 @@ class TaskScheduler:
                 self.timeline_right.append({'start': start_coop, 'end': end_assembly, 'type': 'COOP', 'info': 'Phase 1 (Assembly)'})
                 
                 # Phase 2: Placement (Base stays COOP, Free becomes INDEP)
+                end_place = end_assembly + len_place
                 # Global Mode remains COOP until end_place
                 self.mode_schedule[end_assembly] = self.MODE_COOP
                 self.mode_schedule[end_place] = self.MODE_INDEPENDENT
                 
+                
+                # Lookahead for Role Assignment
+                base_arm = 'right' # Default
+                if i + 1 < n:
+                    next_char = self.sequence_str[i+1]
+                    if next_char == 'L':
+                        base_arm = 'right'
+                    elif next_char == 'R':
+                        base_arm = 'left'
+                    else:
+                        base_arm = 'right'
+
                 if base_arm == 'left':
                     # Left blocked (Base) -> Continues COOP
                     # Right free (Top) -> Goes INDEP immediately
@@ -283,35 +304,116 @@ def remove_cubes(physics, indices):
             pass
 
 def get_touched_cubes_per_arm(physics):
-    """Return dict of sets of cube indices contacted by each gripper."""
+    """Return dict of sets of cube indices contacted by each gripper (based on link body names)."""
     touched = {'left': set(), 'right': set()}
-    for i_contact in range(physics.data.ncon):
-        id_geom_1 = physics.data.contact[i_contact].geom1
-        id_geom_2 = physics.data.contact[i_contact].geom2
-        name_1 = physics.model.id2name(id_geom_1, 'geom')
-        name_2 = physics.model.id2name(id_geom_2, 'geom')
+    for i in range(physics.data.ncon):
+        id1, id2 = physics.data.contact[i].geom1, physics.data.contact[i].geom2
         
-        if name_1 is None or name_2 is None: continue
-        
-        # Check pair (gripper, cube)
-        for n1, n2 in [(name_1, name_2), (name_2, name_1)]:
-            # Check for grippers using known keywords in geom names
-            # Left: l_gripper_finger, Right: r_gripper_finger
-            arm = None
-            if 'l_gripper_finger' in n1: arm = 'left'
-            elif 'r_gripper_finger' in n1: arm = 'right'
+        for g_id, o_id in [(id1, id2), (id2, id1)]:
+            # Link body check (much more robust than geom names)
+            b_id = physics.model.geom_bodyid[g_id]
+            b_name = physics.model.id2name(b_id, 'body')
+            if b_name is None: continue
             
-            if arm and 'cube_' in n2:
-                # Extract index
-                try:
-                    parts = n2.split('_')
-                    # Format usually cube_N or cube_N_something
-                    idx_str = parts[1]
-                    idx = int(idx_str)
-                    touched[arm].add(idx)
-                except:
-                    pass
+            arm = None
+            if b_name in ['l_link7', 'l_link8']: arm = 'left'
+            elif b_name in ['r_link7', 'r_link8']: arm = 'right'
+            
+            if arm:
+                o_name = physics.model.id2name(o_id, 'geom')
+                if o_name and o_name.startswith('cube_'):
+                    try:
+                        c_idx = int(o_name.split('_')[1])
+                        touched[arm].add(c_idx)
+                    except: pass
     return touched
+
+def get_grasped_cubes(physics):
+    """Return dict of sets of cube indices currently grasped (contact with multiple fingers)."""
+    grasped = {'left': set(), 'right': set()}
+    # Track which fingers touch which cube
+    finger_hits = {'left': collections.defaultdict(set), 'right': collections.defaultdict(set)}
+    
+    for i in range(physics.data.ncon):
+        id1, id2 = physics.data.contact[i].geom1, physics.data.contact[i].geom2
+        for g_id, o_id in [(id1, id2), (id2, id1)]:
+            b_id = physics.model.geom_bodyid[g_id]
+            b_name = physics.model.id2name(b_id, 'body')
+            if b_name is None: continue
+            
+            arm, side = None, None
+            if b_name == 'l_link7': arm, side = 'left', '1'
+            elif b_name == 'l_link8': arm, side = 'left', '2'
+            elif b_name == 'r_link7': arm, side = 'right', '1'
+            elif b_name == 'r_link8': arm, side = 'right', '2'
+            
+            if arm:
+                o_name = physics.model.id2name(o_id, 'geom')
+                if o_name and o_name.startswith('cube_'):
+                    try:
+                        c_idx = int(o_name.split('_')[1])
+                        finger_hits[arm][c_idx].add(side)
+                    except: pass
+                
+    for arm in ['left', 'right']:
+        for c_idx, sides in finger_hits[arm].items():
+            if len(sides) >= 2:
+                grasped[arm].add(c_idx)
+    return grasped
+
+def get_proximity_cubes(physics, threshold=0.06):
+    """Return set of cube indices within threshold distance of any gripper link."""
+    nearby = set()
+    gripper_bodies = ['l_link7', 'l_link8', 'r_link7', 'r_link8']
+    gripper_xpos = []
+    for bn in gripper_bodies:
+        try:
+            bid = physics.model.name2id(bn, 'body')
+            gripper_xpos.append(physics.data.xpos[bid])
+        except: pass
+    
+    if not gripper_xpos: return nearby
+    
+    for i in range(10): # Check all 10 potential cubes
+        try:
+            c_name = f'cube_{i}'
+            c_bid = physics.model.name2id(c_name, 'body')
+            c_xpos = physics.data.xpos[c_bid]
+            
+            # Check dist to any gripper part
+            for gx in gripper_xpos:
+                dist = np.linalg.norm(c_xpos - gx)
+                if dist < threshold:
+                    nearby.add(i)
+                    break
+        except: pass
+    return nearby
+
+def get_cubes_on_target_geoms(physics, target_names):
+    """Return set of cube indices contacting any of the specified geoms."""
+    on_target = set()
+    if isinstance(target_names, str):
+        target_names = [target_names]
+        
+    for i in range(physics.data.ncon):
+        id1, id2 = physics.data.contact[i].geom1, physics.data.contact[i].geom2
+        name1 = physics.model.id2name(id1, 'geom')
+        name2 = physics.model.id2name(id2, 'geom')
+        
+        if name1 is None or name2 is None: continue
+        
+        for n1, n2 in [(name1, name2), (name2, name1)]:
+            # Check if n1 is in our target list (exact match or startswith for robustness?)
+            # User said "cushion1_mesh", sim uses "cushion1" probably. 
+            # Let's match exact or substring if "mesh" is involved?
+            # Safe bet: Check if n1 is in list.
+            if n1 in target_names:
+                if n2.startswith('cube_'):
+                    try:
+                        c_idx = int(n2.split('_')[1])
+                        on_target.add(c_idx)
+                    except: pass
+    return on_target
 
 def load_policy_and_stats(ckpt_dir, policy_class, args, override_state_dim=None, override_arm=None):
     state_dim = 14
@@ -341,11 +443,19 @@ def load_policy_and_stats(ckpt_dir, policy_class, args, override_state_dim=None,
     if override_arm:
         policy_config['arm'] = override_arm
 
-    stats_path = os.path.join(ckpt_dir, f'dataset_stats.pkl')
+    if os.path.isfile(ckpt_dir):
+        # User provided a direct file path (e.g. policy_epoch_1000.ckpt)
+        ckpt_path = ckpt_dir
+        parent_dir = os.path.dirname(ckpt_dir)
+        stats_path = os.path.join(parent_dir, f'dataset_stats.pkl')
+    else:
+        # User provided a directory, defaulting to policy_best.ckpt
+        stats_path = os.path.join(ckpt_dir, f'dataset_stats.pkl')
+        ckpt_path = os.path.join(ckpt_dir, 'policy_best.ckpt')
+
     with open(stats_path, 'rb') as f:
         stats = pickle.load(f)
 
-    ckpt_path = os.path.join(ckpt_dir, 'policy_best.ckpt')
     policy = make_policy(policy_class, policy_config)
     loaded_state_dict = torch.load(ckpt_path)
     
@@ -417,9 +527,19 @@ def main(args):
         
         # Dummy placeholders for legacy to avoid errors (though not sure if needed if logic flows right)
         policy_left = None
-        stats_left = None
+        stats_left = {
+            'action_mean': stats_e2e['action_mean'][:7],
+            'action_std': stats_e2e['action_std'][:7],
+            'qpos_mean': stats_e2e['qpos_mean'][:7],
+            'qpos_std': stats_e2e['qpos_std'][:7]
+        }
         policy_right = None
-        stats_right = None
+        stats_right = {
+            'action_mean': stats_e2e['action_mean'][7:],
+            'action_std': stats_e2e['action_std'][7:],
+            'qpos_mean': stats_e2e['qpos_mean'][7:],
+            'qpos_std': stats_e2e['qpos_std'][7:]
+        }
         
     else:
         # Standard Switching Mode
@@ -479,8 +599,21 @@ def main(args):
         'C_place': int(args.step_c * 0.4) if args.step_c else 220,    
         'Single': 200      
     }
+
+    # Override for E2E mode to prevent premature stop
+    if args.ckpt_e2e:
+        duration_config['I'] = 1000
+        duration_config['C_assembly'] = 1000
+        duration_config['C_place'] = 1000
+        duration_config['Single'] = 1000
     
     scheduler = TaskScheduler(command_queue, duration_config)
+    
+    # Override max steps if user requested
+    if args.max_timesteps:
+        scheduler.max_timesteps = args.max_timesteps
+        print(f"Overriding scheduler max timesteps to {args.max_timesteps}")
+
     scheduler.print_schedule()
     
     # Calculate required time limit from Scheduler
@@ -519,19 +652,21 @@ def main(args):
     total_rewards = []
     
     # Prepare Home Pose for Holding
-    # We need START_ARM_POSE. Assuming it is imported.
-    # If not, let's play safe and init zero, but START_ARM_POSE is standard.
-    home_pose = np.zeros(14)
-    # Safe fallback if START_ARM_POSE not in scope, but it should be based on policy_switcher copy
     try:
         from piper_constants import START_ARM_POSE
-        home_pose[:6] = START_ARM_POSE[:6]
-        home_pose[7:13] = START_ARM_POSE[7:13]
+        home_pose = np.array(START_ARM_POSE)
     except ImportError:
         print("Warning: START_ARM_POSE not found. Using default zeros for Hold.")
+        home_pose = np.zeros(14)
     
+    # 2-second delay logic for goal plate
+    # DT is imported from piper_constants at top of file
+    GOAL_DELAY_STEPS = int(2.0 / DT) 
+
     try:
         while episode_count < args.num_rollouts:
+            # Reset tracking per episode
+            touching_goal_start_step = {} 
             # Reset Environment
             ts = env.reset()
             t = 0
@@ -676,6 +811,7 @@ def main(args):
                 if args.save_video:
                      # User requested 480p (640x480) for video, but obs is 320x240.
                      # We must re-render for high quality video.
+                     onscreen_cam = 'top'
                      video_frame_highres = env._physics.render(height=240, width=320, camera_id=onscreen_cam)
                      video_frames.append(video_frame_highres) 
                 
@@ -699,6 +835,11 @@ def main(args):
                         else:
                              plan_l_state = 'COOP' if current_mode == MODE_COOP else 'INDEP'
                              plan_r_state = 'COOP' if current_mode == MODE_COOP else 'INDEP'
+                             
+                        # Force COOP planning path if E2E (Single Policy)
+                        if args.ckpt_e2e:
+                            plan_l_state = 'COOP'
+                            plan_r_state = 'COOP'
 
                         # 1. Query Dual (Coop)
                         # NOTE: In eval, we assume 'policy_dual' handles COOP tasks.
@@ -747,12 +888,18 @@ def main(args):
 
                 # --- Execute / Combine ---
                 # Determine state again for execution (same as plan)
+                # Determine state again for execution (same as plan)
                 if scheduler:
                      l_state, _ = scheduler.get_arm_state(t, 'left')
                      r_state, _ = scheduler.get_arm_state(t, 'right')
                 else:
                      l_state = 'COOP' if current_mode == MODE_COOP else 'INDEP'
                      r_state = 'COOP' if current_mode == MODE_COOP else 'INDEP'
+                
+                # Force COOP execution path if E2E (Single Policy)
+                if args.ckpt_e2e:
+                    l_state = 'COOP'
+                    r_state = 'COOP'
                 
                 # ... get raw actions ...
                 
@@ -841,9 +988,9 @@ def main(args):
                 hold_r = scheduler.should_hold(t, 'right')
                 
                 if hold_l:
-                    target_qpos[:7] = home_pose[:7]
+                    target_qpos[:7] = qpos_numpy[:7]
                 if hold_r:
-                    target_qpos[7:] = home_pose[7:]
+                    target_qpos[7:] = qpos_numpy[7:]
 
                 ts = env.step(target_qpos)
                 current_reward = env._task.get_reward(env.physics)
@@ -854,26 +1001,110 @@ def main(args):
                 acc_touched_left.update(new_touches['left'])
                 acc_touched_right.update(new_touches['right'])
                 
-                # Check for task completion & Remove objects
-                # Left
-                ended_task_l = scheduler.get_task_ending_at(t + 1, 'left') # t increments below
-                if ended_task_l:
-                    if 'Phase 1' not in ended_task_l['info']:
-                        print(f"[Step {t}] Left Task Ended ({ended_task_l['info']}). Removing objects: {acc_touched_left}")
-                        remove_cubes(env.physics, list(acc_touched_left))
-                        acc_touched_left.clear()
-                    else:
-                        print(f"[Step {t}] Left Phase 1 Ended. Persisting objects {acc_touched_left} for Phase 2.")
+                # --- Goal Plate & Cushion Removal Logic ---
+                # Targets: Goal Plate + Cushions (User req: cushion1_mesh, cushion2_mesh)
+                # --- Goal Plate & Cushion Removal Logic ---
+                # Targets: Goal Plate + Cushions (User req: cushion1_mesh, cushion2_mesh)
+                removal_targets = ['goal_plate', 'cushion1', 'cushion1_mesh', 'cushion2', 'cushion2_mesh']
+                on_plate = get_cubes_on_target_geoms(env.physics, removal_targets)
                 
-                # Right
-                ended_task_r = scheduler.get_task_ending_at(t + 1, 'right')
-                if ended_task_r:
-                    if 'Phase 1' not in ended_task_r['info']:
-                        print(f"[Step {t}] Right Task Ended ({ended_task_r['info']}). Removing objects: {acc_touched_right}")
-                        remove_cubes(env.physics, list(acc_touched_right))
-                        acc_touched_right.clear()
-                    else:
-                        print(f"[Step {t}] Right Phase 1 Ended. Persisting objects {acc_touched_right} for Phase 2.")
+                # Register NEW contacts (Latch logic: Once touched, timer starts and never resets)
+                for c_idx in on_plate:
+                    if c_idx not in touching_goal_start_step:
+                         touching_goal_start_step[c_idx] = t
+                
+                # Check ALL pending removals (even if contact lost)
+                # Delay: 1.0s = 50 steps
+                REMOVAL_DELAY_STEPS = int(1.0 / DT)
+                to_remove_goal = []
+                
+                # Check all tracked items
+                for c_idx, start_t in list(touching_goal_start_step.items()):
+                     elapsed = t - start_t
+                     if elapsed > REMOVAL_DELAY_STEPS:
+                         # Safety check: Don't remove if currently gripped! (e.g. still placing)
+                         grasped = get_grasped_cubes(env.physics)
+                         if c_idx not in grasped['left'] and c_idx not in grasped['right']:
+                             to_remove_goal.append(c_idx)
+                
+                if to_remove_goal:
+                    print(f"[Step {t}] Removing objects on Goal Plate > 2s: {to_remove_goal}")
+                    remove_cubes(env.physics, to_remove_goal)
+                    for c in to_remove_goal:
+                         if c in touching_goal_start_step: del touching_goal_start_step[c]
+                         # Also remove from acc_touched to avoid double removal confusion
+                         if c in acc_touched_left: acc_touched_left.remove(c)
+                         if c in acc_touched_right: acc_touched_right.remove(c)
+
+                # Check for task completion & Remove objects
+                if scheduler:
+                    # Get current states to identify Base/Free arm for Phase 2
+                    cl_st, cl_inf = scheduler.get_arm_state(t + 1, 'left')
+                    cr_st, cr_inf = scheduler.get_arm_state(t + 1, 'right')
+
+                    # Left
+                    ended_task_l = scheduler.get_task_ending_at(t + 1, 'left')
+                    if ended_task_l:
+                        print(f"DEBUG: Task Ended for Left at step {t}: {ended_task_l['info']}")
+                        if 'Phase 1' not in ended_task_l['info']:
+                            grasped = get_grasped_cubes(env.physics)
+                            nearby = get_proximity_cubes(env.physics)
+                            currently_touching = get_touched_cubes_per_arm(env.physics)
+                            
+                            # Protection: Hold, Touch, or Proximity
+                            protected_any = (grasped['left'] | grasped['right'] | 
+                                             currently_touching['left'] | currently_touching['right'] | 
+                                             nearby)
+                            
+                            to_remove = acc_touched_left - protected_any
+                            
+                            if to_remove:
+                                print(f"[Step {t}] Left Task Ended. Removing objects: {to_remove}")
+                                remove_cubes(env.physics, list(to_remove))
+                            else:
+                                print(f"[Step {t}] Left Task Ended. No objects to remove (Protected: {acc_touched_left & protected_any})")
+                                
+                            # Preserve protected items for future removal
+                            acc_touched_left = acc_touched_left & protected_any
+                        else:
+                            # Phase 1 Ended. Transfer objects to Base arm if this is Free arm.
+                            if 'Phase 2 (Place-Base)' in cl_inf:
+                                print(f"[Step {t}] Left Phase 1 Ended. Legally persisting {acc_touched_left} (Base Arm).")
+                            else:
+                                print(f"[Step {t}] Left Phase 1 Ended. Transferring {acc_touched_left} to Right (Base Arm).")
+                                acc_touched_right.update(acc_touched_left)
+                                acc_touched_left.clear()
+                    
+                    # Right
+                    ended_task_r = scheduler.get_task_ending_at(t + 1, 'right')
+                    if ended_task_r:
+                        print(f"DEBUG: Task Ended for Right at step {t}: {ended_task_r['info']}")
+                        if 'Phase 1' not in ended_task_r['info']:
+                            grasped = get_grasped_cubes(env.physics)
+                            nearby = get_proximity_cubes(env.physics)
+                            currently_touching = get_touched_cubes_per_arm(env.physics)
+
+                            protected_any = (grasped['left'] | grasped['right'] | 
+                                             currently_touching['left'] | currently_touching['right'] | 
+                                             nearby)
+                            
+                            to_remove = acc_touched_right - protected_any
+
+                            if to_remove:
+                                print(f"[Step {t}] Right Task Ended. Removing objects: {to_remove}")
+                                remove_cubes(env.physics, list(to_remove))
+                            else:
+                                print(f"[Step {t}] Right Task Ended. No objects to remove (Protected: {acc_touched_right & protected_any})")
+                                
+                            acc_touched_right = acc_touched_right & protected_any
+                        else:
+                            # Phase 1 Ended. Transfer objects to Base arm if this is Free arm.
+                            if 'Phase 2 (Place-Base)' in cr_inf:
+                                print(f"[Step {t}] Right Phase 1 Ended. Legally persisting {acc_touched_right} (Base Arm).")
+                            else:
+                                print(f"[Step {t}] Right Phase 1 Ended. Transferring {acc_touched_right} to Left (Base Arm).")
+                                acc_touched_left.update(acc_touched_right)
+                                acc_touched_right.clear()
                 
                 step_in_chunk += 1
                 t += 1
@@ -950,6 +1181,9 @@ if __name__ == '__main__':
     parser.add_argument('--save_video', action='store_true', help='Save execution video')
     parser.add_argument('--num_rollouts', action='store', type=int, default=1, help='Number of evaluation episodes')
     parser.add_argument('--episode_len', action='store', type=int, default=None, help='Override episode length')
+    parser.add_argument('--max_timesteps', action='store', type=int, default=None, help='Hard limit on episode steps')
+    parser.add_argument('--sync_arms', action='store_true', help='Enable Sync Wait logic (Hold) before Cooperative tasks')
+    parser.add_argument('--reset_on_subtask', action='store_true', help='Reset independent policy buffers on subtask switch')
     
     args = parser.parse_args()
     main(args)

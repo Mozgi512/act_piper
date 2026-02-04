@@ -66,6 +66,12 @@ class TaskScheduler:
                 len_assembly = self.config.get('C_assembly', 0)
                 len_place = self.config.get('C_place', 0)
                 
+                # Unified C duration (No split requested)
+                if len_assembly == 0 and len_place == 0 and 'C' in self.config:
+                    total_c = self.config['C']
+                    len_assembly = total_c
+                    len_place = 0
+                
                 # Sync Point
                 start_coop = max(time_l, time_r)
                 
@@ -146,10 +152,9 @@ def main():
     
     # Standard Durations (Modify here if needed)
     config = {
-        'I': 380,          # Independent (Parallel L+R)
-        'C_assembly': 400, # Coop Phase 1
-        'C_place': 120,    # Coop Phase 2
-        'Single': 380      # Single Arm (L or R)
+        'I': 380,
+        'C': 520, 
+        'Single': 380
     }
     
     print(f"\nRunning Scheduler Test for Sequence: {sequence}")
