@@ -118,15 +118,26 @@ def run_single_evaluation_wrapper(args):
     return run_single_evaluation(*args)
 
 def evaluate_checkpoints():
+    import argparse
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--epochs', nargs='+', type=int, help='Specific epochs to evaluate (e.g. 1000 2000)')
+    parser.add_argument('--policy_last', action='store_true', help='Evaluate policy_last.ckpt')
+    parser.add_argument('--no_best', action='store_true', help='Skip evaluation of policy_best.ckpt')
+    args = parser.parse_args()
+
+    # Default range
     start_epoch = 1000
     end_epoch = 39000
     step_size = 1000
-    num_workers = 3
+    num_workers = 4
     
     tasks = []
     
-    # Generate all epochs
-    all_epochs = list(range(start_epoch, end_epoch + 1, step_size))
+    # Determine epochs to evaluate
+    if args.epochs:
+        all_epochs = sorted(list(set(args.epochs))) # Remove duplicates and sort
+    else:
+        all_epochs = list(range(start_epoch, end_epoch + 1, step_size))
     
     # Create "Scattered" order (Breadth-First Decomposition)
     ordered_indices = []
@@ -153,8 +164,13 @@ def evaluate_checkpoints():
         if epoch not in seen_epochs:
             tasks.append((epoch, f"policy_epoch_{epoch}_seed_0.ckpt"))
             seen_epochs.add(epoch)
-            
-    tasks.append(("best", "policy_best.ckpt"))
+    
+    # Add Special Checkpoints
+    if not args.no_best:
+        tasks.append(("best", "policy_best.ckpt"))
+        
+    if args.policy_last:
+        tasks.append(("last", "policy_last.ckpt"))
     
     results = []
     

@@ -8,6 +8,7 @@ from copy import deepcopy
 import pickle
 import argparse
 import json
+import csv
 import collections
 import matplotlib.pyplot as plt
 import numpy as np
@@ -404,6 +405,60 @@ def get_proximity_cubes(physics, threshold=0.06):
         except: pass
     return nearby
 
+def get_cubes_touching_targets(physics, target_geoms):
+    """Return set of cube indices recursively touching any of the target geoms."""
+    # 1. Gather all contacts
+    contacts = []
+    for i in range(physics.data.ncon):
+        id1, id2 = physics.data.contact[i].geom1, physics.data.contact[i].geom2
+        name1 = physics.model.id2name(id1, 'geom')
+        name2 = physics.model.id2name(id2, 'geom')
+        if name1 and name2:
+            contacts.append((name1, name2))
+
+    # 2. Find base objects touching targets
+    touching_targets = set()
+    for n1, n2 in contacts:
+        for a, b in [(n1, n2), (n2, n1)]:
+            if a in target_geoms and b.startswith('cube_'):
+                try:
+                    c_idx = int(b.split('_')[1])
+                    touching_targets.add(c_idx)
+                except: pass
+
+    # 3. Propagate (Transitive Closure) for stacked objects
+    changed = True
+    while changed:
+        changed = False
+        for n1, n2 in contacts:
+            c1_idx = -1
+            c2_idx = -1
+            
+            if n1.startswith('cube_'):
+                try: c1_idx = int(n1.split('_')[1])
+                except: pass
+            
+            if n2.startswith('cube_'):
+                try: c2_idx = int(n2.split('_')[1])
+                except: pass
+                
+            if c1_idx != -1 and c2_idx != -1:
+                # If one is touching, the other is too
+                if c1_idx in touching_targets and c2_idx not in touching_targets:
+                    touching_targets.add(c2_idx)
+                    changed = True
+                elif c2_idx in touching_targets and c1_idx not in touching_targets:
+                    touching_targets.add(c1_idx)
+                    changed = True
+                    
+    return touching_targets
+
+def get_cubes_in_goal(physics):
+    return get_cubes_touching_targets(physics, {'goal_plate'})
+
+def get_cubes_on_cushion(physics):
+    return get_cubes_touching_targets(physics, {'cushion1'})
+
 def get_image_dual(ts, camera_names):
     curr_images = []
     for cam_name in camera_names:
@@ -686,7 +741,11 @@ def main(args):
         episode_returns = []
         highest_rewards = []
         
+        
         current_episode_rewards = []
+        acc_touched_left = set()
+        acc_touched_right = set()
+        pending_removal = set()
         
 
         
@@ -1222,24 +1281,39 @@ def main(args):
                         print(f"DEBUG: Left Touched(Acc): {acc_touched_left}")
                         print(f"DEBUG: Protected(Global): {protected_any}")
                         
-                        to_remove = acc_touched_left - protected_any
-                        
-                        if to_remove:
-                            print(f"[Step {t}] Left Task Ended. Removing objects: {to_remove}")
-                            remove_cubes(env.physics, list(to_remove))
-                        else:
-                            print(f"[Step {t}] Left Task Ended. No objects to remove (Protected: {acc_touched_left & protected_any})")
-                            
-                        # Preserve protected items for future removal if they are later dropped/left
-                        acc_touched_left = acc_touched_left & protected_any
+                        # Defer removal to pending set
+                        print(f"[Step {t}] Left Task Ended. Mark for removal: {acc_touched_left}")
+                        pending_removal.update(acc_touched_left)
+                        acc_touched_left.clear()
                     else:
-                        # Phase 1 Ended. Transfer objects to Base arm if this is Free arm.
-                        if 'Phase 2 (Place-Base)' in cl_inf:
-                            print(f"[Step {t}] Left Phase 1 Ended. Legally persisting {acc_touched_left} (Base Arm).")
-                        else:
-                            print(f"[Step {t}] Left Phase 1 Ended. Transferring {acc_touched_left} to Right (Base Arm).")
-                            acc_touched_right.update(acc_touched_left)
-                            acc_touched_left.clear()
+                        # Phase 1 Ended. 
+                        # Check if any accumulated objects are ALREADY in the goal (implying Task Done).
+                        in_goal_set = get_cubes_in_goal(env.physics)
+                        
+                        # Split acc_touched into 'Done' (in goal) and 'Transferred' (not in goal)
+                        done_cubes = acc_touched_left & in_goal_set
+                        transfer_cubes = acc_touched_left - done_cubes
+                        
+                        if done_cubes:
+                            print(f"[Step {t}] Left Phase 1 Ended. Found objects in Goal: {done_cubes}. Marking for removal.")
+                            pending_removal.update(done_cubes)
+                            
+                        # Transfer remainder
+                        if transfer_cubes:
+                            # Transfer objects to Base arm if this is Free arm.
+                            if 'Phase 2 (Place-Base)' in cl_inf:
+                                print(f"[Step {t}] Left Phase 1 Ended. Legally persisting {transfer_cubes} (Base Arm).")
+                            else:
+                                print(f"[Step {t}] Left Phase 1 Ended. Transferring {transfer_cubes} to Right (Base Arm).")
+                                acc_touched_right.update(transfer_cubes)
+                        
+                        acc_touched_left.clear()
+                        # Keep tracking persisted ones if any (logic above just clears, but update Right handles transfer)
+                        # If persisting ('Legally persisting'), we should technically restore them to acc_touched_left?
+                        # Current logic: 'acc_touched_left' is cleared.
+                        # If 'Legally persisting', we want to KEEP them in acc_touched_left.
+                        if 'Phase 2 (Place-Base)' in cl_inf and transfer_cubes:
+                             acc_touched_left.update(transfer_cubes)
                 
                 # Right
                 ended_task_r = scheduler.get_task_ending_at(t, 'right')
@@ -1257,23 +1331,52 @@ def main(args):
                         print(f"DEBUG: Right Touched(Acc): {acc_touched_right}")
                         print(f"DEBUG: Protected(Global): {protected_any}")
                         
-                        to_remove = acc_touched_right - protected_any
-
-                        if to_remove:
-                            print(f"[Step {t}] Right Task Ended. Removing objects: {to_remove}")
-                            remove_cubes(env.physics, list(to_remove))
-                        else:
-                            print(f"[Step {t}] Right Task Ended. No objects to remove (Protected: {acc_touched_right & protected_any})")
-                            
-                        acc_touched_right = acc_touched_right & protected_any
+                        # Defer removal to pending set
+                        print(f"[Step {t}] Right Task Ended. Mark for removal: {acc_touched_right}")
+                        pending_removal.update(acc_touched_right)
+                        acc_touched_right.clear()
                     else:
-                        # Phase 1 Ended. Transfer objects to Base arm if this is Free arm.
-                        if 'Phase 2 (Place-Base)' in cr_inf:
-                            print(f"[Step {t}] Right Phase 1 Ended. Legally persisting {acc_touched_right} (Base Arm).")
-                        else:
-                            print(f"[Step {t}] Right Phase 1 Ended. Transferring {acc_touched_right} to Left (Base Arm).")
-                            acc_touched_left.update(acc_touched_right)
-                            acc_touched_right.clear()
+                        # Phase 1 Ended.
+                        in_goal_set = get_cubes_in_goal(env.physics)
+                        done_cubes = acc_touched_right & in_goal_set
+                        transfer_cubes = acc_touched_right - done_cubes
+                        
+                        if done_cubes:
+                            print(f"[Step {t}] Right Phase 1 Ended. Found objects in Goal: {done_cubes}. Marking for removal.")
+                            pending_removal.update(done_cubes)
+                            
+                        if transfer_cubes:
+                            if 'Phase 2 (Place-Base)' in cr_inf:
+                                print(f"[Step {t}] Right Phase 1 Ended. Legally persisting {transfer_cubes} (Base Arm).")
+                            else:
+                                print(f"[Step {t}] Right Phase 1 Ended. Transferring {transfer_cubes} to Left (Base Arm).")
+                                acc_touched_left.update(transfer_cubes)
+                        
+                        acc_touched_right.clear()
+                        if 'Phase 2 (Place-Base)' in cr_inf and transfer_cubes:
+                             acc_touched_right.update(transfer_cubes)
+
+            # --- Deferred Removal Logic ---
+            # 1. Also catch any objects dropped on the cushion
+            on_cushion = get_cubes_on_cushion(env.physics)
+            if on_cushion:
+                 # print(f"[Step {t}] Detected objects on cushion: {on_cushion}. Marking for removal.")
+                 pending_removal.update(on_cushion)
+
+            if pending_removal:
+                 # Check protection status again for all pending items
+                 grasped = get_grasped_cubes(env.physics)
+                 nearby = get_proximity_cubes(env.physics)
+                 currently_touching = get_touched_cubes_per_arm(env.physics)
+                 protected_any = (grasped['left'] | grasped['right'] | 
+                                  currently_touching['left'] | currently_touching['right'] | 
+                                  nearby)
+                 
+                 to_remove_now = pending_removal - protected_any
+                 if to_remove_now:
+                     print(f"[Step {t}] Deferred Removal. Removing objects: {to_remove_now}")
+                     remove_cubes(env.physics, list(to_remove_now))
+                     pending_removal -= to_remove_now
 
             
             # Reset logic matches imitate_episodes num_rollouts loop (conceptually)
@@ -1302,6 +1405,44 @@ def main(args):
                 highest_rewards.append(episode_highest_reward)
                 print(f"Episode {episode_count}: Return={episode_return}, MaxReward={episode_highest_reward}")
                 
+                # --- Per-Object Success CSV Logging ---
+                try:
+                    # Access the task instance (unwrapping if necessary, though direct access usually works in simulation)
+                    task = env._task
+                    
+                    # Prepare row data
+                    row = {'Episode': episode_count, 'TotalReward': episode_highest_reward, 'Return': episode_return}
+                    
+                    # Initialize all cubes as 0 (Fail)
+                    for c_i in range(10):
+                        row[f'Cube_{c_i}'] = 0
+                        
+                    # 1. Independent Successes
+                    if hasattr(task, 'completed_independent_cubes'):
+                        for c_i in task.completed_independent_cubes:
+                            row[f'Cube_{c_i}'] = 1
+                            
+                    # 2. Cooperative Successes
+                    if hasattr(task, 'completed_cooperative_pairs'):
+                        for g_idx, b_idx in task.completed_cooperative_pairs:
+                            row[f'Cube_{g_idx}'] = 1 # Green
+                            row[f'Cube_{b_idx}'] = 1 # Blue
+                            
+                    # Save to CSV
+                    csv_file = 'detailed_results.csv'
+                    file_exists = os.path.isfile(csv_file)
+                    fieldnames = ['Episode', 'TotalReward', 'Return'] + [f'Cube_{i}' for i in range(10)]
+                    
+                    with open(csv_file, mode='a' if file_exists else 'w', newline='') as f:
+                        writer = csv.DictWriter(f, fieldnames=fieldnames)
+                        if not file_exists:
+                            writer.writeheader()
+                        writer.writerow(row)
+                        print(f"Recorded detailed results for Episode {episode_count} to {csv_file}")
+                        
+                except Exception as e:
+                    print(f"Warning: Failed to save detailed CSV results: {e}")
+                
                 episode_count += 1
                 current_episode_rewards = []
 
@@ -1326,6 +1467,7 @@ def main(args):
                 # Reset touch tracking
                 acc_touched_left = set()
                 acc_touched_right = set()
+                pending_removal = set()
                     
         # Summary
         success_rate = np.mean(np.array(highest_rewards) == 4) # Assuming 4 is max reward for coop

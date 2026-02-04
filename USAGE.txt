@@ -371,7 +371,7 @@ python policy_switcher.py \
     --inherit_temporal_buffer \
     --warmup_steps 100 \
     --disable_hold \
-    --num_rollouts 50 --color_sequence rrrrgbgbrr
+    --num_rollouts 50 --color_sequence rrrrgbbgrr
 
 
     python3 independent_imitate_episodes.py \

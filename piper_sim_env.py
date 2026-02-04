@@ -542,6 +542,10 @@ class ManyCubesTask(BimanualPiperTask):
                          px = start_x - i * spacing
                          if i == 3:
                              px += 0.01
+                         if i == 8:
+                             px -= 0.05  
+                         if i == 9:
+                             px -= 0.05
                          py = np.random.uniform(0.35, 0.40)
                          poses[i] = np.array([px, py, 0.025, 1, 0, 0, 0])
                          print(f"Debug: Cube {i} initialized at X={px:.3f}, Y={py:.3f}")
