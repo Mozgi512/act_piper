@@ -114,6 +114,8 @@ def main(args):
                 if step % 5 == 0:
                     img_rgb = ts.observation['images']['top']
                     img_bgr = cv2.cvtColor(img_rgb, cv2.COLOR_RGB2BGR)
+                    # Draw vertical line at center (x=160) to distinguish left/right
+                    cv2.line(img_bgr, (160, 0), (160, 240), (0, 255, 0), 1)
                     cv2.imshow(window_name, img_bgr)
                     cv2.waitKey(1)
  
@@ -246,6 +248,8 @@ def main(args):
                 if t % 5 == 0:
                     img_rgb = ts.observation['images'][render_cam_name]
                     img_bgr = cv2.cvtColor(img_rgb, cv2.COLOR_RGB2BGR)
+                    # Draw vertical line at center (x=160) to distinguish left/right
+                    cv2.line(img_bgr, (160, 0), (160, 240), (0, 255, 0), 1)
                     cv2.imshow(window_name, img_bgr)
                     cv2.waitKey(1)
 

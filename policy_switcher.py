@@ -526,11 +526,22 @@ def load_policy_and_stats(ckpt_dir, policy_class, args, override_state_dim=None,
 
 
 
+    # Auto-resolve checkpoint path
+    real_ckpt_path = None
     if os.path.isfile(ckpt_dir):
-        # User provided a direct file path (e.g. policy_epoch_1000.ckpt)
-        ckpt_path = ckpt_dir
-        parent_dir = os.path.dirname(ckpt_dir)
-        stats_path = os.path.join(parent_dir, f'dataset_stats.pkl')
+        real_ckpt_path = ckpt_dir
+    elif ckpt_dir.endswith('.ckpt'):
+        # Try appending _seed_0 if not found
+        candidate = ckpt_dir.replace('.ckpt', '_seed_0.ckpt')
+        if os.path.isfile(candidate):
+            real_ckpt_path = candidate
+            print(f"Resolving {ckpt_dir} -> {real_ckpt_path}")
+    
+    if real_ckpt_path:
+        # User provided a direct file path
+        ckpt_path = real_ckpt_path
+        parent_dir = os.path.dirname(real_ckpt_path)
+        stats_path = os.path.join(parent_dir, 'dataset_stats.pkl')
     else:
         # User provided a directory, defaulting to policy_best.ckpt
         stats_path = os.path.join(ckpt_dir, f'dataset_stats.pkl')
@@ -1007,12 +1018,9 @@ def main(args):
                 plt.pause(DT)
 
             if args.save_video:
-                 # Capture for video even if onscreen_render is False? 
-                 # Usually users want both or just video. 
-                 # Let's reuse 'image' if available, else render.
-                 if not onscreen_render:
-                      image = env._physics.render(height=240, width=320, camera_id='top')
-                 video_frames.append(image) 
+                 # Render at 720p (1280x720) for video saving
+                 video_frame = env._physics.render(height=720, width=1280, camera_id='top')
+                 video_frames.append(video_frame) 
             
             obs = ts.observation
             qpos_numpy = np.array(obs['qpos'])
@@ -1385,12 +1393,14 @@ def main(args):
                 
                 if args.save_video and len(video_frames) > 0:
                      video_path = f'sim_policy_switch_ep{episode_count}.mp4'
-                     h, w, _ = video_frames[0].shape
+                     # 720p (1280x720) - Frames are already rendered at this resolution
+                     target_w, target_h = 1280, 720
                      fps = 30
-                     out = cv2.VideoWriter(video_path, cv2.VideoWriter_fourcc(*'mp4v'), fps, (w, h))
+                     out = cv2.VideoWriter(video_path, cv2.VideoWriter_fourcc(*'mp4v'), fps, (target_w, target_h))
                      for frame in video_frames:
                          # Mujoco returns RGB, OpenCV needs BGR
                          frame_bgr = frame[:, :, [2, 1, 0]]
+                         # No resize needed
                          out.write(frame_bgr)
                      out.release()
                      print(f"Saved video to {video_path}")

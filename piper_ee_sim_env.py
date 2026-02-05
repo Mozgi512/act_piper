@@ -597,7 +597,7 @@ class ManyCubesEETask(BimanualPiperEETask):
                  px = start_x - i * spacing
                  py = np.random.uniform(0.35, 0.40)
                  np.copyto(physics.data.qpos[qpos_adr : qpos_adr + 7], [px, py, 0.025, 1, 0, 0, 0])
-                 print(f"Debug EE: Cube {i} initialized at X={px:.3f}, Y={py:.3f}")
+                 # print(f"Debug EE: Cube {i} initialized at X={px:.3f}, Y={py:.3f}")
             else:
                  np.copyto(physics.data.qpos[qpos_adr : qpos_adr + 7], cube_pose)
             

@@ -76,7 +76,12 @@ def main(args):
         num_episodes = args['num_episodes']
     else:
         num_episodes = task_config['num_episodes']
-    episode_len = task_config['episode_len']
+
+    
+    if args['episode_len']:
+        episode_len = args['episode_len']
+    else:
+        episode_len = task_config['episode_len']
     camera_names = task_config['camera_names']
 
     # fixed parameters
@@ -721,6 +726,7 @@ if __name__ == '__main__':
     parser.add_argument('--num_episodes', action='store', type=int, help='number of episodes to use', required=False)
     parser.add_argument('--eval_epoch', action='store', type=int, help='specific epoch to eval', required=False)
     parser.add_argument('--load_ckpt', action='store', type=str, help='Checkpoint path to load weights from', default=None)
+    parser.add_argument('--episode_len', action='store', type=int, help='Override task episode length', required=False)
 
     # for ACT
     parser.add_argument('--kl_weight', action='store', type=int, help='KL Weight', required=False)

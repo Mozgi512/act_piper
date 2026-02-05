@@ -288,6 +288,7 @@ def process_episode(episode_idx, dataset_dir, camera_names, output_dirs, args):
             custom_seg_count += 1
         return custom_seg_count
     # --------------------------------------
+    segment_count = 0
     for seg in merged_segs:
         start, end, seg_type = seg['start'], seg['end'], seg['type']
         top_arm = seg['top_arm']
@@ -345,22 +346,9 @@ def process_episode(episode_idx, dataset_dir, camera_names, output_dirs, args):
             segment_count += 1
             
             # Assembly: [start : coop_split+10] (dual-arm until Top returns home)
-            if not args.get('only_coop_merged') and coop_split > 0:
-                adj_split_end = min(len(qpos), coop_split + 10)
-                
-                # Assembly is always 14-dim (both arms)
-                seg_qpos = qpos[start:adj_split_end]
-                seg_qvel = qvel[start:adj_split_end]
-                seg_action = action[start:adj_split_end]
-                seg_images = {k: v[start:adj_split_end] for k, v in images.items()}
-                
-                seg_folder_name = f'seg_{segment_count}'
-                seg_full_dir = os.path.join(output_dirs['cooperative_assembly'], seg_folder_name)
-                os.makedirs(seg_full_dir, exist_ok=True)
-                output_path = os.path.join(seg_full_dir, f'episode_{episode_idx}')
-                
-                save_hdf5(output_path, seg_qpos, seg_qvel, seg_action, seg_images, camera_names)
-                segment_count += 1
+            if False and not args.get('only_coop_merged') and coop_split > 0:
+                # Disabled saving of separate assembly segment
+                pass
                 
                 # Placement: [coop_split+10 : end+10] (single-arm Base only)
                 # Determine which arm is base (opposite of top)
@@ -403,10 +391,10 @@ def main(args):
     
     # Output directories
     output_dirs = {
-        'left_independent': dataset_dir + '_left_independent',
-        'right_independent': dataset_dir + '_right_independent',
-        'cooperative_assembly': dataset_dir + '_cooperative_assembly',
-        'cooperative_merged': dataset_dir + '_cooperative_merged',
+        'left_independent': os.path.join(dataset_dir, 'L'),
+        'right_independent': os.path.join(dataset_dir, 'R'),
+        'cooperative_assembly': None, # Disabled
+        'cooperative_merged': os.path.join(dataset_dir, 'C'),
         'custom_coop': dataset_dir + '_custom_coop',
     }
     

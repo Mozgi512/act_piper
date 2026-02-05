@@ -147,8 +147,8 @@ class InteractivePolicy(VariableCoopPolicy):
         if len(traj) > 1:
             end_t = traj[-2]['t']
             is_free = current_step >= end_t
-            if is_free and (self.left_was_busy if is_left else self.right_was_busy):
-                 print(f"DEBUG: {'Left' if is_left else 'Right'} arm became free at step {current_step} (last_t={end_t})")
+            #if is_free and (self.left_was_busy if is_left else self.right_was_busy):
+                # print(f"DEBUG: {'Left' if is_left else 'Right'} arm became free at step {current_step} (last_t={end_t})")
             return is_free
         return True # Only initial tail exists, arm is free
 
