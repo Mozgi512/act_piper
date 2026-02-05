@@ -248,31 +248,42 @@ def process_episode(episode_idx, dataset_dir, camera_names, output_dirs, args):
     
     # --- Custom ICRICL Extraction Logic ---
     if args.get('extract_custom_coop'):
-        coop_segs = [s for s in merged_segs if s['type'] == 'cooperative']
-        if len(coop_segs) < 2:
-            print(f"Episode {episode_idx}: Expected at least 2 coop tasks for custom extraction, found {len(coop_segs)}")
-            return 0
+        # Pass 1: Group segments into "Phases" 
+        # (Independent tasks are grouped, Cooperative tasks are kept separate)
+        phases = []
+        for s in merged_segs:
+            if not phases:
+                phases.append([s])
+            else:
+                last_phase = phases[-1]
+                if last_phase[0]['type'] == 'independent' and s['type'] == 'independent':
+                    last_phase.append(s)
+                else:
+                    phases.append([s])
         
-        # Range 1: Start to First Coop Phase 1 Start
-        ranges = [
-            {'start': 0, 'inner_end': coop_segs[0]['start'], 'name': 'initial_i'},
-            # Range 2: First Coop Phase 1 End to Second Coop Phase 1 Start
-            {'start': coop_segs[0]['coop_split'], 'inner_end': coop_segs[1]['start'], 'name': 'ri_middle'},
-            # Range 3: Second Coop Phase 1 End to Episode End
-            {'start': coop_segs[1]['coop_split'], 'inner_end': len(qpos), 'name': 'final_l'}
-        ]
-        
-        custom_seg_count = 0
-        for i, r in enumerate(ranges):
-            s_idx = r['start']
-            e_idx = r['inner_end']
+        # Pass 2: Process each Phase
+        custom_seg_idx = 0
+        for i, phase_segs in enumerate(phases):
+            is_coop = (phase_segs[0]['type'] == 'cooperative')
             
-            # Simple margin check
-            adj_start = max(0, s_idx)
-            adj_end = min(len(qpos), e_idx + 10)
+            p_start = phase_segs[0]['start']
+            p_end = phase_segs[-1]['end']
+            p_name = "cooperative" if is_coop else "independent"
+            
+            # Start logic for Independent:
+            if not is_coop and i > 0:
+                prev_phase = phases[i-1][0]
+                if prev_phase['type'] == 'cooperative':
+                    # Start from Phase 2 transition (coop_split)
+                    p_start = prev_phase['coop_split']
+            
+            # Margins
+            adj_start = max(0, p_start)
+            adj_end = min(len(qpos), p_end + 10)
             
             if adj_start >= adj_end: continue
             
+            # Extract 14-dim data (no masking)
             seg_qpos = qpos[adj_start:adj_end]
             seg_qvel = qvel[adj_start:adj_end]
             seg_action = action[adj_start:adj_end]
@@ -280,13 +291,15 @@ def process_episode(episode_idx, dataset_dir, camera_names, output_dirs, args):
             
             # Save into custom_coop folder
             out_root = output_dirs['custom_coop']
-            seg_folder = os.path.join(out_root, f'seg_{i}_{r["name"]}')
+            # Name: seg_X_type (e.g., seg_0_cooperative)
+            seg_folder = os.path.join(out_root, f'seg_{i}_{p_name}')
             os.makedirs(seg_folder, exist_ok=True)
             output_path = os.path.join(seg_folder, f'episode_{episode_idx}')
             
             save_hdf5(output_path, seg_qpos, seg_qvel, seg_action, seg_images, camera_names)
-            custom_seg_count += 1
-        return custom_seg_count
+            custom_seg_idx += 1
+            
+        return custom_seg_idx
     # --------------------------------------
     segment_count = 0
     for seg in merged_segs:

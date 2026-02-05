@@ -300,6 +300,7 @@ python3 shuffle_dataset.py --dataset_dir data/ICTICT/_cooperative_merged/trainin
     --use_cuda_graph \
     --validation_interval 100
 
+
     python3 independent_imitate_episodes.py \
     --task_name sim_dataset_i \
     --ckpt_dir ckpt/pickplace_right \
@@ -360,19 +361,20 @@ python policy_switcher.py \
 
 python policy_switcher.py \
     --task_name sim_many_cubes \
-    --ckpt_dual ckpt/c \
-    --ckpt_left ckpt/i_left \
-    --ckpt_right ckpt/i_right \
+    --ckpt_dual ckpt/c/policy_epoch_19000.ckpt \
+    --ckpt_left ckpt/i_left/policy_epoch_19000.ckpt \
+    --ckpt_right ckpt/i_right/policy_epoch_19000.ckpt \
     --policy_class ACT \
     --kl_weight 10 --chunk_size 100 --hidden_dim 512 --dim_feedforward 3200 \
-    --command_sequence IICCI \
+    --command_sequence IIC \
     --task_durations '{"I": 400, "C": 520}' \
     --onscreen_render \
     --inherit_temporal_buffer \
     --warmup_steps 100 \
     --disable_hold \
-    --num_rollouts 50 --color_sequence rrrrgbbgrr
+    --num_rollouts 50 --color_sequence rrrrgbbgrr --save_video
 
+/policy_epoch_20000.ckpt
 
     python3 independent_imitate_episodes.py \
     --task_name sim_many_cubes \

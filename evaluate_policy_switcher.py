@@ -1124,8 +1124,12 @@ def main(args):
             
             # Save Video
             if args.save_video and len(video_frames) > 0:
+                 video_dir = args.save_video if isinstance(args.save_video, str) else 'videos'
+                 if not os.path.exists(video_dir):
+                     os.makedirs(video_dir)
+                     
                  status_str = "success" if is_success else "fail"
-                 video_path = f'eval_ep{episode_count}_{status_str}_r{current_reward}.mp4'
+                 video_path = os.path.join(video_dir, f'eval_ep{episode_count}_{status_str}_r{current_reward}.mp4')
                  
                  # Detect shape from first frame
                  h, w, _ = video_frames[0].shape
@@ -1178,7 +1182,7 @@ if __name__ == '__main__':
     parser.add_argument('--onscreen_render', action='store_true')
     parser.add_argument('--inherit_temporal_buffer', action='store_true', help='Inherit temporal aggregation buffer on switch')
     parser.add_argument('--interleave_objects', action='store_true', help='Interleave last 4 objects among first 5 (High Difficulty)')
-    parser.add_argument('--save_video', action='store_true', help='Save execution video')
+    parser.add_argument('--save_video', nargs='?', const='videos', type=str, help='Save execution video (optional path, default "videos")')
     parser.add_argument('--num_rollouts', action='store', type=int, default=1, help='Number of evaluation episodes')
     parser.add_argument('--episode_len', action='store', type=int, default=None, help='Override episode length')
     parser.add_argument('--max_timesteps', action='store', type=int, default=None, help='Hard limit on episode steps')

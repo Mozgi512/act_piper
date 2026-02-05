@@ -26,6 +26,12 @@ python3 generate_dataset.py \
 
 #データの分割
 python3 process_async_data.py --dataset_dir data2/interval_data --num_episodes 30 --extract_custom_coop
+python3 process_async_data.py --dataset_dir data2/prev_data --num_episodes 30 --extract_custom_coop
+python3 process_async_data.py --dataset_dir data2/coherence_data --num_episodes 30 --extract_custom_coop
+
+python3 merge_datasets.py --input_dirs data2/interval_data_custom_coop data2/coherence_data_custom_coop data2/prev_data_custom_coop \
+    --output_dir data2/multitask_merge
+python3 pad_dataset.py --input_dir data2/multitask_merge --output_dir data2/multitask_padded
 
 # 協調データ可視化
 python3 visualize_episodes.py --dataset_dir  data2/interval_data_cooperative_merged/seg_2 --episode_idx 0
@@ -114,6 +120,22 @@ python3 imitate_episodes.py \
     --use_cuda_graph \
     --validation_interval 100 --num_episodes 90 --episode_len 2470
 
+python3 imitate_episodes.py \
+    --task_name sim_dataset_c \
+    --ckpt_dir ckpt2/multitask \
+    --dataset_dir data2/multitask_padded \
+    --policy_class ACT --kl_weight 10 --chunk_size 100 --hidden_dim 512 \
+    --batch_size 32 \
+    --dim_feedforward 3200 \
+    --num_epochs 40000 --lr 1e-5 \
+    --seed 0 \
+    --num_workers 4 \
+    --persistent_workers \
+    --prefetch_factor 2 \
+    --use_cache \
+    --use_cuda_graph \
+    --validation_interval 100 --num_episodes 420 --episode_len 1120
+
 #状態分類器の学習
 
 python3 train_state_classifier.py \
@@ -133,7 +155,7 @@ python3 state_switcher.py \
     --policy_class ACT --kl_weight 10 --chunk_size 100 --hidden_dim 512 --dim_feedforward 3200 \
     --inherit_temporal_buffer \
     --warmup_steps 100 --num_rollouts 50 \
-    --color_sequence rrbgrrrgbr --onscreen_render --episode_len 2500 --save_video
+    --color_sequence rrbgrrrgbr --onscreen_render --episode_len 2500 --save_video 
 
 
 python3 evaluate_policy_switcher.py \
@@ -144,3 +166,21 @@ python3 evaluate_policy_switcher.py \
     --commands "IIC" \
     --color_sequence rrbgrrrgbr \
     --onscreen_render --max_timesteps 2500 --save_video
+
+
+
+python3 imitate_episodes.py \
+    --task_name sim_dataset_c \
+    --ckpt_dir ckpt2/e2e_40000 \
+    --dataset_dir data2/e2e_padded \
+    --policy_class ACT --kl_weight 10 --chunk_size 100 --hidden_dim 512 \
+    --batch_size 32 \
+    --dim_feedforward 3200 \
+    --num_epochs 40000 --lr 1e-5 \
+    --seed 0 \
+    --num_workers 4 \
+    --persistent_workers \
+    --prefetch_factor 2 \
+    --use_cache \
+    --use_cuda_graph \
+    --validation_interval 100 --num_episodes 90 --episode_len 2470

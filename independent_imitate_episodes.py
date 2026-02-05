@@ -598,16 +598,41 @@ def train_bc(train_dataloader, val_dataloader, config):
     if config['load_ckpt']:
         ckpt_path = config['load_ckpt']
         print(f'Loading checkpoint from {ckpt_path}...')
-        state_dict = torch.load(ckpt_path)
-        loading_status = policy.load_state_dict(state_dict)
-        print(loading_status)
+        checkpoint = torch.load(ckpt_path)
+        
+        # Backward compatibility: check if it's a full checkpoint or just model weights
+        if 'model_state_dict' in checkpoint:
+            model_state_dict = checkpoint['model_state_dict']
+            loading_status = policy.load_state_dict(model_state_dict)
+            print(loading_status)
+            
+            # Since optimizer is created later, we'll need to load its state after creation
+            # We'll store it in a temp variable for now
+            loaded_optimizer_state = checkpoint.get('optimizer_state_dict')
+        else:
+            # Traditional format (only weights)
+            loading_status = policy.load_state_dict(checkpoint)
+            print(loading_status)
+            loaded_optimizer_state = None
+            
         print(f'Successfully loaded model weights from {ckpt_path}')
+    else:
+        loaded_optimizer_state = None
 
     if config.get('use_cuda_graph', False):
         print("Compiling model with torch.compile (mode='reduce-overhead')...")
         policy = torch.compile(policy, mode="reduce-overhead")
 
     optimizer = make_optimizer(policy_class, policy)
+    
+    # Load optimizer state if available
+    if loaded_optimizer_state is not None:
+        try:
+            optimizer.load_state_dict(loaded_optimizer_state)
+            print("Successfully loaded optimizer state.")
+        except Exception as e:
+            print(f"Warning: Failed to load optimizer state: {e}")
+
     scaler = torch.cuda.amp.GradScaler() # AMP scalar
 
     target_size = None
@@ -665,11 +690,18 @@ def train_bc(train_dataloader, val_dataloader, config):
 
         if epoch % 1000 == 0:
             ckpt_path = os.path.join(ckpt_dir, f'policy_epoch_{epoch}_seed_{seed}.ckpt')
-            torch.save(policy.state_dict(), ckpt_path)
+            torch.save({
+                'model_state_dict': policy.state_dict(),
+                'optimizer_state_dict': optimizer.state_dict(),
+            }, ckpt_path)
             plot_history(train_history, validation_history, epoch, ckpt_dir, seed)
+            save_history(train_history, validation_history, ckpt_dir, seed)
 
     ckpt_path = os.path.join(ckpt_dir, f'policy_last.ckpt')
-    torch.save(policy.state_dict(), ckpt_path)
+    torch.save({
+        'model_state_dict': policy.state_dict(),
+        'optimizer_state_dict': optimizer.state_dict(),
+    }, ckpt_path)
 
     best_epoch, min_val_loss, best_state_dict = best_ckpt_info
     ckpt_path = os.path.join(ckpt_dir, f'policy_epoch_{best_epoch}_seed_{seed}.ckpt')
@@ -678,8 +710,21 @@ def train_bc(train_dataloader, val_dataloader, config):
 
     # save training curves
     plot_history(train_history, validation_history, num_epochs, ckpt_dir, seed)
+    save_history(train_history, validation_history, ckpt_dir, seed)
 
     return best_ckpt_info
+
+
+def save_history(train_history, validation_history, ckpt_dir, seed):
+    # save training curves as pickle
+    train_path = os.path.join(ckpt_dir, f'train_history_seed_{seed}.pkl')
+    validation_path = os.path.join(ckpt_dir, f'validation_history_seed_{seed}.pkl')
+    
+    with open(train_path, 'wb') as f:
+        pickle.dump(train_history, f)
+    with open(validation_path, 'wb') as f:
+        pickle.dump(validation_history, f)
+    print(f'Saved history to {ckpt_dir}')
 
 
 def plot_history(train_history, validation_history, num_epochs, ckpt_dir, seed):

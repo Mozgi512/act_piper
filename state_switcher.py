@@ -564,6 +564,8 @@ def main(args):
         # State Tracking Initialization
         prev_plan_l_state = None
         prev_plan_r_state = None
+        last_active_l_state = None  # Track last non-HOLD state (INDEP or COOP)
+        last_active_r_state = None
         state_history_l = collections.deque(maxlen=10)
         state_history_r = collections.deque(maxlen=10)
         
@@ -644,52 +646,64 @@ def main(args):
                 if onscreen_render:
                     plt.title(f"Plan: L={plan_l_state} R={plan_r_state} (State: {STATE_NAMES[s_l]}/{STATE_NAMES[s_r]})")
 
-            # --- Buffer Inheritance / State Tracking Logic (MOVED HERE) ---
-            # Run BEFORE Inference/Aggregation to ensure buffers are ready for the switch.
+            # --- Buffer Inheritance / State Tracking Logic ---
             if args.inherit_temporal_buffer and temporal_agg:
                 # LEFT transition checking
-                if prev_plan_l_state is not None:
-                     if prev_plan_l_state == 'INDEP' and plan_l_state == 'COOP':
-                         input_actions = all_time_actions_left
-                         mask_val = ~torch.isnan(input_actions)
-                         input_safe = torch.nan_to_num(input_actions, nan=0.0)
-                         denorm_l = input_safe * stats_left_torch['action_std'] + stats_left_torch['action_mean']
-                         renorm_dual_l = (denorm_l - stats_dual_torch['action_mean'][:7]) / stats_dual_torch['action_std'][:7]
-                         val_inherit = renorm_dual_l.clone()
-                         val_inherit[~mask_val] = float('nan') 
-                         all_time_actions_dual[:, :, :7] = val_inherit
-                     
-                     elif prev_plan_l_state == 'COOP' and plan_l_state == 'INDEP':
-                         input_actions = all_time_actions_dual[:, :, :7]
-                         mask_val = ~torch.isnan(input_actions)
-                         input_safe = torch.nan_to_num(input_actions, nan=0.0)
-                         denorm_dual_l = input_safe * stats_dual_torch['action_std'][:7] + stats_dual_torch['action_mean'][:7]
-                         renorm_l = (denorm_dual_l - stats_left_torch['action_mean']) / stats_left_torch['action_std']
-                         val_inherit = renorm_l.clone()
-                         val_inherit[~mask_val] = float('nan')
-                         all_time_actions_left.copy_(val_inherit)
+                # Trigger inheritance if we ENTER a moving state (INDEP/COOP) from a DIFFERENT moving state (even with HOLD between)
+                if plan_l_state in ['INDEP', 'COOP']:
+                    if last_active_l_state is not None and last_active_l_state != plan_l_state:
+                        # Transition detected!
+                        if plan_l_state == 'COOP':
+                            # Inherit from INDEP
+                            # print(f"[Step {t}] Left Inheritance: {last_active_l_state} -> COOP")
+                            input_actions = all_time_actions_left
+                            mask_val = ~torch.isnan(input_actions)
+                            input_safe = torch.nan_to_num(input_actions, nan=0.0)
+                            denorm_l = input_safe * stats_left_torch['action_std'] + stats_left_torch['action_mean']
+                            renorm_dual_l = (denorm_l - stats_dual_torch['action_mean'][:7]) / stats_dual_torch['action_std'][:7]
+                            val_inherit = renorm_dual_l.clone()
+                            val_inherit[~mask_val] = float('nan') 
+                            all_time_actions_dual[:, :, :7] = val_inherit
+                        else:
+                            # Inherit from COOP
+                            # print(f"[Step {t}] Left Inheritance: {last_active_l_state} -> INDEP")
+                            input_actions = all_time_actions_dual[:, :, :7]
+                            mask_val = ~torch.isnan(input_actions)
+                            input_safe = torch.nan_to_num(input_actions, nan=0.0)
+                            denorm_dual_l = input_safe * stats_dual_torch['action_std'][:7] + stats_dual_torch['action_mean'][:7]
+                            renorm_l = (denorm_dual_l - stats_left_torch['action_mean']) / stats_left_torch['action_std']
+                            val_inherit = renorm_l.clone()
+                            val_inherit[~mask_val] = float('nan')
+                            all_time_actions_left.copy_(val_inherit)
+                    
+                    # Update last active moving state
+                    last_active_l_state = plan_l_state
                 
                 # RIGHT transition checking
-                if prev_plan_r_state is not None:
-                     if prev_plan_r_state == 'INDEP' and plan_r_state == 'COOP':
-                         input_actions = all_time_actions_right
-                         mask_val = ~torch.isnan(input_actions)
-                         input_safe = torch.nan_to_num(input_actions, nan=0.0)
-                         denorm_r = input_safe * stats_right_torch['action_std'] + stats_right_torch['action_mean']
-                         renorm_dual_r = (denorm_r - stats_dual_torch['action_mean'][7:]) / stats_dual_torch['action_std'][7:]
-                         val_inherit = renorm_dual_r.clone()
-                         val_inherit[~mask_val] = float('nan')
-                         all_time_actions_dual[:, :, 7:] = val_inherit
-
-                     elif prev_plan_r_state == 'COOP' and plan_r_state == 'INDEP':
-                         input_actions = all_time_actions_dual[:, :, 7:]
-                         mask_val = ~torch.isnan(input_actions)
-                         input_safe = torch.nan_to_num(input_actions, nan=0.0)
-                         denorm_dual_r = input_safe * stats_dual_torch['action_std'][7:] + stats_dual_torch['action_mean'][7:]
-                         renorm_r = (denorm_dual_r - stats_right_torch['action_mean']) / stats_right_torch['action_std']
-                         val_inherit = renorm_r.clone()
-                         val_inherit[~mask_val] = float('nan')
-                         all_time_actions_right.copy_(val_inherit)
+                if plan_r_state in ['INDEP', 'COOP']:
+                    if last_active_r_state is not None and last_active_r_state != plan_r_state:
+                         if plan_r_state == 'COOP':
+                             # print(f"[Step {t}] Right Inheritance: {last_active_r_state} -> COOP")
+                             input_actions = all_time_actions_right
+                             mask_val = ~torch.isnan(input_actions)
+                             input_safe = torch.nan_to_num(input_actions, nan=0.0)
+                             denorm_r = input_safe * stats_right_torch['action_std'] + stats_right_torch['action_mean']
+                             renorm_dual_r = (denorm_r - stats_dual_torch['action_mean'][7:]) / stats_dual_torch['action_std'][7:]
+                             val_inherit = renorm_dual_r.clone()
+                             val_inherit[~mask_val] = float('nan')
+                             all_time_actions_dual[:, :, 7:] = val_inherit
+                         else:
+                             # print(f"[Step {t}] Right Inheritance: {last_active_r_state} -> INDEP")
+                             input_actions = all_time_actions_dual[:, :, 7:]
+                             mask_val = ~torch.isnan(input_actions)
+                             input_safe = torch.nan_to_num(input_actions, nan=0.0)
+                             denorm_dual_r = input_safe * stats_dual_torch['action_std'][7:] + stats_dual_torch['action_mean'][7:]
+                             renorm_r = (denorm_dual_r - stats_right_torch['action_mean']) / stats_right_torch['action_std']
+                             val_inherit = renorm_r.clone()
+                             val_inherit[~mask_val] = float('nan')
+                             all_time_actions_right.copy_(val_inherit)
+                    
+                    last_active_r_state = plan_r_state
 
             
             obs = ts.observation
@@ -745,6 +759,21 @@ def main(args):
                          all_time_actions_right[[t], t:t+num_queries] = action_chunk_r
                      else:
                          current_action_chunk_right = action_chunk_r.squeeze(0).cpu().numpy()
+                
+                # 4. Anchor HOLD state in buffers to prevent jumps when restarting
+                if temporal_agg:
+                    if plan_l_state == 'HOLD':
+                        # Fill future with CURRENT pose (Stay Here intention)
+                        q_l_norm = pre_process_left(qpos_numpy[:7])
+                        q_l_norm_dual = (qpos_numpy[:7] - stats_dual['qpos_mean'][:7]) / stats_dual['qpos_std'][:7]
+                        all_time_actions_left[t, t:t+num_queries] = torch.from_numpy(q_l_norm).cuda()
+                        all_time_actions_dual[t, t:t+num_queries, :7] = torch.from_numpy(q_l_norm_dual).cuda()
+                        
+                    if plan_r_state == 'HOLD':
+                        q_r_norm = pre_process_right(qpos_numpy[7:14])
+                        q_r_norm_dual = (qpos_numpy[7:14] - stats_dual['qpos_mean'][7:14]) / stats_dual['qpos_std'][7:14]
+                        all_time_actions_right[t, t:t+num_queries] = torch.from_numpy(q_r_norm).cuda()
+                        all_time_actions_dual[t, t:t+num_queries, 7:] = torch.from_numpy(q_r_norm_dual).cuda()
                              
                 
                 # --- 1. Get Left Action ---
@@ -919,18 +948,27 @@ def main(args):
             if t >= max_timesteps:
                 print("Episode finished. Resetting...")
                 
+                # Save Video
                 if args.save_video and len(video_frames) > 0:
-                     video_path = f'sim_state_switch_ep{episode_count}.mp4'
-                     target_w, target_h = 1280, 720
+                     video_dir = args.save_video if isinstance(args.save_video, str) else 'videos'
+                     if not os.path.exists(video_dir):
+                         os.makedirs(video_dir)
+                         
+                     video_path = os.path.join(video_dir, f'episode_{episode_count}.mp4')
+                     
+                     # Detect shape from first frame
+                     target_h, target_w, _ = video_frames[0].shape
                      fps = 30
+                     # Use mp4v for mp4
                      out = cv2.VideoWriter(video_path, cv2.VideoWriter_fourcc(*'mp4v'), fps, (target_w, target_h))
                      for frame in video_frames:
+                         # RGB to BGR for CV2
                          frame_bgr = frame[:, :, [2, 1, 0]]
                          out.write(frame_bgr)
                      out.release()
                      print(f"Saved video to {video_path}")
-                     video_frames = []
-
+                
+                video_frames = [] # Clear for next episode
 
                 # Result recording
                 rewards = np.array(current_episode_rewards)
@@ -951,6 +989,8 @@ def main(args):
                 # Reset State Tracking
                 prev_plan_l_state = None
                 prev_plan_r_state = None
+                last_active_l_state = None
+                last_active_r_state = None
                 state_history_l.clear()
                 state_history_r.clear()
 
@@ -997,7 +1037,7 @@ if __name__ == '__main__':
     parser.add_argument('--lr', action='store', type=float, default=1e-5)
     
     parser.add_argument('--onscreen_render', action='store_true')
-    parser.add_argument('--save_video', action='store_true', help='Save execution video to mp4')
+    parser.add_argument('--save_video', nargs='?', const='videos', type=str, help='Save execution video to mp4 (optional path, default "videos")')
     parser.add_argument('--num_rollouts', action='store', type=int, default=1, help='Number of evaluation episodes')
     parser.add_argument('--color_sequence', action='store', type=str, default=None, help='Color sequence (e.g. rrgbrrgbrr)')
     parser.add_argument('--episode_len', action='store', type=int, default=None, help='Override task-specific episode length')
