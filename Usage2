@@ -145,6 +145,12 @@ python3 train_state_classifier.py \
     --batch_size 32
 
 #検証
+#perv
+rrbgrrrgbr
+#interval
+rgrbrbrgrr
+#coherence
+gbbgrrrrbg
 
 python3 state_switcher.py \
     --task_name sim_many_cubes \
@@ -155,18 +161,24 @@ python3 state_switcher.py \
     --policy_class ACT --kl_weight 10 --chunk_size 100 --hidden_dim 512 --dim_feedforward 3200 \
     --inherit_temporal_buffer \
     --warmup_steps 100 --num_rollouts 50 \
-    --color_sequence rrbgrrrgbr --onscreen_render --episode_len 2500 --save_video 
+    --color_sequence rrgbrrrbgr --onscreen_render --episode_len 2300 --save_video videos/hie_remix --save_stats_path results/hie_remix.csv
 
 
 python3 evaluate_policy_switcher.py \
     --task_name sim_many_cubes \
-    --ckpt_e2e ckpt2/e2e \
+    --ckpt_e2e ckpt2/e2e_40000 \
     --policy_class ACT --kl_weight 10 --chunk_size 100 --hidden_dim 512 --dim_feedforward 3200 \
-    --num_rollouts 50 \
-    --commands "IIC" \
-    --color_sequence rrbgrrrgbr \
-    --onscreen_render --max_timesteps 2500 --save_video
+    --num_rollouts 10 \
+    --color_sequence rrgbrrrbgr \
+    --max_timesteps 2300 --save_video videos/e2e --save_stats_path results/e2e_stats_10.csv
 
+python3 evaluate_policy_switcher.py \
+    --task_name sim_many_cubes \
+    --ckpt_e2e ckpt2/multitask \
+    --policy_class ACT --kl_weight 10 --chunk_size 100 --hidden_dim 512 --dim_feedforward 3200 \
+    --num_rollouts 10 \
+    --color_sequence rrgbrrrbgr \
+    --max_timesteps 2300 --save_video videos/multi --save_stats_path results/multi_stats_10.csv
 
 
 python3 imitate_episodes.py \
@@ -184,3 +196,32 @@ python3 imitate_episodes.py \
     --use_cache \
     --use_cuda_graph \
     --validation_interval 100 --num_episodes 90 --episode_len 2470
+
+
+
+    python3 state_switcher.py \
+    --task_name sim_many_cubes \
+    --ckpt_dual ckpt2/C/policy_best.ckpt \
+    --ckpt_left ckpt2/L/policy_best.ckpt \
+    --ckpt_right ckpt2/R/policy_best.ckpt \
+    --state_ckpt state_classifier_best.pth \
+    --policy_class ACT --kl_weight 10 --chunk_size 100 --hidden_dim 512 --dim_feedforward 3200 \
+    --inherit_temporal_buffer \
+    --warmup_steps 100 --num_rollouts 50 \
+    --color_sequence rrbgrrrgbr --episode_len 2300 --save_stats_path results/hie.csv
+
+python3 evaluate_policy_switcher.py \
+    --task_name sim_many_cubes \
+    --ckpt_e2e ckpt2/e2e_40000 \
+    --policy_class ACT --kl_weight 10 --chunk_size 100 --hidden_dim 512 --dim_feedforward 3200 \
+    --num_rollouts 50 \
+    --color_sequence rrbgrrrgbr \
+    --max_timesteps 2300 --save_stats_path results/e2e.csv
+
+python3 evaluate_policy_switcher.py \
+    --task_name sim_many_cubes \
+    --ckpt_e2e ckpt2/multitask \
+    --policy_class ACT --kl_weight 10 --chunk_size 100 --hidden_dim 512 --dim_feedforward 3200 \
+    --num_rollouts 50 \
+    --color_sequence rrbgrrrgbr \
+    --max_timesteps 2300 --save_stats_path results/multi.csv

@@ -13,6 +13,7 @@ import torch
 from einops import rearrange
 import IPython
 import cv2
+import csv
 import collections
 from piper_constants import DT
 
@@ -415,6 +416,126 @@ def get_cubes_on_target_geoms(physics, target_names):
                     except: pass
     return on_target
 
+def is_at_home(current_qpos, home_qpos, threshold=0.45):
+    """Check if arm is close to home pose."""
+    diff = np.abs(current_qpos - home_qpos)
+    return np.max(diff) < threshold
+
+def quaternion_multiply(q1, q2):
+    """Multiply two quaternions. q1 * q2"""
+    w1, x1, y1, z1 = q1
+    w2, x2, y2, z2 = q2
+    return np.array([
+        w1*w2 - x1*x2 - y1*y2 - z1*z2,
+        w1*x2 + x1*w2 + y1*z2 - z1*z2,
+        w1*y2 - x1*z2 + y1*w2 + z1*x2,
+        w1*z2 + x1*y2 - y1*x2 + z1*w2
+    ])
+
+def quaternion_inverse(q):
+    """Inverse of quaternion [w, x, y, z]"""
+    return np.array([q[0], -q[1], -q[2], -q[3]]) / np.dot(q, q)
+
+def rotate_vector_by_quaternion(v, q):
+    """Rotate vector v by quaternion q."""
+    q_vec = np.array([0, v[0], v[1], v[2]])
+    q_inv = quaternion_inverse(q)
+    temp = quaternion_multiply(q, q_vec)
+    result = quaternion_multiply(temp, q_inv)
+    return result[1:]
+
+def apply_magnet_logic(physics, magnetized_pairs, color_sequence=None):
+    """
+    Visual-Only Stacking Logic (Magnet).
+    """
+    # 1. Identify Green and Blue cubes
+    if color_sequence:
+        greens = [i for i, c in enumerate(color_sequence) if c == 'g']
+        blues = [i for i, c in enumerate(color_sequence) if c == 'b']
+    else:
+        greens = [8]
+        blues = [9]
+
+    # 2. Check for new magnetizations
+    threshold = 0.08 # 8cm
+    
+    for g_idx in greens:
+        if g_idx in magnetized_pairs: continue
+        
+        try:
+            g_body_id = physics.model.name2id(f'cube_{g_idx}', 'body')
+            g_pos = physics.data.xpos[g_body_id].copy()
+            g_quat = physics.data.xquat[g_body_id].copy()
+            
+            for b_idx in blues:
+                 b_body_id = physics.model.name2id(f'cube_{b_idx}', 'body')
+                 b_pos = physics.data.xpos[b_body_id].copy()
+                 b_quat = physics.data.xquat[b_body_id].copy()
+                 
+                 dist = np.linalg.norm(g_pos - b_pos)
+                 
+                 if dist < threshold:
+                     print(f"Magnet Triggered: Green {g_idx} -> Blue {b_idx} (Dist: {dist:.4f})")
+                     
+                     global_offset = g_pos - b_pos
+                     b_quat_inv = quaternion_inverse(b_quat)
+                     rel_pos = rotate_vector_by_quaternion(global_offset, b_quat_inv)
+                     rel_quat = quaternion_multiply(b_quat_inv, g_quat)
+                     
+                     magnetized_pairs[g_idx] = {
+                         'blue_idx': b_idx,
+                         'rel_pos': rel_pos,
+                         'rel_quat': rel_quat
+                     }
+                     
+                     # Disable Collision
+                     g_geom_id = physics.model.name2id(f'cube_{g_idx}', 'geom')
+                     physics.model.geom_contype[g_geom_id] = 0
+                     physics.model.geom_conaffinity[g_geom_id] = 0
+                     
+                     break
+        except Exception as e:
+            print(f"Magnet check error: {e}")
+            pass
+
+    # 3. Apply updates
+    for g_idx, data in magnetized_pairs.items():
+        try:
+            b_idx = data['blue_idx']
+            rel_pos = data['rel_pos']
+            rel_quat = data['rel_quat']
+            
+            b_body_id = physics.model.name2id(f'cube_{b_idx}', 'body')
+            b_pos = physics.data.xpos[b_body_id].copy()
+            b_quat = physics.data.xquat[b_body_id].copy()
+            
+            global_offset = rotate_vector_by_quaternion(rel_pos, b_quat)
+            target_pos = b_pos + global_offset
+            target_quat = quaternion_multiply(b_quat, rel_quat)
+            
+            start_idx = physics.model.name2id(f'cube_{g_idx}_joint', 'joint')
+            qpos_adr = physics.model.jnt_qposadr[start_idx]
+            
+            physics.data.qpos[qpos_adr : qpos_adr+3] = target_pos
+            physics.data.qpos[qpos_adr+3 : qpos_adr+7] = target_quat
+            
+            # Zero out velocity
+            qvel_adr = physics.model.jnt_dofadr[start_idx]
+            physics.data.qvel[qvel_adr : qvel_adr+6] = 0.0
+
+        except Exception as e:
+            print(f"Magnet apply error for G{g_idx}: {e}")
+            pass
+
+def reset_magnet_logic(physics, color_sequence=None):
+    """Restore collision for ALL cubes at reset."""
+    for i in range(10):
+        try:
+             geom_id = physics.model.name2id(f'cube_{i}', 'geom')
+             physics.model.geom_contype[geom_id] = 1
+             physics.model.geom_conaffinity[geom_id] = 1
+        except: pass
+
 def load_policy_and_stats(ckpt_dir, policy_class, args, override_state_dim=None, override_arm=None):
     state_dim = 14
     if override_state_dim:
@@ -690,7 +811,17 @@ def main(args):
             acc_touched_left = set()
             acc_touched_right = set()
             
+            # State History for Smart HOLD
+            last_active_l_state = None
+            last_active_r_state = None
+            
+            # Magnet Tracking
+            reset_magnet_logic(env.physics, color_seq)
+            magnetized_pairs = {}
+            
             current_mode = scheduler.get_mode_at_step(0)
+            if args.ckpt_e2e:
+                current_mode = MODE_COOP
             
             print(f"\nEpisode {episode_count} Started.")
             
@@ -748,6 +879,8 @@ def main(args):
                 # Auto-Switching Logic via Scheduler
                 # -------------------------------
                 new_mode = scheduler.get_mode_at_step(t)
+                if args.ckpt_e2e:
+                     new_mode = MODE_COOP
                 if new_mode != current_mode:
                     handle_mode_switch(t, current_mode, new_mode)
                 
@@ -832,14 +965,36 @@ def main(args):
                         if scheduler:
                              plan_l_state, _ = scheduler.get_arm_state(t, 'left')
                              plan_r_state, _ = scheduler.get_arm_state(t, 'right')
+                             # if t < 5: print(f"DEBUG Step {t}: Scheduler says {plan_l_state}")
                         else:
                              plan_l_state = 'COOP' if current_mode == MODE_COOP else 'INDEP'
                              plan_r_state = 'COOP' if current_mode == MODE_COOP else 'INDEP'
                              
                         # Force COOP planning path if E2E (Single Policy)
+                        # Force COOP planning path if E2E (Single Policy)
                         if args.ckpt_e2e:
                             plan_l_state = 'COOP'
                             plan_r_state = 'COOP'
+                            # if t < 5: print(f"DEBUG Step {t}: Overrode to COOP")
+                            
+                        # Update Last Active State (before overriding or after? Before is better as 'intent')
+                        if plan_l_state in ['COOP', 'INDEP']: last_active_l_state = plan_l_state
+                        if plan_r_state in ['COOP', 'INDEP']: last_active_r_state = plan_r_state
+                        
+                        # --- Smart HOLD Logic (Simulation) ---
+                        # In Evaluate, we don't have explicit HOLD from scheduler usually.
+                        # But if we did, or if we want to force return home at end?
+                        # For now, we only implement if plan says HOLD.
+                        
+                        if plan_l_state == 'HOLD':
+                             if not is_at_home(qpos_numpy[:7], home_pose[:7]):
+                                  if last_active_l_state: plan_l_state = last_active_l_state
+                        
+                        if plan_r_state == 'HOLD':
+                             if not is_at_home(qpos_numpy[7:14], home_pose[7:14]):
+                                  if last_active_r_state: plan_r_state = last_active_r_state
+
+                        # 1. Query Dual (Coop)
 
                         # 1. Query Dual (Coop)
                         # NOTE: In eval, we assume 'policy_dual' handles COOP tasks.
@@ -849,6 +1004,7 @@ def main(args):
                             curr_image = get_image_dual(ts, camera_names)
                             
                             action_chunk = policy_dual(qpos, curr_image)
+                            # if t < 5: print(f"DEBUG Step {t}: Policy executed. Chunk shape: {action_chunk.shape}")
                             if temporal_agg:
                                 all_time_actions_dual[[t], t:t+num_queries] = action_chunk
                             else:
@@ -909,6 +1065,10 @@ def main(args):
                         actions_for_curr_step = all_time_actions_dual[:, t]
                         actions_populated = torch.all(~torch.isnan(actions_for_curr_step), axis=1)
                         actions_for_curr_step = actions_for_curr_step[actions_populated]
+                        # if t < 5: 
+                        #      print(f"DEBUG Step {t}: Valid actions count: {len(actions_for_curr_step)}")
+                        #      if len(actions_for_curr_step) > 0:
+                        #           print(f"DEBUG Step {t}: Sample Action[0]: {actions_for_curr_step[0, :3].cpu().numpy()}...")
                         k = 0.01
                         weights_len = len(actions_for_curr_step)
                         exp_weights = np.exp(-k * (weights_len - 1 - np.arange(weights_len)))
@@ -987,6 +1147,10 @@ def main(args):
                 hold_l = scheduler.should_hold(t, 'left')
                 hold_r = scheduler.should_hold(t, 'right')
                 
+                if args.ckpt_e2e:
+                    hold_l = False
+                    hold_r = False
+                
                 if hold_l:
                     target_qpos[:7] = qpos_numpy[:7]
                 if hold_r:
@@ -994,6 +1158,9 @@ def main(args):
 
                 ts = env.step(target_qpos)
                 current_reward = env._task.get_reward(env.physics)
+                
+                # --- Magnet Logic ---
+                apply_magnet_logic(env.physics, magnetized_pairs, color_seq)
                 
                 # Track touched cubes
                 # Track touched cubes
@@ -1140,7 +1307,72 @@ def main(args):
                      out.write(frame_bgr)
                  out.release()
                  print(f"Saved video to {video_path}")
-            
+             
+            # Save Stats to CSV
+            if args.save_stats_path:
+                # Ensure directory exists with validation
+                stats_dir = os.path.dirname(args.save_stats_path)
+                if stats_dir and not os.path.exists(stats_dir):
+                    try:
+                        os.makedirs(stats_dir, exist_ok=True)
+                        print(f"Created directory: {stats_dir}")
+                    except OSError as e:
+                        print(f"Error creating directory {stats_dir}: {e}")
+
+                # Get Task Status
+                try:
+                    task = env._task
+                    col_seq = task.color_sequence if task.color_sequence else ['?']*10
+                    
+                    # Prepare Row Data
+                    row = {
+                        'Episode': episode_count,
+                        'Total_Reward': current_reward,
+                        'Is_Success': is_success
+                    }
+                    
+                    # Indices
+                    indep_set = getattr(task, 'completed_independent_cubes', set())
+                    coop_set = getattr(task, 'completed_cooperative_pairs', set())
+                    
+                    # Flatten coop set for easy lookup
+                    coop_indices = set()
+                    for (g, b) in coop_set:
+                        coop_indices.add(g)
+                        coop_indices.add(b)
+                        
+                    for i in range(10):
+                        c_code = col_seq[i] if i < len(col_seq) else '?'
+                        status = "Fail"
+                        reward = 0
+                        
+                        if i in indep_set:
+                            status = "Indep_Success"
+                            reward = 1
+                        elif i in coop_indices:
+                            status = "Coop_Success"
+                            reward = 2
+                        
+                        row[f'Obj{i}_Color'] = c_code
+                        row[f'Obj{i}_Status'] = status
+                        row[f'Obj{i}_Reward'] = reward
+                        
+                    # Write to CSV
+                    file_exists = os.path.isfile(args.save_stats_path)
+                    fieldnames = ['Episode', 'Total_Reward', 'Is_Success']
+                    for i in range(10):
+                        fieldnames.extend([f'Obj{i}_Color', f'Obj{i}_Status', f'Obj{i}_Reward'])
+                        
+                    with open(args.save_stats_path, 'a', newline='') as csvfile:
+                        writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
+                        if not file_exists:
+                            writer.writeheader()
+                        writer.writerow(row)
+                    print(f"Saved stats to {args.save_stats_path}")
+                    
+                except Exception as e:
+                    print(f"Error saving stats: {e}")
+
             episode_count += 1
 
         # --- Final Statistics ---
@@ -1166,7 +1398,7 @@ if __name__ == '__main__':
     parser.add_argument('--ckpt_independent_dual', action='store', type=str, required=False, help='Unified Dual policy for Independent tasks')
     parser.add_argument('--ckpt_e2e', action='store', type=str, required=False, help='Single E2E policy for ALL tasks (replaces others)')
     
-    parser.add_argument('--commands', action='store', type=str, help='Command sequence (e.g. ICI)', required=True)
+    parser.add_argument('--commands', action='store', type=str, help='Command sequence (e.g. ICI)', required=False)
     parser.add_argument('--color_sequence', action='store', type=str, help='Color sequence', default=None)
     parser.add_argument('--step_i', action='store', type=int, default=400, help='Steps for Independent task')
     parser.add_argument('--step_c', action='store', type=int, default=520, help='Steps for Cooperative task')
@@ -1183,6 +1415,7 @@ if __name__ == '__main__':
     parser.add_argument('--inherit_temporal_buffer', action='store_true', help='Inherit temporal aggregation buffer on switch')
     parser.add_argument('--interleave_objects', action='store_true', help='Interleave last 4 objects among first 5 (High Difficulty)')
     parser.add_argument('--save_video', nargs='?', const='videos', type=str, help='Save execution video (optional path, default "videos")')
+    parser.add_argument('--save_stats_path', action='store', type=str, help='Path to save episode statistics CSV')
     parser.add_argument('--num_rollouts', action='store', type=int, default=1, help='Number of evaluation episodes')
     parser.add_argument('--episode_len', action='store', type=int, default=None, help='Override episode length')
     parser.add_argument('--max_timesteps', action='store', type=int, default=None, help='Hard limit on episode steps')

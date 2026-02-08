@@ -592,15 +592,12 @@ class ManyCubesTask(BimanualPiperTask):
                     # This logic is extremely messy in original code.
                     
                     # SIMPLIFIED LOGIC for INTERACTIVE/EVAL MODE (where MANYCUBES_COLORS is set)
-                    if MANYCUBES_COLORS[0] is not None:
                         # We already set poses in line 536 loop!
                         # BUT wait, the loop 536 sets poses for 'i' in range(10).
                         # If we interleave, we want CUBE 6 to be at SLOT 1 position.
                         # So we should re-assign based on slot map.
                         
-                        # The previous loop (536) set pose for cube 'i' at position 'i'.
-                        # We want to swap them.
-                        pass # handled below if poses[i] is already set.
+                    pass
                     
                     # If poses[i] is NOT set (e.g. queue logic without colors?)
                     # Fallback to slot-based placement
@@ -608,12 +605,6 @@ class ManyCubesTask(BimanualPiperTask):
                     # For safe placement, let's just use the override loop above if colors set.
                     
                     # Re-verify the loop 536-545:
-                    # for i in range(10): px = start - i*spacing... poses[i] = ...
-                    # This sets Cube 0 at Pos 0. Cube 1 at Pos 1.
-                    # If interleave is ON, we want Cube 6 at Pos 1.
-                    # So we need to change how poses are generated OR how they are applied.
-                    # The current loop 549 iterates `i` in range(10) (Standard Order).
-                    # And applies `poses[i]`.
                     # So if poses[i] implies "Position for Cube i", then Cube 6 is at Pos 6.
                     # We want Cube 6 at Pos 1.
                     
@@ -767,9 +758,23 @@ class ManyCubesTask(BimanualPiperTask):
             for b_idx in blue_in_goal:  # Only blues that are in goal
                 if b_idx in used_blues:
                     continue
-                # Check if green and blue are assembled (in contact)
-                if ((f'cube_{g_idx}', f'cube_{b_idx}') in all_contact_pairs or
-                    (f'cube_{b_idx}', f'cube_{g_idx}') in all_contact_pairs):
+                # Check if green and blue are assembled (in contact OR close proximity)
+                is_contact = ((f'cube_{g_idx}', f'cube_{b_idx}') in all_contact_pairs or
+                             (f'cube_{b_idx}', f'cube_{g_idx}') in all_contact_pairs)
+                
+                is_close = False
+                if not is_contact:
+                    try:
+                        g_body_id = physics.model.name2id(f'cube_{g_idx}', 'body')
+                        b_body_id = physics.model.name2id(f'cube_{b_idx}', 'body')
+                        g_pos = physics.data.xpos[g_body_id]
+                        b_pos = physics.data.xpos[b_body_id]
+                        dist = np.linalg.norm(g_pos - b_pos)
+                        if dist < 0.10: # 10cm threshold to capture visual stacking
+                            is_close = True
+                    except: pass
+
+                if is_contact or is_close:
                     pair = (g_idx, b_idx)
                     if pair not in self.completed_cooperative_pairs:
                         self.completed_cooperative_pairs.add(pair)

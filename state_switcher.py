@@ -277,6 +277,154 @@ def get_cubes_in_goal(physics):
 def get_cubes_on_cushion(physics):
     return get_cubes_touching_targets(physics, {'cushion1'})
 
+def is_at_home(current_qpos, home_qpos, threshold=1):
+    """Check if arm is close to home pose."""
+    # Check max deviation of joints
+    # qpos is usually 7-dim for one arm
+    diff = np.abs(current_qpos - home_qpos)
+    max_diff = np.max(diff)
+    if max_diff < 2.0: # Only print when somewhat close to avoid spam? No, spam is fine for debug.
+         pass # actually lets print every 10 steps or so in loop
+    return max_diff < threshold
+
+def quaternion_multiply(q1, q2):
+    """Multiply two quaternions. q1 * q2"""
+    w1, x1, y1, z1 = q1
+    w2, x2, y2, z2 = q2
+    return np.array([
+        w1*w2 - x1*x2 - y1*y2 - z1*z2,
+        w1*x2 + x1*w2 + y1*z2 - z1*y2,
+        w1*y2 - x1*z2 + y1*w2 + z1*x2,
+        w1*z2 + x1*y2 - y1*x2 + z1*w2
+    ])
+
+def quaternion_inverse(q):
+    """Inverse of quaternion [w, x, y, z]"""
+    return np.array([q[0], -q[1], -q[2], -q[3]]) / np.dot(q, q)
+
+def rotate_vector_by_quaternion(v, q):
+    """Rotate vector v by quaternion q."""
+    # p = [0, v]
+    # p' = q * p * q_inv
+    q_vec = np.array([0, v[0], v[1], v[2]])
+    q_inv = quaternion_inverse(q)
+    temp = quaternion_multiply(q, q_vec)
+    result = quaternion_multiply(temp, q_inv)
+    return result[1:] # Return vector part
+
+def apply_magnet_logic(physics, magnetized_pairs, color_sequence=None):
+    """
+    Visual-Only Stacking Logic (Magnet).
+    If a Green cube is close to a Blue cube, disable Green's collision and 
+    lock its relative transform to the Blue cube.
+    """
+    # 1. Identify Green and Blue cubes
+    if color_sequence:
+        greens = [i for i, c in enumerate(color_sequence) if c == 'g']
+        blues = [i for i, c in enumerate(color_sequence) if c == 'b']
+    else:
+        # Fallback for sim_many_cubes default (8=Green, 9=Blue)
+        greens = [8]
+        blues = [9]
+
+    # 2. Check for new magnetizations
+    threshold = 0.08 # 8cm (Center-to-Center). Cube size is 5cm.
+    
+    for g_idx in greens:
+        if g_idx in magnetized_pairs: continue
+        
+        try:
+            g_body_id = physics.model.name2id(f'cube_{g_idx}', 'body')
+            g_pos = physics.data.xpos[g_body_id].copy()
+            g_quat = physics.data.xquat[g_body_id].copy() # [w, x, y, z]
+            
+            for b_idx in blues:
+                 b_body_id = physics.model.name2id(f'cube_{b_idx}', 'body')
+                 b_pos = physics.data.xpos[b_body_id].copy()
+                 b_quat = physics.data.xquat[b_body_id].copy() 
+                 
+                 dist = np.linalg.norm(g_pos - b_pos)
+                 
+                 if dist < threshold:
+                     print(f"Magnet Triggered: Green {g_idx} -> Blue {b_idx} (Dist: {dist:.4f})")
+                     
+                     # Calculate Relative Transform (Offset)
+                     # Rel Pos: Vector from Blue to Green, in Blue's local frame?
+                     # OR just Global Offset? User asked to "preserve relative position".
+                     # If we just store global offset (g - b), it won't rotate with Blue.
+                     # We need Local Offset: v_local = rotate(v_global, q_inv)
+                     # Then v_global_new = rotate(v_local, q_new)
+                     
+                     # 1. Calculate Relative Position in Blue's Frame
+                     global_offset = g_pos - b_pos
+                     b_quat_inv = quaternion_inverse(b_quat)
+                     rel_pos = rotate_vector_by_quaternion(global_offset, b_quat_inv)
+                     
+                     # 2. Calculate Relative Rotation
+                     # q_rel = q_blue_inv * q_green
+                     rel_quat = quaternion_multiply(b_quat_inv, g_quat)
+                     
+                     magnetized_pairs[g_idx] = {
+                         'blue_idx': b_idx,
+                         'rel_pos': rel_pos,
+                         'rel_quat': rel_quat
+                     }
+                     
+                     # Disable Collision for Green
+                     # Note: modifying model.geom_contype is permanent for the session
+                     g_geom_id = physics.model.name2id(f'cube_{g_idx}', 'geom')
+                     physics.model.geom_contype[g_geom_id] = 0
+                     physics.model.geom_conaffinity[g_geom_id] = 0
+                     
+                     break # Only magnetize to one
+        except Exception as e:
+            print(f"Magnet check error: {e}")
+            pass
+
+    # 3. Apply updates for magnetized pairs
+    for g_idx, data in magnetized_pairs.items():
+        try:
+            b_idx = data['blue_idx']
+            rel_pos = data['rel_pos']
+            rel_quat = data['rel_quat']
+            
+            b_body_id = physics.model.name2id(f'cube_{b_idx}', 'body')
+            b_pos = physics.data.xpos[b_body_id].copy()
+            b_quat = physics.data.xquat[b_body_id].copy()
+            
+            # Calculate new Green Pose
+            # Global Offset = rotate(rel_pos, b_quat)
+            global_offset = rotate_vector_by_quaternion(rel_pos, b_quat)
+            target_pos = b_pos + global_offset
+            
+            # Target Quat = b_quat * rel_quat
+            target_quat = quaternion_multiply(b_quat, rel_quat)
+            
+            # Apply to Joint (Teleport)
+            start_idx = physics.model.name2id(f'cube_{g_idx}_joint', 'joint')
+            qpos_adr = physics.model.jnt_qposadr[start_idx]
+            
+            physics.data.qpos[qpos_adr : qpos_adr+3] = target_pos
+            physics.data.qpos[qpos_adr+3 : qpos_adr+7] = target_quat
+
+            # Zero out velocity to prevent gravity fight
+            qvel_adr = physics.model.jnt_dofadr[start_idx]
+            physics.data.qvel[qvel_adr : qvel_adr+6] = 0.0
+            
+        except Exception as e:
+            print(f"Magnet apply error for G{g_idx}: {e}")
+            pass
+
+def reset_magnet_logic(physics, color_sequence=None):
+    """Restore collision for ALL cubes at reset."""
+    # Reset all 10 cubes regardless of color sequence to be safe
+    for i in range(10):
+        try:
+             geom_id = physics.model.name2id(f'cube_{i}', 'geom')
+             physics.model.geom_contype[geom_id] = 1
+             physics.model.geom_conaffinity[geom_id] = 1
+        except: pass
+
 
 def get_image_dual(ts, camera_names):
     curr_images = []
@@ -502,7 +650,10 @@ def main(args):
             GREENBOX_POSE[0] = sample_greenbox_pose()
             BLUEBOX_POSE[0] = sample_bluebox_pose()
         elif 'sim_many_cubes' in task_name:
-            # ManyCubesTask randomizes internally, so we don't need to set global poses here.
+            # Explicitly re-sample poses for ManyCubes task to ensure randomization
+            # ManyCubesTask uses GREENBOX_POSE/BLUEBOX_POSE during initialization
+            GREENBOX_POSE[0] = sample_greenbox_pose()
+            BLUEBOX_POSE[0] = sample_bluebox_pose()
             pass
         return env.reset()
 
@@ -561,6 +712,10 @@ def main(args):
         acc_touched_right = set()
         pending_removal = set()
         
+        # Magnet Tracking
+        reset_magnet_logic(env.physics, args.color_sequence)
+        magnetized_pairs = {} # {g_idx: {'blue_idx': b, 'rel_pos': p, 'rel_quat': q}}
+        
         # State Tracking Initialization
         prev_plan_l_state = None
         prev_plan_r_state = None
@@ -568,6 +723,10 @@ def main(args):
         last_active_r_state = None
         state_history_l = collections.deque(maxlen=10)
         state_history_r = collections.deque(maxlen=10)
+        
+        # Delayed Stop Counters
+        consecutive_at_home_l = 0
+        consecutive_at_home_r = 0
         
         while True:
             # Check input
@@ -640,6 +799,44 @@ def main(args):
                 elif s_r_smooth == STATE_INDEP: plan_r_state = 'INDEP'
                 else: plan_r_state = 'HOLD'
             
+            # --- Smart HOLD Logic: Return to Home before Holding ---
+            # If classifier says HOLD, but we are not at home, 
+            # force continue previous state (or default to INDEP if None).
+            
+            # Left Arm
+            if plan_l_state == 'HOLD':
+                 # Check if at home
+                 # qpos_numpy is 14 dim. Left is [:7]
+                 if is_at_home(qpos_numpy[:7], home_pose[:7]):
+                     consecutive_at_home_l += 1
+                     if consecutive_at_home_l < 50:
+                         # Delay stop for 50 steps
+                         if last_active_l_state:
+                             plan_l_state = last_active_l_state
+                 else:
+                     # Not at home yet
+                     consecutive_at_home_l = 0
+                     if t % 20 == 0: print(f"DEBUG: Left NOT at home. Keep {last_active_l_state}")
+                     if last_active_l_state:
+                           plan_l_state = last_active_l_state
+            else:
+                consecutive_at_home_l = 0
+            
+            # Right Arm
+            if plan_r_state == 'HOLD':
+                 if is_at_home(qpos_numpy[7:14], home_pose[7:14]):
+                     consecutive_at_home_r += 1
+                     if consecutive_at_home_r < 50:
+                         if last_active_r_state:
+                             plan_r_state = last_active_r_state
+                 else:
+                     consecutive_at_home_r = 0
+                     # print(f"DEBUG: Right NOT at home. Keep {last_active_r_state}")
+                     if last_active_r_state:
+                           plan_r_state = last_active_r_state
+            else:
+                consecutive_at_home_r = 0
+
             # Logging
             if t % 50 == 0:
                 print(f"[Step {t}] Classifier: L={STATE_NAMES[s_l]} R={STATE_NAMES[s_r]} -> Plan: L={plan_l_state} R={plan_r_state}")
@@ -914,6 +1111,9 @@ def main(args):
             ts = env.step(target_qpos)
             current_episode_rewards.append(ts.reward)
             
+            # --- Magnet Logic (Visual Stacking) ---
+            apply_magnet_logic(env.physics, magnetized_pairs, args.color_sequence)
+            
             # --- Object Removal Logic (Continuous) ---
             # 1. Track Touches (if needed for debugging, but we mostly care about 'currently in hand')
             new_touches = get_touched_cubes_per_arm(env.physics)
@@ -949,6 +1149,11 @@ def main(args):
             if t >= max_timesteps:
                 print("Episode finished. Resetting...")
                 
+                # Calculate Episode Status
+                max_possible_reward = env._task.max_reward
+                final_reward = current_episode_rewards[-1] if current_episode_rewards else 0
+                is_success = (final_reward >= max_possible_reward)
+
                 # Save Video
                 if args.save_video and len(video_frames) > 0:
                      video_dir = args.save_video if isinstance(args.save_video, str) else 'videos'
@@ -956,9 +1161,6 @@ def main(args):
                          os.makedirs(video_dir)
                          
                      # Result recording for filename
-                     max_possible_reward = env._task.max_reward
-                     final_reward = current_episode_rewards[-1] if current_episode_rewards else 0
-                     is_success = (final_reward >= max_possible_reward)
                      status_str = "success" if is_success else "fail"
                      video_path = os.path.join(video_dir, f'eval_ep{episode_count}_{status_str}_r{final_reward}.mp4')
                      
@@ -991,6 +1193,7 @@ def main(args):
                 acc_touched_left.clear()
                 acc_touched_right.clear()
                 pending_removal.clear()
+                magnetized_pairs.clear() # FIX: Clear magnet state!
                 
                 # Reset State Tracking
                 prev_plan_l_state = None
@@ -1000,9 +1203,72 @@ def main(args):
                 state_history_l.clear()
                 state_history_r.clear()
 
+                # Save Stats to CSV
+                if args.save_stats_path:
+                    # Get Task Status
+                    try:
+                        task = env._task
+                        col_seq = task.color_sequence if task.color_sequence else ['?']*10
+                        
+                        # Prepare Row Data
+                        row = {
+                            'Episode': episode_count,
+                            'Total_Reward': episode_return,
+                            'Is_Success': is_success
+                        }
+                        
+                        # Verify using internal sets
+                        # Note: 'task' object might be wrapped. verify env access.
+                        # env._task should differ based on make_sim_env implementation details, 
+                        # but in piper_sim_env.py it is directly accessible.
+                        
+                        # Indices
+                        indep_set = getattr(task, 'completed_independent_cubes', set())
+                        coop_set = getattr(task, 'completed_cooperative_pairs', set())
+                        
+                        # Flatten coop set for easy lookup
+                        coop_indices = set()
+                        for (g, b) in coop_set:
+                            coop_indices.add(g)
+                            coop_indices.add(b)
+                            
+                        for i in range(10):
+                            c_code = col_seq[i] if i < len(col_seq) else '?'
+                            status = "Fail"
+                            reward = 0
+                            
+                            if i in indep_set:
+                                status = "Indep_Success"
+                                reward = 1
+                            elif i in coop_indices:
+                                status = "Coop_Success"
+                                reward = 2
+                            
+                            row[f'Obj{i}_Color'] = c_code
+                            row[f'Obj{i}_Status'] = status
+                            row[f'Obj{i}_Reward'] = reward
+                            
+                        # Write to CSV
+                        file_exists = os.path.isfile(args.save_stats_path)
+                        fieldnames = ['Episode', 'Total_Reward', 'Is_Success']
+                        for i in range(10):
+                            fieldnames.extend([f'Obj{i}_Color', f'Obj{i}_Status', f'Obj{i}_Reward'])
+                            
+                        with open(args.save_stats_path, 'a', newline='') as csvfile:
+                            writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
+                            if not file_exists:
+                                writer.writeheader()
+                            writer.writerow(row)
+                        print(f"Saved stats to {args.save_stats_path}")
+                        
+                    except Exception as e:
+                        print(f"Error saving stats: {e}")
+
                 if episode_count >= args.num_rollouts:
                     break
 
+                # Cleanup / Preparation for next episode
+                reset_magnet_logic(env.physics, args.color_sequence)
                 ts = reset_with_new_pose()
                 t = 0
                 step_in_chunk = 0
@@ -1044,6 +1310,7 @@ if __name__ == '__main__':
     
     parser.add_argument('--onscreen_render', action='store_true')
     parser.add_argument('--save_video', nargs='?', const='videos', type=str, help='Save execution video to mp4 (optional path, default "videos")')
+    parser.add_argument('--save_stats_path', action='store', type=str, help='Path to save episode statistics CSV')
     parser.add_argument('--num_rollouts', action='store', type=int, default=1, help='Number of evaluation episodes')
     parser.add_argument('--color_sequence', action='store', type=str, default=None, help='Color sequence (e.g. rrgbrrgbrr)')
     parser.add_argument('--episode_len', action='store', type=int, default=None, help='Override task-specific episode length')
