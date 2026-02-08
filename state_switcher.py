@@ -888,6 +888,7 @@ def main(args):
                 # --- Safety Clamp REMOVED for debugging ---
                 diff = target_qpos - qpos_numpy
                 max_diff = np.max(np.abs(diff))
+                """
                 if max_diff > 0.1:
                     print(f"\n[Step {t}] LARGE JUMP DETECTED! Max diff: {max_diff:.4f}")
                     # Find which joints are jumping
@@ -905,10 +906,10 @@ def main(args):
                     if plan_l_state == 'COOP' or plan_r_state == 'COOP':
                          print(f"  Dual Buffer Count (approx): {len(actions_for_curr_step) if 'actions_for_curr_step' in locals() else 'N/A'}")
 
-                
                 # Update Previous States (Moved to top of loop logic)
                 prev_plan_l_state = plan_l_state
                 prev_plan_r_state = plan_r_state
+                """
 
             ts = env.step(target_qpos)
             current_episode_rewards.append(ts.reward)
@@ -954,7 +955,12 @@ def main(args):
                      if not os.path.exists(video_dir):
                          os.makedirs(video_dir)
                          
-                     video_path = os.path.join(video_dir, f'episode_{episode_count}.mp4')
+                     # Result recording for filename
+                     max_possible_reward = env._task.max_reward
+                     final_reward = current_episode_rewards[-1] if current_episode_rewards else 0
+                     is_success = (final_reward >= max_possible_reward)
+                     status_str = "success" if is_success else "fail"
+                     video_path = os.path.join(video_dir, f'eval_ep{episode_count}_{status_str}_r{final_reward}.mp4')
                      
                      # Detect shape from first frame
                      target_h, target_w, _ = video_frames[0].shape

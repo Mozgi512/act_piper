@@ -1,4 +1,7 @@
 ckpt
+ckpt2
+data2
+videos
 assets(origin)
 assets_piper(old)
 __pycache__
@@ -10,3 +13,4 @@ piper_scripted_ckpt
 *.csv
 *.mp4
 *.png
+*.pkl
