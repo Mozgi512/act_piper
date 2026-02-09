@@ -542,6 +542,8 @@ class ManyCubesTask(BimanualPiperTask):
                          px = start_x - i * spacing
                          #if i == 3:
                              #px += 0.01
+                         if i == 5:
+                             px += 0.02
                          #if i == 8:
                              #px -= 0.05  
                          #if i == 9:
