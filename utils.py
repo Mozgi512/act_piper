@@ -1,10 +1,25 @@
 import numpy as np
-import torch
+# import torch (moved to local imports)
 import os
 import h5py
-from torch.utils.data import TensorDataset, DataLoader
 
-import cv2
+
+import h5py
+
+try:
+    import cv2
+except ImportError:
+    cv2 = None
+
+
+try:
+    import torch
+    from torch.utils.data import Dataset, DataLoader
+except ImportError:
+    torch = None
+    Dataset = object
+    DataLoader = None
+
 
 def apply_rgb_mask_to_strip(image, strip_width=40):
     """
@@ -72,12 +87,18 @@ def apply_rgb_mask_to_right_strip(image, strip_width=40):
     image[:, -strip_width:, :] = masked_strip
     return image
 
-import IPython
-e = IPython.embed
 
-class EpisodicDataset(torch.utils.data.Dataset):
+try:
+    import IPython
+    e = IPython.embed
+except ImportError:
+    IPython = None
+    e = lambda: print("IPython not available")
+
+
+class EpisodicDataset(Dataset):
     def __init__(self, episode_ids, dataset_dir, camera_names, norm_stats, use_cache=False):
-        super(EpisodicDataset).__init__()
+        super().__init__()
         self.episode_ids = episode_ids
         self.dataset_dir = dataset_dir
         self.camera_names = camera_names

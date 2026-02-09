@@ -110,7 +110,8 @@ def main(args):
         'ckpt_interval': args['ckpt_interval'],
         'image_width': args['image_width'],
         'image_height': args['image_height'],
-        'load_ckpt': args['load_ckpt']
+        'load_ckpt': args['load_ckpt'],
+        'reset_optimizer': args['reset_optimizer']
     }
 
     if is_eval:
@@ -444,13 +445,15 @@ def train_bc(train_dataloader, val_dataloader, config):
     
     optimizer = make_optimizer(policy_class, policy)
     
-    # Load optimizer state if available
-    if loaded_optimizer_state is not None:
+    # Load optimizer state if available and not resetting
+    if loaded_optimizer_state is not None and not config.get('reset_optimizer', False):
         try:
             optimizer.load_state_dict(loaded_optimizer_state)
             print("Successfully loaded optimizer state.")
         except Exception as e:
             print(f"Warning: Failed to load optimizer state: {e}")
+    elif config.get('reset_optimizer', False):
+        print("Optimizer state reset (not loading from checkpoint).")
 
     scaler = torch.cuda.amp.GradScaler() # AMP scalar
     
@@ -592,6 +595,7 @@ if __name__ == '__main__':
     parser.add_argument('--start_epoch', action='store', type=int, help='start epoch for range evaluation', required=False)
     parser.add_argument('--ckpt_interval', action='store', type=int, help='checkpoint saving interval', required=False, default=1000)
     parser.add_argument('--load_ckpt', action='store', type=str, help='Checkpoint path to load weights from', default=None)
+    parser.add_argument('--reset_optimizer', action='store_true', help='Reset optimizer state when loading checkpoint (do not inherit optimizer state)', default=False)
     parser.add_argument('--episode_len', action='store', type=int, help='Override task episode length', required=False)
 
     # for ACT

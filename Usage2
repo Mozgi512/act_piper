@@ -1,7 +1,7 @@
 #データ生成
 
 python3 generate_dataset.py \
-    --dataset_dir data2/interval_data \
+    --dataset_dir data3/interval_data \
     --num_episodes 30 \
     --commands ICRCRLR \
     --color_sequence rgrbrbrgrr \
@@ -9,7 +9,7 @@ python3 generate_dataset.py \
     --no_save_data 
 
 python3 generate_dataset.py \
-    --dataset_dir data2/prev_data \
+    --dataset_dir data3/prev_data \
     --num_episodes 30 \
     --commands ICLICR \
     --color_sequence rrbgrrrgbr \
@@ -17,44 +17,74 @@ python3 generate_dataset.py \
     --no_save_data 
 
 python3 generate_dataset.py \
-    --dataset_dir data2/coherence_data \
+    --dataset_dir data3/coherence_data \
     --num_episodes 30 \
     --commands ICCRIR \
     --color_sequence rrggbrbrrr \
     --onscreen_render \
     --no_save_data 
 
-#データの分割
-python3 process_async_data.py --dataset_dir data2/interval_data --num_episodes 30 --extract_custom_coop
-python3 process_async_data.py --dataset_dir data2/prev_data --num_episodes 30 --extract_custom_coop
-python3 process_async_data.py --dataset_dir data2/coherence_data --num_episodes 30 --extract_custom_coop
+python3 generate_dataset.py \
+    --dataset_dir data3/dummy_data \
+    --num_episodes 30 \
+    --commands CICII \
+    --color_sequence gbrrbgrrrr \
+    --onscreen_render \
+    --no_save_data 
 
-python3 merge_datasets.py --input_dirs data2/interval_data_custom_coop data2/coherence_data_custom_coop data2/prev_data_custom_coop \
-    --output_dir data2/multitask_merge
-python3 pad_dataset.py --input_dir data2/multitask_merge --output_dir data2/multitask_padded
+
+python3 generate_dataset.py --pretrain_mode independent --num_episodes 100 --dataset_dir data3/pretrain_i --onscreen_render --no_save_data
+python3 generate_dataset.py --pretrain_mode cooperative --num_episodes 100 --dataset_dir data3/pretrain_c --onscreen_render --no_save_data
+
+#データの分割
+python3 process_async_data.py --dataset_dir data3/interval_data --num_episodes 30 --extract_custom_coop
+python3 process_async_data.py --dataset_dir data3/prev_data --num_episodes 30 --extract_custom_coop
+python3 process_async_data.py --dataset_dir data3/coherence_data --num_episodes 30 --extract_custom_coop
+
+python3 process_async_data.py --dataset_dir data3/pretrain_i --num_episodes 100
+
+python3 merge_datasets.py --input_dirs data3/interval_data_custom_coop data3/coherence_data_custom_coop data3/prev_data_custom_coop \
+    --output_dir data3/multitask_merge
+python3 pad_dataset.py --input_dir data3/multitask_merge --output_dir data3/multitask_padded
 
 # 協調データ可視化
-python3 visualize_episodes.py --dataset_dir  data2/interval_data_cooperative_merged/seg_2 --episode_idx 0
+python3 visualize_episodes.py --dataset_dir  data3/interval_data_cooperative_merged/seg_2 --episode_idx 0
+
+
+
 # 独立データ可視化
-python3 independent_visualize_episodes.py --dataset_dir /home/act/act_piper/data2/interval_data_right_independent/seg_11 --episode_idx 0 
+python3 independent_visualize_episodes.py --dataset_dir /home/act/act_piper/data3/interval_data_right_independent/seg_11 --episode_idx 0 
 
 
 #データ整理
-python3 merge_datasets.py --input_dirs data2/interval_data/C data2/coherence_data/C data2/prev_data/C --output_dir data2/C_merged
-python3 merge_datasets.py --input_dirs data2/interval_data/L data2/coherence_data/L data2/prev_data/L --output_dir data2/L_merged
-python3 merge_datasets.py --input_dirs data2/interval_data/R data2/coherence_data/R data2/prev_data/R --output_dir data2/R_merged
+python3 merge_datasets.py --input_dirs data3/interval_data/C data3/coherence_data/C data3/prev_data/C --output_dir data3/C_merged
+python3 merge_datasets.py --input_dirs data3/interval_data/L data3/coherence_data/L data3/prev_data/L --output_dir data3/L_merged
+python3 merge_datasets.py --input_dirs data3/interval_data/R data3/coherence_data/R data3/prev_data/R --output_dir data3/R_merged
 
-python3 shuffle_dataset.py --dataset_dir data2/C_merged
-python3 shuffle_dataset.py --dataset_dir data2/L_merged
-python3 shuffle_dataset.py --dataset_dir data2/R_merged
+python3 shuffle_dataset.py --dataset_dir data3/C_merged
+python3 shuffle_dataset.py --dataset_dir data3/L_merged
+python3 shuffle_dataset.py --dataset_dir data3/R_merged
 
-python3 pad_dataset.py --input_dir data2/C_merged --output_dir data2/C_padded
-python3 pad_dataset.py --input_dir data2/L_merged --output_dir data2/L_padded
-python3 pad_dataset.py --input_dir data2/R_merged --output_dir data2/R_padded
+python3 pad_dataset.py --input_dir data3/C_merged --output_dir data3/C_padded
+python3 pad_dataset.py --input_dir data3/L_merged --output_dir data3/L_padded
+python3 pad_dataset.py --input_dir data3/R_merged --output_dir data3/R_padded
 
 
-python3 merge_datasets.py --input_dirs data2/interval_data data2/coherence_data data2/prev_data --output_dir data2/e2e_merged
-python3 pad_dataset.py --input_dir data2/e2e_merged --output_dir data2/e2e_padded
+python3 merge_datasets.py --input_dirs data3/interval_data data3/coherence_data data3/prev_data --output_dir data3/e2e_merged
+python3 pad_dataset.py --input_dir data3/e2e_merged --output_dir data3/e2e_padded
+
+
+python3 pad_dataset.py --input_dir data3/pretrain_c --output_dir data3/pretrain_c_padded
+python3 pad_dataset.py --input_dir data3/pretrain_i/L/seg_0 --output_dir data3/pretrain_left_padded
+python3 pad_dataset.py --input_dir data3/pretrain_i/R/seg_1 --output_dir data3/pretrain_right_padded
+
+python3 merge_datasets.py --input_dirs data3/pretrain_i data3/pretrain_c --output_dir data3/e2e_pretrain_merged
+python3 merge_datasets.py --input_dirs data3/interval_data data3/coherence_data data3/prev_data --output_dir data3/e2e_merged
+python3 pad_dataset.py --input_dir data3/e2e_pretrain_merged --output_dir data3/e2e_pretrain_padded
+python3 pad_dataset.py --input_dir data3/e2e_merged --output_dir data3/e2e_padded
+
+
+
 
 #学習(独立LR.協調C.End-to-End)
 
@@ -62,11 +92,11 @@ CUDA_LAUNCH_BLOCKING=0 TORCH_CUDNN_V8_API_ENABLED=1
 
 python3 independent_imitate_episodes.py \
     --task_name sim_dataset_i \
-    --ckpt_dir ckpt2/L \
+    --ckpt_dir ckpt2/L_40000 \
     --dataset_dir data2/L_padded \
     --policy_class ACT \
     --kl_weight 10 --chunk_size 100 --hidden_dim 512 --batch_size 32 --dim_feedforward 3200 \
-    --num_epochs 20000 --lr 1e-5 \
+    --num_epochs 40000 --lr 1e-5 \
     --seed 0 --arm left --num_episodes 210 --num_workers 4 \
     --persistent_workers \
     --prefetch_factor 2 \
@@ -76,11 +106,11 @@ python3 independent_imitate_episodes.py \
 
 python3 independent_imitate_episodes.py \
     --task_name sim_dataset_i \
-    --ckpt_dir ckpt2/R \
+    --ckpt_dir ckpt2/R_40000 \
     --dataset_dir data2/R_padded \
     --policy_class ACT \
     --kl_weight 10 --chunk_size 100 --hidden_dim 512 --batch_size 32 --dim_feedforward 3200 \
-    --num_epochs 20000 --lr 1e-5 \
+    --num_epochs 40000 --lr 1e-5 \
     --seed 0 --arm right --num_episodes 330 --num_workers 4 \
     --persistent_workers \
     --prefetch_factor 2 \
@@ -90,8 +120,8 @@ python3 independent_imitate_episodes.py \
 
 python3 imitate_episodes.py \
     --task_name sim_dataset_c \
-    --ckpt_dir ckpt2/C \
-    --dataset_dir data2/C_padded \
+    --ckpt_dir ckpt3/C_20000 \
+    --dataset_dir data3/C_padded \
     --policy_class ACT --kl_weight 10 --chunk_size 100 --hidden_dim 512 \
     --batch_size 32 \
     --dim_feedforward 3200 \
@@ -102,7 +132,7 @@ python3 imitate_episodes.py \
     --prefetch_factor 2 \
     --use_cache \
     --use_cuda_graph \
-    --validation_interval 100 --num_episodes 180 --episode_len 770
+    --validation_interval 100 --num_episodes 180 --episode_len 783
 
 python3 imitate_episodes.py \
     --task_name sim_dataset_c \
@@ -136,6 +166,105 @@ python3 imitate_episodes.py \
     --use_cuda_graph \
     --validation_interval 100 --num_episodes 420 --episode_len 1120
 
+
+
+
+
+
+
+python3 independent_imitate_episodes.py \
+    --task_name sim_dataset_i \
+    --ckpt_dir ckpt3/pretrained_left \
+    --dataset_dir data3/pretrain_left_padded \
+    --policy_class ACT \
+    --kl_weight 10 --chunk_size 100 --hidden_dim 512 --batch_size 32 --dim_feedforward 3200 \
+    --num_epochs 20000 --lr 1e-5 \
+    --seed 0 --arm left --num_episodes 100 --num_workers 4 \
+    --persistent_workers \
+    --prefetch_factor 2 \
+    --use_cache \
+    --use_cuda_graph \
+    --validation_interval 100 --episode_len 370
+
+python3 independent_imitate_episodes.py \
+    --task_name sim_dataset_i \
+    --ckpt_dir ckpt3/pretrained_right \
+    --dataset_dir data3/pretrain_right_padded \
+    --policy_class ACT \
+    --kl_weight 10 --chunk_size 100 --hidden_dim 512 --batch_size 32 --dim_feedforward 3200 \
+    --num_epochs 20000 --lr 1e-5 \
+    --seed 0 --arm right --num_episodes 100 --num_workers 4 \
+    --persistent_workers \
+    --prefetch_factor 2 \
+    --use_cache \
+    --use_cuda_graph \
+    --validation_interval 100 --episode_len 370
+
+
+python3 imitate_episodes.py \
+    --task_name sim_dataset_c \
+    --ckpt_dir ckpt3/pretrained_c \
+    --dataset_dir data3/pretrain_c_padded \
+    --policy_class ACT --kl_weight 10 --chunk_size 100 --hidden_dim 512 \
+    --batch_size 32 \
+    --dim_feedforward 3200 \
+    --num_epochs 20000 --lr 1e-5 \
+    --seed 0 \
+    --num_workers 4 \
+    --persistent_workers \
+    --prefetch_factor 2 \
+    --use_cache \
+    --use_cuda_graph \
+    --validation_interval 100 --num_episodes 100 --episode_len 770
+
+python3 independent_imitate_episodes.py \
+    --task_name sim_dataset_i \
+    --ckpt_dir ckpt3/finetune_left \
+    --dataset_dir data3/L_padded \
+    --policy_class ACT \
+    --kl_weight 10 --chunk_size 100 --hidden_dim 512 --batch_size 32 --dim_feedforward 3200 \
+    --num_epochs 20000 --lr 1e-5 \
+    --seed 0 --arm left --num_episodes 210 --num_workers 4 \
+    --persistent_workers \
+    --prefetch_factor 2 \
+    --use_cache \
+    --use_cuda_graph \
+    --load_ckpt ckpt3/pretrained_left/policy_best.ckpt \
+    --validation_interval 100 --episode_len 390 --reset_optimizer
+
+python3 independent_imitate_episodes.py \
+    --task_name sim_dataset_i \
+    --ckpt_dir ckpt3/finetune_right \
+    --dataset_dir data3/R_padded \
+    --policy_class ACT \
+    --kl_weight 10 --chunk_size 100 --hidden_dim 512 --batch_size 32 --dim_feedforward 3200 \
+    --num_epochs 20000 --lr 1e-5 \
+    --seed 0 --arm right --num_episodes 319 --num_workers 4 \
+    --persistent_workers \
+    --prefetch_factor 2 \
+    --use_cache \
+    --use_cuda_graph \
+    --load_ckpt ckpt3/pretrained_right/policy_best.ckpt \
+    --validation_interval 100 --episode_len 390 --reset_optimizer
+
+python3 imitate_episodes.py \
+    --task_name sim_dataset_c \
+    --ckpt_dir ckpt3/finetune_c \
+    --dataset_dir data3/C_padded \
+    --policy_class ACT --kl_weight 10 --chunk_size 100 --hidden_dim 512 \
+    --batch_size 32 \
+    --dim_feedforward 3200 \
+    --num_epochs 20000 --lr 1e-5 \
+    --seed 0 \
+    --num_workers 4 \
+    --persistent_workers \
+    --prefetch_factor 2 \
+    --use_cache \
+    --use_cuda_graph \
+    --validation_interval 100 --num_episodes 180 --episode_len 783 --reset_optimizer
+
+
+
 #状態分類器の学習
 
 python3 train_state_classifier.py \
@@ -151,35 +280,36 @@ rrbgrrrgbr
 rgrbrbrgrr
 #coherence
 gbbgrrrrbg
+rrggbrbrrr
+
 
 python3 state_switcher.py \
     --task_name sim_many_cubes \
-    --ckpt_dual ckpt2/C/policy_best.ckpt \
+    --ckpt_dual ckpt3/C_20000/policy_epoch_14000_seed_0.ckpt \
     --ckpt_left ckpt2/L/policy_best.ckpt \
     --ckpt_right ckpt2/R/policy_best.ckpt \
     --state_ckpt state_classifier_best.pth \
     --policy_class ACT --kl_weight 10 --chunk_size 100 --hidden_dim 512 --dim_feedforward 3200 \
     --inherit_temporal_buffer \
     --warmup_steps 100 --num_rollouts 50 \
-    --color_sequence rrgbrrrbgr --onscreen_render --episode_len 2300 --save_video videos/hie_remix --save_stats_path results/hie_remix.csv
-
+    --color_sequence rbrgrgrbrr --onscreen_render --episode_len 2500 --save_video videos/interval/hie \
+    --save_stats_path results/interval/hie_stats.csv
 
 python3 evaluate_policy_switcher.py \
     --task_name sim_many_cubes \
     --ckpt_e2e ckpt2/e2e_40000 \
     --policy_class ACT --kl_weight 10 --chunk_size 100 --hidden_dim 512 --dim_feedforward 3200 \
     --num_rollouts 10 \
-    --color_sequence rrgbrrrbgr \
-    --max_timesteps 2300 --save_video videos/e2e --save_stats_path results/e2e_stats_10.csv
+    --color_sequence rrggbrbrrr \
+    --max_timesteps 2300 --save_video videos/coherence_2/e2e --save_stats_path results/coherence_2/e2e_stats.csv
 
 python3 evaluate_policy_switcher.py \
     --task_name sim_many_cubes \
     --ckpt_e2e ckpt2/multitask \
     --policy_class ACT --kl_weight 10 --chunk_size 100 --hidden_dim 512 --dim_feedforward 3200 \
     --num_rollouts 10 \
-    --color_sequence rrgbrrrbgr \
-    --max_timesteps 2300 --save_video videos/multi --save_stats_path results/multi_stats_10.csv
-
+    --color_sequence gbbgrrrrbg \
+    --max_timesteps 2300 --save_video videos/coherence/multi --save_stats_path results/coherence/multi_stats.csv
 
 python3 imitate_episodes.py \
     --task_name sim_dataset_c \
@@ -197,9 +327,7 @@ python3 imitate_episodes.py \
     --use_cuda_graph \
     --validation_interval 100 --num_episodes 90 --episode_len 2470
 
-
-
-    python3 state_switcher.py \
+python3 state_switcher.py \
     --task_name sim_many_cubes \
     --ckpt_dual ckpt2/C/policy_best.ckpt \
     --ckpt_left ckpt2/L/policy_best.ckpt \
@@ -215,13 +343,51 @@ python3 evaluate_policy_switcher.py \
     --ckpt_e2e ckpt2/e2e_40000 \
     --policy_class ACT --kl_weight 10 --chunk_size 100 --hidden_dim 512 --dim_feedforward 3200 \
     --num_rollouts 50 \
-    --color_sequence rrbgrrrgbr \
-    --max_timesteps 2300 --save_stats_path results/e2e.csv
+    --color_sequence rgrbrbrgrr \
+    --max_timesteps 2300 --save_stats_path results/interval/e2e.csv
 
 python3 evaluate_policy_switcher.py \
     --task_name sim_many_cubes \
     --ckpt_e2e ckpt2/multitask \
     --policy_class ACT --kl_weight 10 --chunk_size 100 --hidden_dim 512 --dim_feedforward 3200 \
     --num_rollouts 50 \
-    --color_sequence rrbgrrrgbr \
+    --color_sequence rgrbrbrgrr \
     --max_timesteps 2300 --save_stats_path results/multi.csv
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+python3 state_switcher.py \
+    --task_name sim_many_cubes \
+    --ckpt_dual ckpt2/C/policy_best.ckpt \
+    --ckpt_left ckpt2/L/policy_best.ckpt \
+    --ckpt_right ckpt2/R/policy_best.ckpt \
+    --state_ckpt state_classifier_best.pth \
+    --policy_class ACT --kl_weight 10 --chunk_size 100 --hidden_dim 512 --dim_feedforward 3200 \
+    --inherit_temporal_buffer \
+    --warmup_steps 100 --num_rollouts 50 \
+    --color_sequence rbrgrgrbrr --onscreen_render --episode_len 2300 
+
+
+python3 evaluate_policy_switcher.py \
+    --task_name sim_many_cubes \
+    --ckpt_e2e ckpt2/e2e_40000 \
+    --policy_class ACT --kl_weight 10 --chunk_size 100 --hidden_dim 512 --dim_feedforward 3200 \
+    --num_rollouts 10 \
+    --color_sequence rbrgrgrbrr \
+    --max_timesteps 2300 --onscreen_render --save_video videos/remixed_interval_e2e
+
+
+
+   

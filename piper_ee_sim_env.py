@@ -10,7 +10,7 @@ from piper_constants import PUPPET_GRIPPER_POSITION_NORMALIZE_FN
 from piper_constants import PUPPET_GRIPPER_VELOCITY_NORMALIZE_FN
 
 from utils import sample_redbox_pose, sample_insertion_pose,sample_bluebox_pose,sample_greenbox_pose,sample_cube_pose, sample_redbox1_pose, sample_redbox2_pose, sample_greenbox1_pose, sample_bluebox1_pose
-from piper_sim_env import MANYCUBES_COLORS
+from piper_sim_env import MANYCUBES_COLORS, MANYCUBES_CONFIG
 from dm_control import mujoco
 from dm_control.rl import control
 from dm_control.suite import base
@@ -544,7 +544,8 @@ class ManyCubesEETask(BimanualPiperEETask):
         colors = [
             np.array([1, 0, 0, 1]), # R
             np.array([0, 1, 0, 1]), # G
-            np.array([0, 0, 1, 1])  # B
+            np.array([0, 0, 1, 1]), # B
+            np.array([0.5, 0.5, 0.5, 1])  # D (Gray)
         ]
         
         poses = {}
@@ -592,12 +593,15 @@ class ManyCubesEETask(BimanualPiperEETask):
             # Interactive Mode Override: Linear Queue 0..9 (Same logic as piper_sim_env)
             # Interactive Mode Override: Linear Queue 0..9 (Same logic as piper_sim_env)
             if MANYCUBES_COLORS[0] is not None:
-                 start_x = 0.00
+                 start_x = 0.3
                  spacing = 0.15
-                 px = start_x - i * spacing
-                 py = np.random.uniform(0.35, 0.40)
+                 
+                 # Apply global shift
+                 shift_val = MANYCUBES_CONFIG.get('x_shift', 0.0)
+                 
+                 px = (start_x - i * spacing) + shift_val + np.random.uniform(-0.04, 0.04)
+                 py = np.random.uniform(0.32, 0.45)
                  np.copyto(physics.data.qpos[qpos_adr : qpos_adr + 7], [px, py, 0.025, 1, 0, 0, 0])
-                 # print(f"Debug EE: Cube {i} initialized at X={px:.3f}, Y={py:.3f}")
             else:
                  np.copyto(physics.data.qpos[qpos_adr : qpos_adr + 7], cube_pose)
             
@@ -611,6 +615,7 @@ class ManyCubesEETask(BimanualPiperEETask):
                     if c_code == 'r': color = colors[0]
                     elif c_code == 'g': color = colors[1]
                     elif c_code == 'b': color = colors[2]
+                    elif c_code == 'd': color = colors[3]
                     else: color = colors[0]
                 else:
                     color_idx = (i + 2) % 3

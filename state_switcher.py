@@ -517,6 +517,11 @@ def load_policy_and_stats(ckpt_dir, policy_class, args, override_state_dim=None,
     policy = make_policy(policy_class, policy_config)
     loaded_state_dict = torch.load(ckpt_path)
     
+    # Handle new checkpoint format (nested with model_state_dict and optimizer_state_dict)
+    if 'model_state_dict' in loaded_state_dict:
+        print(f"Detected new checkpoint format, extracting model_state_dict...")
+        loaded_state_dict = loaded_state_dict['model_state_dict']
+    
     # Handle chunk_size mismatch (e.g. 100 -> 50)
     if 'model.pos_table' in loaded_state_dict and 'model.query_embed.weight' in loaded_state_dict:
         # Check pos_table
@@ -629,6 +634,12 @@ def main(args):
     
     # Now create Env with correct time_limit
     time_limit = (max_timesteps + 200) * DT # Add safety buffer steps
+    
+    import piper_constants
+    if args.x_shift:
+        piper_constants.MANYCUBES_CONFIG['x_shift'] = args.x_shift
+        print(f"Applying x-shift: {args.x_shift}")
+
     print(f"Creating Simulation Environment with time_limit={time_limit:.2f}s ({max_timesteps} steps + buffer)")
     env = make_sim_env(task_name, time_limit=time_limit)
     
@@ -991,6 +1002,7 @@ def main(args):
                         raw_action_dual = raw_action_dual.squeeze(0).cpu().numpy()
                         current_raw_action_l = raw_action_dual[:7]
                     else:
+                        step_in_chunk = step_in_chunk % chunk_size # Simple wrap to avoid index error if temporal agg disabled
                         current_raw_action_l = current_action_chunk_dual[step_in_chunk][:7]
                     
                 elif plan_l_state == 'INDEP':
@@ -1011,7 +1023,7 @@ def main(args):
                         raw_action_l = (actions_for_curr_step_l * exp_weights_l).sum(dim=0, keepdim=True)
                         current_raw_action_l = raw_action_l.squeeze(0).cpu().numpy()
                     else:
-                        current_raw_action_l = current_action_chunk_left[step_in_chunk]
+                        current_raw_action_l = current_action_chunk_left[step_in_chunk % chunk_size]
                 else:
                     # HOLD mode - no raw action needed
                     current_raw_action_l = None
@@ -1034,7 +1046,7 @@ def main(args):
                         raw_action_dual = raw_action_dual.squeeze(0).cpu().numpy()
                         current_raw_action_r = raw_action_dual[7:]
                     else:
-                        current_raw_action_r = current_action_chunk_dual[step_in_chunk][7:]
+                        current_raw_action_r = current_action_chunk_dual[step_in_chunk % chunk_size][7:]
                 elif plan_r_state == 'INDEP':
                     # Independent Mode for Right
                     if temporal_agg:
@@ -1054,7 +1066,7 @@ def main(args):
                              raw_action_r = (actions_for_curr_step_r * exp_weights_r).sum(dim=0, keepdim=True)
                              current_raw_action_r = raw_action_r.squeeze(0).cpu().numpy()
                     else:
-                        current_raw_action_r = current_action_chunk_right[step_in_chunk]
+                        current_raw_action_r = current_action_chunk_right[step_in_chunk % chunk_size]
                 else:
                     # HOLD mode - no raw action needed
                     current_raw_action_r = None
@@ -1317,6 +1329,7 @@ if __name__ == '__main__':
     parser.add_argument('--inherit_temporal_buffer', action='store_true', help='Inherit temporal aggregation buffer on switch to prevent jerk')
     parser.add_argument('--warmup_steps', action='store', type=int, default=0, help='Number of steps to run independent policy in background before switch')
     parser.add_argument('--no_temporal_agg', action='store_true', help='Disable temporal aggregation')
+    parser.add_argument('--x_shift', action='store', type=float, default=0.0, help='Shift all objects along X-axis')
     
     args = parser.parse_args()
     main(args)

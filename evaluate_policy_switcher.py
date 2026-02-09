@@ -610,6 +610,13 @@ def main(args):
     policy_class = args.policy_class
     onscreen_render = args.onscreen_render
 
+    # Import Globals from Sim Env (Moved up to fix UnboundLocalError)
+    from piper_sim_env import MANYCUBES_COLORS, MANYCUBES_TASK_COUNT
+    import piper_constants
+    
+    # Default Fallback (if not defined elsewhere)
+    COLOR_SEQUENCE = list('rrgbrrgbrr') # Default if not provided
+
     # Parse Command Sequence
     command_queue = list(args.commands) if args.commands else []
     print(f"Command Sequence: {command_queue}")
@@ -741,7 +748,13 @@ def main(args):
     time_limit = (scheduler.max_timesteps + 200) * DT 
     
     # Pass camera_names to avoid rendering default 5 cameras (huge speedup)
-    # Pass time_limit to avoid 1000 step reset
+    import piper_constants
+    if args.x_shift:
+        piper_constants.MANYCUBES_CONFIG['x_shift'] = args.x_shift
+        print(f"Applying x-shift: {args.x_shift}")
+    
+    # Environment Setup
+    from piper_sim_env import make_sim_env
     env = make_sim_env(task_name, camera_names=camera_names, time_limit=time_limit, interleave_last_four=args.interleave_objects)
     
     # Initialize render vars
@@ -1421,6 +1434,7 @@ if __name__ == '__main__':
     parser.add_argument('--max_timesteps', action='store', type=int, default=None, help='Hard limit on episode steps')
     parser.add_argument('--sync_arms', action='store_true', help='Enable Sync Wait logic (Hold) before Cooperative tasks')
     parser.add_argument('--reset_on_subtask', action='store_true', help='Reset independent policy buffers on subtask switch')
+    parser.add_argument('--x_shift', action='store', type=float, default=0.0, help='Shift all objects along X-axis')
     
     args = parser.parse_args()
     main(args)
