@@ -454,7 +454,7 @@ class ManyCubesTask(BimanualPiperTask):
             np.copyto(physics.data.ctrl, ctrl_with_belt)
             
             # Start position and spacing for queue
-            start_x = 0.2
+            start_x = 0.02
             spacing = -0.15 
             
             # Colors: R, G, B

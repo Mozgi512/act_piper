@@ -593,13 +593,14 @@ class ManyCubesEETask(BimanualPiperEETask):
             # Interactive Mode Override: Linear Queue 0..9 (Same logic as piper_sim_env)
             # Interactive Mode Override: Linear Queue 0..9 (Same logic as piper_sim_env)
             if MANYCUBES_COLORS[0] is not None:
-                 start_x = 0.3
+                 start_x = 0.0
                  spacing = 0.15
                  
                  # Apply global shift
-                 shift_val = MANYCUBES_CONFIG.get('x_shift', 0.0)
+                 #shift_val = MANYCUBES_CONFIG.get('x_shift', 0.0)
                  
-                 px = (start_x - i * spacing) + shift_val + np.random.uniform(-0.04, 0.04)
+                 #px = (start_x - i * spacing) + shift_val + np.random.uniform(-0.04, 0.04)
+                 px = (start_x - i * spacing) + np.random.uniform(-0.04, 0.04)
                  py = np.random.uniform(0.32, 0.45)
                  np.copyto(physics.data.qpos[qpos_adr : qpos_adr + 7], [px, py, 0.025, 1, 0, 0, 0])
             else:

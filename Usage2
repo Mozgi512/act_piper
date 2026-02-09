@@ -12,7 +12,7 @@ python3 generate_dataset.py \
     --dataset_dir data3/prev_data \
     --num_episodes 30 \
     --commands ICLICR \
-    --color_sequence rrbgrrrgbr \
+    --color_sequence rrbgrrrgbr \I
     --onscreen_render \
     --no_save_data 
 
@@ -48,7 +48,7 @@ python3 merge_datasets.py --input_dirs data3/interval_data_custom_coop data3/coh
 python3 pad_dataset.py --input_dir data3/multitask_merge --output_dir data3/multitask_padded
 
 # 協調データ可視化
-python3 visualize_episodes.py --dataset_dir  data3/interval_data_cooperative_merged/seg_2 --episode_idx 0
+python3 visualize_episodes.py --dataset_dir  data3/e2e_merged --episode_idx 60
 
 
 
@@ -261,7 +261,59 @@ python3 imitate_episodes.py \
     --prefetch_factor 2 \
     --use_cache \
     --use_cuda_graph \
+    --load_ckpt ckpt3/pretrained_c/policy_best.ckpt \
     --validation_interval 100 --num_episodes 180 --episode_len 783 --reset_optimizer
+
+
+
+
+
+
+
+
+
+
+python3 imitate_episodes.py \
+    --task_name sim_dataset_c \
+    --ckpt_dir ckpt/pretrained_e2e \
+    --dataset_dir data/e2e_pretrain_padded \
+    --policy_class ACT --kl_weight 10 --chunk_size 100 --hidden_dim 512 \
+    --batch_size 32 \
+    --dim_feedforward 3200 \
+    --num_epochs 20000 --lr 1e-5 \
+    --seed 0 \
+    --num_workers 4 \
+    --persistent_workers \
+    --prefetch_factor 2 \
+    --use_cache \
+    --use_cuda_graph \
+    --validation_interval 100 --num_episodes 100 --episode_len 770
+
+python3 imitate_episodes.py \
+    --task_name sim_dataset_c \
+    --ckpt_dir ckpt/finetune_e2e \
+    --dataset_dir data/e2e_padded \
+    --policy_class ACT --kl_weight 10 --chunk_size 100 --hidden_dim 512 \
+    --batch_size 32 \
+    --dim_feedforward 3200 \
+    --num_epochs 20000 --lr 1e-5 \
+    --seed 0 \
+    --num_workers 4 \
+    --persistent_workers \
+    --prefetch_factor 2 \
+    --use_cache \
+    --use_cuda_graph \
+    --load_ckpt ckpt/pretrained_e2e/policy_best.ckpt \
+    --validation_interval 100 --num_episodes 90 --episode_len 2524 --reset_optimizer
+
+
+
+
+
+
+
+
+
 
 
 

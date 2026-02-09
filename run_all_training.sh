@@ -34,40 +34,6 @@ echo "=========================================="
 echo ""
 
 # ============================================
-# Pre-training 1/3: Left Arm
-# ============================================
-echo "=========================================="
-echo "[1/6] Pre-training Left Arm"
-echo "=========================================="
-echo ""
-
-python3 independent_imitate_episodes.py \
-    --task_name sim_dataset_i \
-    --ckpt_dir ckpt3/pretrained_left \
-    --dataset_dir data3/pretrain_left_padded \
-    --policy_class ACT \
-    --kl_weight 10 --chunk_size 100 --hidden_dim 512 --batch_size 32 --dim_feedforward 3200 \
-    --num_epochs 20000 --lr 1e-5 \
-    --seed 0 --arm left --num_episodes 100 --num_workers 4 \
-    --persistent_workers \
-    --prefetch_factor 2 \
-    --use_cache \
-    --use_cuda_graph \
-    --validation_interval 100 --episode_len 370 \
-    2>&1 | tee logs/pretrain_left.log
-
-if [ ${PIPESTATUS[0]} -ne 0 ]; then
-    echo "❌ [1/6] pretrained_left failed!"
-    exit 1
-fi
-
-echo ""
-echo "✅ [1/6] pretrained_left completed!"
-echo ""
-
-# ============================================
-# Pre-training 2/3: Right Arm
-# ============================================
 echo "=========================================="
 echo "[2/6] Pre-training Right Arm"
 echo "=========================================="
@@ -233,7 +199,8 @@ python3 imitate_episodes.py \
     --prefetch_factor 2 \
     --use_cache \
     --use_cuda_graph \
-    --validation_interval 100 --num_episodes 180 --episode_len 783 --reset_optimizer \
+    --load_ckpt ckpt3/pretrained_c/policy_best.ckpt \
+    --validation_interval 100 --num_episodes 180 --episode_len 791 --reset_optimizer \
     2>&1 | tee logs/finetune_c.log
 
 if [ ${PIPESTATUS[0]} -ne 0 ]; then

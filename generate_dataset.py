@@ -76,6 +76,7 @@ def main(args):
 
             # Global Random X-Shift (0.0 to 0.10)
             # Combined with base shift 0.02, total shift is 0.02 to 0.12
+            # NOTE: This randomization occurs on EVERY retry attempt
             x_shift = np.random.uniform(0.00, 0.10)
             MANYCUBES_CONFIG['x_shift'] = x_shift
             print(f"  [Gen] Global X-Shift: {x_shift:.3f} (Start X effectively {0.02 + x_shift:.3f})")
@@ -89,7 +90,7 @@ def main(args):
                 xs = [(start_x - i * spacing) + x_shift for i in range(10)]
             
                 # Identify spatial candidates
-                left_candidates = [i for i, x in enumerate(xs) if x < -0.15 and x > -0.4]
+                left_candidates = [i for i, x in enumerate(xs) if x < -0.10 and x > -0.4]
                 right_candidates = [i for i, x in enumerate(xs) if x > 0.00 and x < 0.3]
             
                 if not left_candidates or not right_candidates:
@@ -132,11 +133,16 @@ def main(args):
                     c_list[indices[1]] = pair[1]
                 
                     color_seq = c_list
-        
-            # Inject color sequence (use custom or default)
-            MANYCUBES_COLORS[0] = color_seq if color_seq is not None else COLOR_SEQUENCE
-            # Set expected task count based on command sequence
-            MANYCUBES_TASK_COUNT[0] = len(command_queue_template)
+            
+                # Inject for pretrain mode
+                MANYCUBES_COLORS[0] = color_seq
+                MANYCUBES_TASK_COUNT[0] = len(command_queue_template)
+            
+            else:
+                # Normal mode: use provided command sequence and color sequence
+                # command_queue_template and color_seq are already set from args
+                MANYCUBES_COLORS[0] = color_seq if color_seq is not None else COLOR_SEQUENCE
+                MANYCUBES_TASK_COUNT[0] = len(command_queue_template)
         
             # Force EGL for headless rendering during rollout (if needed, or just let it be)
             # os.environ['MUJOCO_GL'] = 'egl' 
@@ -364,12 +370,30 @@ def main(args):
             avg_step_time = np.mean(step_times) * 1000
             print(f"  Replay completed in {replay_time:.1f}s ({avg_step_time:.1f}ms/step)")
 
-            # Verify Success based on metadata existence
-            # If metadata (segments) exists, the episode is valid
+            # Calculate expected max reward from command sequence
+            # I (Independent): 2 points (2 red cubes)
+            # C (Cooperative): 2 points (1 green-blue pair)
+            # L (Left Independent): 1 point (1 red cube)
+            # R (Right Independent): 1 point (1 red cube)
+            # T (Transfer): 2 points (cooperative variant)
+            independent_i_count = command_queue_template.count('I')  # 2 points each
+            independent_lr_count = command_queue_template.count('L') + command_queue_template.count('R')  # 1 point each
+            cooperative_count = command_queue_template.count('C') + command_queue_template.count('T')  # 2 points each
+            expected_max_reward = 2 * independent_i_count + 1 * independent_lr_count + 2 * cooperative_count
+            
+            print(f"  Max reward achieved: {max_reward_achieved} / {expected_max_reward} expected")
+
+            # Verify Success based on:
+            # 1. Metadata existence (segments)
+            # 2. Max reward achieved
             if left_segments or right_segments:
-                print(f"Episode {episode_idx} Successful (Metadata generated)")
-                episode_success = True
-                success_count += 1
+                if max_reward_achieved >= expected_max_reward:
+                    print(f"Episode {episode_idx} Successful (Metadata generated, Max reward achieved)")
+                    episode_success = True
+                    success_count += 1
+                else:
+                    print(f"Episode {episode_idx} Failed (Max reward not achieved: {max_reward_achieved}/{expected_max_reward})")
+                    retry_count += 1
             else:
                 print(f"Episode {episode_idx} Failed (No metadata generated)")
                 retry_count += 1

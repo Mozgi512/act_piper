@@ -453,7 +453,7 @@ class ManyCubesTask(BimanualPiperTask):
             np.copyto(physics.data.ctrl, ctrl_with_belt)
             
             # Start position and spacing for queue
-            start_x = 0.2
+            start_x = 0.0
             spacing = -0.15 
             
             # Colors: R, G, B
@@ -533,7 +533,7 @@ class ManyCubesTask(BimanualPiperTask):
                 # 1 should be Upstream of 0.
                 if MANYCUBES_COLORS[0] is not None:
                      poses = {} # Clear specials
-                     start_x = 0.02 # Start of working area
+                     start_x = 0.0 # Start of working area
                      spacing = 0.15 # Spacing towards Upstream (+X)
                      for i in range(10):
                          # x = start + i*spacing
@@ -560,7 +560,6 @@ class ManyCubesTask(BimanualPiperTask):
                          py = np.random.uniform(0.32, 0.45)
                          poses[i] = np.array([px, py, 0.025, 1, 0, 0, 0])
                          print(f"Debug: Cube {i} initialized at X={px:.3f}, Y={py:.3f}")
-                     ref_x = 0 # Ignored
             
                      ref_x = 0 # Ignored
             
@@ -625,7 +624,7 @@ class ManyCubesTask(BimanualPiperTask):
 
             # REDO GENERATION LOGIC for Interleave (Override previous loop 536)
             if MANYCUBES_COLORS[0] is not None and self.interleave_last_four:
-                 start_x = 0.02
+                 start_x = 0.00
                  # DENSE PLACEMENT: Reduce spacing to 0.08 (approx half of 0.15)
                  # effectively filling the gaps between typical 0.15 spacing.
                  # Cube size is ~0.05, so 0.08 leaves 0.03 gap.
@@ -636,7 +635,7 @@ class ManyCubesTask(BimanualPiperTask):
                      cube_idx = slot_to_cube_map[slot_i]
                      px = start_x - slot_i * spacing
                      # Apply global shift
-                     px += MANYCUBES_CONFIG.get('x_shift', 0.0)
+                     #px += MANYCUBES_CONFIG.get('x_shift', 0.0)
 
                      # Apply X Randomization
                      px += np.random.uniform(-0.05, 0.05)
