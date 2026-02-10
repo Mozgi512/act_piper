@@ -434,3 +434,40 @@ def sample_cube_pose(x_range, y_range):
 
     cube_quat = np.array([1, 0, 0, 0])
     return np.concatenate([cube_position, cube_quat])
+
+def apply_policy_mask(image, policy_type):
+    """
+    Applies color masking based on the active policy type.
+    - INDEP Policy: Mask Green AND Blue Objects (G>240 and B>240) -> Grey
+    - COOP Policy: Mask Red Objects (R>240) -> Grey
+    Wait, user said "independent policy input G and B mask, cooperative policy R mask".
+    And "conditions are R>240, G>240, B>240".
+    """
+    image = image.copy() # Ensure we don't modify the source
+    mask = None
+    
+    # Simple thresholds
+    t = 80
+    t_low = 72
+    
+    # Extract channels for clarity
+    r = image[:, :, 0]
+    g = image[:, :, 1]
+    b = image[:, :, 2]
+    
+    if policy_type == 'INDEP':
+        # Mask Green (> 180 & others < 50) OR Blue (> 180 & others < 50)
+        mask_g = (g > t) & (r < t_low) & (b < t_low)
+        mask_b = (b > t) & (r < t_low) & (g < t_low)
+        mask = mask_g | mask_b
+        
+    elif policy_type == 'COOP':
+        # Mask Red (> 180 & others < 50)
+        mask_r = (r > t) & (g < t_low) & (b < t_low)
+        mask = mask_r
+        
+    if mask is not None:
+        # Apply Grey [100, 100, 100]
+        image[mask] = [50, 50, 50]
+        
+    return image

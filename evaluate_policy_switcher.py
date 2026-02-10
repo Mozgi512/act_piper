@@ -1007,6 +1007,19 @@ def main(args):
                              if not is_at_home(qpos_numpy[7:14], home_pose[7:14]):
                                   if last_active_r_state: plan_r_state = last_active_r_state
 
+                        # Check for switching to trigger chunk align
+                        mode_switch_detected = False
+                        if 'prev_plan_l_state' in locals() and prev_plan_l_state != plan_l_state:
+                             mode_switch_detected = True
+                        if 'prev_plan_r_state' in locals() and prev_plan_r_state != plan_r_state:
+                             mode_switch_detected = True
+                        
+                        prev_plan_l_state = plan_l_state
+                        prev_plan_r_state = plan_r_state
+                        
+                        if mode_switch_detected and not temporal_agg:
+                             step_in_chunk = 0
+
                         # 1. Query Dual (Coop)
 
                         # 1. Query Dual (Coop)
@@ -1091,7 +1104,9 @@ def main(args):
                         raw_action_dual = raw_action_dual.squeeze(0).cpu().numpy()
                         current_raw_action_l = raw_action_dual[:7]
                     else:
-                        current_raw_action_l = current_action_chunk_dual[step_in_chunk][:7]
+                        safe_step = step_in_chunk 
+                        if safe_step >= chunk_size: safe_step = 0
+                        current_raw_action_l = current_action_chunk_dual[safe_step][:7]
                 else:
                     if temporal_agg:
                         actions_for_curr_step_l = all_time_actions_left[:, t] # No offset in eval usually?
@@ -1107,7 +1122,9 @@ def main(args):
                         raw_action_l = (actions_for_curr_step_l * exp_weights_l).sum(dim=0, keepdim=True)
                         current_raw_action_l = raw_action_l.squeeze(0).cpu().numpy()
                     else:
-                        current_raw_action_l = current_action_chunk_left[step_in_chunk]
+                        safe_step = step_in_chunk 
+                        if safe_step >= chunk_size: safe_step = 0
+                        current_raw_action_l = current_action_chunk_left[safe_step]
 
                 # --- Right ---
                 if r_state == 'COOP':
@@ -1125,7 +1142,9 @@ def main(args):
                         raw_action_dual = raw_action_dual.squeeze(0).cpu().numpy()
                         current_raw_action_r = raw_action_dual[7:]
                     else:
-                        current_raw_action_r = current_action_chunk_dual[step_in_chunk][7:]
+                        safe_step = step_in_chunk 
+                        if safe_step >= chunk_size: safe_step = 0
+                        current_raw_action_r = current_action_chunk_dual[safe_step][7:]
                 else:
                     if temporal_agg:
                         actions_for_curr_step_r = all_time_actions_right[:, t]
@@ -1141,7 +1160,9 @@ def main(args):
                         raw_action_r = (actions_for_curr_step_r * exp_weights_r).sum(dim=0, keepdim=True)
                         current_raw_action_r = raw_action_r.squeeze(0).cpu().numpy()
                     else:
-                        current_raw_action_r = current_action_chunk_right[step_in_chunk]
+                        safe_step = step_in_chunk 
+                        if safe_step >= chunk_size: safe_step = 0
+                        current_raw_action_r = current_action_chunk_right[safe_step]
 
                 # --- Denorm ---
                 if l_state == 'COOP':

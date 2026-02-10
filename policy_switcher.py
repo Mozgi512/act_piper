@@ -1037,27 +1037,46 @@ def main(args):
                     if not temporal_agg:
                         step_in_chunk = 0 # Reset only if not agg
 
-                # Query Logic:
-                # If ANY arm is COOP, we query Dual policy.
-                # If ANY arm is INDEP, we query its Independent policy.
+                if step_in_chunk >= chunk_size and not temporal_agg:
+                    step_in_chunk = 0
+
+                # Determine states first
+                current_plan_l_state = 'INDEP'
+                current_plan_r_state = 'INDEP'
                 
-                # Check states for next step planning
                 if scheduler:
-                     plan_l_state, _ = scheduler.get_arm_state(t, 'left')
-                     plan_r_state, _ = scheduler.get_arm_state(t, 'right')
+                     current_plan_l_state, _ = scheduler.get_arm_state(t, 'left')
+                     current_plan_r_state, _ = scheduler.get_arm_state(t, 'right')
                      
                      if args.disable_hold:
-                         if plan_l_state == 'HOLD': plan_l_state = 'INDEP'
-                         if plan_r_state == 'HOLD': plan_r_state = 'INDEP'
+                         if current_plan_l_state == 'HOLD': current_plan_l_state = 'INDEP'
+                         if current_plan_r_state == 'HOLD': current_plan_r_state = 'INDEP'
                 else:
-                     plan_l_state = 'COOP' if current_mode == MODE_COOP else 'INDEP'
-                     plan_r_state = 'COOP' if current_mode == MODE_COOP else 'INDEP'
+                     current_plan_l_state = 'COOP' if current_mode == MODE_COOP else 'INDEP'
+                     current_plan_r_state = 'COOP' if current_mode == MODE_COOP else 'INDEP'
+                
+                # Check for mode switch
+                mode_switch_detected = False
+                if 'prev_plan_l_state' in locals() and prev_plan_l_state != current_plan_l_state:
+                     mode_switch_detected = True
+                if 'prev_plan_r_state' in locals() and prev_plan_r_state != current_plan_r_state:
+                     mode_switch_detected = True
+                
+                prev_plan_l_state = current_plan_l_state
+                prev_plan_r_state = current_plan_r_state
+                
+                if mode_switch_detected and not temporal_agg:
+                     step_in_chunk = 0
+                
+                plan_l_state = current_plan_l_state
+                plan_r_state = current_plan_r_state
                 
                 # 1. Query Dual (if needed by ANY arm)
-                if plan_l_state == 'COOP' or plan_r_state == 'COOP':
+                should_query_dual = (step_in_chunk == 0) or temporal_agg
+                if (plan_l_state == 'COOP' or plan_r_state == 'COOP') and should_query_dual:
                      # Prepare input for Dual Policy
                     qpos_numpy_dual = qpos_numpy.copy()
-                     
+                      
                      # --- GHOST ARM LOGIC (Overlap Stability) ---
                      # If one arm is INDEP, mask its qpos with Home Pose so Dual Policy sees a stable "dummy" partner
                     if plan_l_state == 'COOP' and plan_r_state == 'INDEP':
@@ -1080,7 +1099,8 @@ def main(args):
                         current_action_chunk_dual = action_chunk.squeeze(0).cpu().numpy()
 
                 # 2. Query Independent Left (if needed)
-                if plan_l_state == 'INDEP':
+                should_query_l = (step_in_chunk == 0) or temporal_agg
+                if plan_l_state == 'INDEP' and should_query_l:
                      qpos_left_numpy = qpos_numpy[:7]
                      qpos_left = pre_process_left(qpos_left_numpy)
                      qpos_left = torch.from_numpy(qpos_left).float().cuda().unsqueeze(0)
@@ -1093,7 +1113,8 @@ def main(args):
                          current_action_chunk_left = action_chunk_l.squeeze(0).cpu().numpy()
                 
                 # 3. Query Independent Right (if needed)
-                if plan_r_state == 'INDEP':
+                should_query_r = (step_in_chunk == 0) or temporal_agg
+                if plan_r_state == 'INDEP' and should_query_r:
                      qpos_right_numpy = qpos_numpy[7:14]
                      qpos_right = pre_process_right(qpos_right_numpy)
                      qpos_right = torch.from_numpy(qpos_right).float().cuda().unsqueeze(0)
@@ -1139,7 +1160,9 @@ def main(args):
                         raw_action_dual = raw_action_dual.squeeze(0).cpu().numpy()
                         current_raw_action_l = raw_action_dual[:7]
                     else:
-                        current_raw_action_l = current_action_chunk_dual[step_in_chunk][:7]
+                        safe_step = step_in_chunk 
+                        if safe_step >= chunk_size: safe_step = 0
+                        current_raw_action_l = current_action_chunk_dual[safe_step][:7]
                     
                     # Post-process Left using Dual stats
                     # Actually, raw_action_dual is normalized with Dual stats.
@@ -1165,7 +1188,9 @@ def main(args):
                         raw_action_l = (actions_for_curr_step_l * exp_weights_l).sum(dim=0, keepdim=True)
                         current_raw_action_l = raw_action_l.squeeze(0).cpu().numpy()
                     else:
-                        current_raw_action_l = current_action_chunk_left[step_in_chunk]
+                        safe_step = step_in_chunk 
+                        if safe_step >= chunk_size: safe_step = 0
+                        current_raw_action_l = current_action_chunk_left[safe_step]
                 else:
                     # HOLD mode - no raw action needed
                     current_raw_action_l = None
@@ -1187,7 +1212,9 @@ def main(args):
                         raw_action_dual = raw_action_dual.squeeze(0).cpu().numpy()
                         current_raw_action_r = raw_action_dual[7:]
                     else:
-                        current_raw_action_r = current_action_chunk_dual[step_in_chunk][7:]
+                        safe_step = step_in_chunk 
+                        if safe_step >= chunk_size: safe_step = 0
+                        current_raw_action_r = current_action_chunk_dual[safe_step][7:]
                 elif r_state == 'INDEP':
                     # Independent Mode for Right
                     if temporal_agg:
@@ -1200,7 +1227,9 @@ def main(args):
                         
                         if weights_len_r == 0:
                              # Fallback: if buffer is somehow empty, use current chunk step
-                             current_raw_action_r = current_action_chunk_right[step_in_chunk]
+                             safe_step = step_in_chunk 
+                             if safe_step >= chunk_size: safe_step = 0
+                             current_raw_action_r = current_action_chunk_right[safe_step]
                         else:
                              exp_weights_r = np.exp(-k * (weights_len_r - 1 - np.arange(weights_len_r)))
                              exp_weights_r = exp_weights_r / exp_weights_r.sum()
@@ -1208,7 +1237,9 @@ def main(args):
                              raw_action_r = (actions_for_curr_step_r * exp_weights_r).sum(dim=0, keepdim=True)
                              current_raw_action_r = raw_action_r.squeeze(0).cpu().numpy()
                     else:
-                        current_raw_action_r = current_action_chunk_right[step_in_chunk]
+                        safe_step = step_in_chunk 
+                        if safe_step >= chunk_size: safe_step = 0
+                        current_raw_action_r = current_action_chunk_right[safe_step]
                 else:
                     # HOLD mode - no raw action needed
                     current_raw_action_r = None

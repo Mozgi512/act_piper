@@ -417,9 +417,6 @@ python3 evaluate_policy_switcher.py \
 
 
 
-
-
-
 python3 state_switcher.py \
     --task_name sim_many_cubes \
     --ckpt_dual ckpt2/C/policy_best.ckpt \
@@ -429,7 +426,22 @@ python3 state_switcher.py \
     --policy_class ACT --kl_weight 10 --chunk_size 100 --hidden_dim 512 --dim_feedforward 3200 \
     --inherit_temporal_buffer \
     --warmup_steps 100 --num_rollouts 50 \
-    --color_sequence rbrgrgrbrr --onscreen_render --episode_len 2300 
+    --color_sequence rgrbrbrgrr --onscreen_render --episode_len 2300 --seed 1 \
+    --temporal_agg_transition_only --temporal_agg_window 50
+
+
+
+python3 state_switcher.py \
+    --task_name sim_many_cubes \
+    --ckpt_dual ckpt3/finetune_c/policy_best.ckpt \
+    --ckpt_left ckpt3/finetune_left/policy_best.ckpt \
+    --ckpt_right ckpt3/finetune_right/policy_best.ckpt \
+    --state_ckpt state_classifier_best.pth \
+    --policy_class ACT --kl_weight 10 --chunk_size 75 --hidden_dim 512 --dim_feedforward 3200 \
+    --inherit_temporal_buffer \
+    --warmup_steps 100 --num_rollouts 50 \
+    --color_sequence rbrgrgrbrr --onscreen_render --episode_len 2300 --mask_images --seed 2 --temporal_agg_k 0.05 \
+    --temporal_agg_transition_only --temporal_agg_window 50
 
 
 python3 evaluate_policy_switcher.py \
@@ -442,4 +454,4 @@ python3 evaluate_policy_switcher.py \
 
 
 
-   
+
