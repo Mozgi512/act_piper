@@ -320,9 +320,9 @@ python3 imitate_episodes.py \
 #状態分類器の学習
 
 python3 train_state_classifier.py \
-    --dataset_dirs data2/interval_data data2/prev_data data2/coherence_data \
+    --dataset_dirs data2/interval_dara data2/prev_data data2/coherence_data \
     --lookahead 50 \
-    --epochs 20 \
+    --epochs 100 \
     --batch_size 32
 
 #検証
@@ -431,27 +431,28 @@ python3 state_switcher.py \
 
 
 
+
+
+python3 evaluate_policy_switcher.py \
+    --task_name sim_many_cubes \
+    --ckpt_e2e ckpt3/finetune_e2e \
+    --policy_class ACT --kl_weight 10 --chunk_size 100 --hidden_dim 512 --dim_feedforward 3200 \
+    --num_rollouts 10 \
+    --color_sequence rgrbrgrbrr \
+    --max_timesteps 2500 --onscreen_render --save_video videos/result_e2e
+
+
+
 python3 state_switcher.py \
     --task_name sim_many_cubes \
     --ckpt_dual ckpt3/finetune_c/policy_best.ckpt \
     --ckpt_left ckpt3/finetune_left/policy_best.ckpt \
     --ckpt_right ckpt3/finetune_right/policy_best.ckpt \
     --state_ckpt state_classifier_best.pth \
-    --policy_class ACT --kl_weight 10 --chunk_size 75 --hidden_dim 512 --dim_feedforward 3200 \
+    --policy_class ACT --kl_weight 10 --chunk_size 50 --hidden_dim 512 --dim_feedforward 3200 \
     --inherit_temporal_buffer \
-    --warmup_steps 100 --num_rollouts 50 \
-    --color_sequence rbrgrgrbrr --onscreen_render --episode_len 2300 --mask_images --seed 2 --temporal_agg_k 0.05 \
-    --temporal_agg_transition_only --temporal_agg_window 50
+    --warmup_steps 50 --num_rollouts 1 \
+    --color_sequence rrgbrrrrrr --onscreen_render --episode_len 2300 --seed 4 --temporal_agg_k 0.05 \
+    --save_video videos/result_hie --mask_images 
 
-
-python3 evaluate_policy_switcher.py \
-    --task_name sim_many_cubes \
-    --ckpt_e2e ckpt2/e2e_40000 \
-    --policy_class ACT --kl_weight 10 --chunk_size 100 --hidden_dim 512 --dim_feedforward 3200 \
-    --num_rollouts 10 \
-    --color_sequence rbrgrgrbrr \
-    --max_timesteps 2300 --onscreen_render --save_video videos/remixed_interval_e2e
-
-
-
-
+--save_hitl_data_path hitl/

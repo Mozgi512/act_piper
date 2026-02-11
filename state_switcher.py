@@ -48,20 +48,44 @@ MODE_INDEPENDENT = '1'
 MODE_COOP = '2'
 
 
-def is_data():
-    return select.select([sys.stdin], [], [], 0) == ([sys.stdin], [], [])
-
-def get_key():
-    if is_data():
-        return sys.stdin.read(1)
-    return None
-
 def make_policy(policy_class, policy_config):
     if policy_class == 'ACT':
         policy = ACTPolicy(policy_config)
     else:
         raise NotImplementedError
     return policy
+
+# --- HITL UTILS ---
+import termios
+import tty
+
+def get_hitl_key():
+    """Read a single keypress from stdin without waiting for Enter (Non-blocking check).
+    Assumes terminal is already in cbreak mode (set at startup)."""
+    if select.select([sys.stdin], [], [], 0) == ([sys.stdin], [], []):
+        ch = sys.stdin.read(1)
+        return ch
+    return None
+
+def save_hitl_data(save_dir, episode_idx, images_np, labels_l, labels_r):
+    """Save HITL data to HDF5."""
+    if not os.path.exists(save_dir):
+        os.makedirs(save_dir)
+        
+    path = os.path.join(save_dir, f'episode_{episode_idx}.hdf5')
+    with h5py.File(path, 'w') as f:
+        # Observations
+        f.create_dataset('observations/images/top', data=images_np, compression='gzip')
+        
+        # HITL Labels (Frame-wise)
+        f.create_dataset('labels/left', data=labels_l)
+        f.create_dataset('labels/right', data=labels_r)
+        
+        # Metadata flag
+        f.create_group('metadata')
+        f['metadata'].attrs['hitl'] = True
+        
+    print(f"Saved HITL data to {path}")
 
 def apply_torch_rgb_mask(images, strip_width=40, arm='right'):
     """
@@ -329,7 +353,7 @@ def apply_magnet_logic(physics, magnetized_pairs, color_sequence=None):
         blues = [9]
 
     # 2. Check for new magnetizations
-    threshold = 0.08 # 8cm (Center-to-Center). Cube size is 5cm.
+    threshold = 0.06 # 8cm (Center-to-Center). Cube size is 5cm.
     
     for g_idx in greens:
         if g_idx in magnetized_pairs: continue
@@ -649,7 +673,8 @@ def main(args):
     import piper_constants
     if args.x_shift:
         piper_constants.MANYCUBES_CONFIG['x_shift'] = args.x_shift
-        print(f"Applying x-shift: {args.x_shift}")
+        piper_constants.MANYCUBES_CONFIG['x_shift_start_idx'] = args.x_shift_start_idx
+        print(f"Applying x-shift: {args.x_shift} starting from index {args.x_shift_start_idx}")
 
     print(f"Creating Simulation Environment with time_limit={time_limit:.2f}s ({max_timesteps} steps + buffer)")
     env = make_sim_env(task_name, time_limit=time_limit)
@@ -734,6 +759,20 @@ def main(args):
     home_pose[7:13] = START_ARM_POSE[8:14]
     home_pose[13] = START_ARM_POSE[14]
 
+    # State mapping for Labels
+    def state_to_int(state_str):
+        if state_str == 'HOLD': return STATE_HOLD
+        if state_str == 'INDEP': return STATE_INDEP
+        if state_str == 'COOP': return STATE_COOP
+        return STATE_HOLD
+
+    # HITL State Tracking (Initialize before loop)
+    hitl_mode_l = 'AUTO'
+    hitl_mode_r = 'AUTO'
+    hitl_images = []
+    hitl_labels_l = []
+    hitl_labels_r = []
+
     try:
         t = 0
         video_frames = []
@@ -777,15 +816,15 @@ def main(args):
         transition_window_active_r = 0
         
         while True:
-            # Check input
-            key = None
+            # Check input (for quit)
+            quit_key = None
             if old_settings:
-                key = get_key()
-            if key == 'q':
+                quit_key = get_hitl_key()
+            if quit_key == 'q':
                 break
                 
-            # Render update matching imitate_episodes.py timing
-            if onscreen_render:
+            # Render update (optimized: every 5 frames)
+            if onscreen_render and t % 5 == 0:
                 # Exit if window is closed
                 if not plt.get_fignums():
                     print("Window closed. Exiting...")
@@ -794,27 +833,29 @@ def main(args):
                 image = env._physics.render(height=240, width=320, camera_id='top')
                 plt_img_main.set_data(image)
                 
-                # Real-time Visualization of Policy Inputs
-                # Generate inputs from current TS regardless of policy query status
-                # 1. Coop Input (Full Width)
-                viz_img_coop_t = get_image_dual(ts, camera_names, mask=args.mask_images)
-                viz_img_coop = viz_img_coop_t[0, 0].permute(1, 2, 0).cpu().numpy()
-                viz_img_coop = np.clip(viz_img_coop * 255, 0, 255).astype(np.uint8)
-                plt_img_coop.set_data(viz_img_coop)
-                
-                # 2. Left Input (Half Width)
-                viz_img_l_t = get_image_independent(ts, camera_names, 'left', mask=args.mask_images)
-                viz_img_l = viz_img_l_t[0, 0].permute(1, 2, 0).cpu().numpy()
-                viz_img_l = np.clip(viz_img_l * 255, 0, 255).astype(np.uint8)
-                plt_img_l.set_data(viz_img_l)
-                
-                # 3. Right Input (Half Width)
-                viz_img_r_t = get_image_independent(ts, camera_names, 'right', mask=args.mask_images)
-                viz_img_r = viz_img_r_t[0, 0].permute(1, 2, 0).cpu().numpy()
-                viz_img_r = np.clip(viz_img_r * 255, 0, 255).astype(np.uint8)
-                plt_img_r.set_data(viz_img_r)
+                # Real-time Visualization of Policy Inputs (DISABLED for performance)
+                # # 1. Coop Input (Full Width)
+                # viz_img_coop_t = get_image_dual(ts, camera_names, mask=args.mask_images)
+                # viz_img_coop = viz_img_coop_t[0, 0].permute(1, 2, 0).cpu().numpy()
+                # viz_img_coop = np.clip(viz_img_coop * 255, 0, 255).astype(np.uint8)
+                # plt_img_coop.set_data(viz_img_coop)
+                # 
+                # # 2. Left Input (Half Width)
+                # viz_img_l_t = get_image_independent(ts, camera_names, 'left', mask=args.mask_images)
+                # viz_img_l = viz_img_l_t[0, 0].permute(1, 2, 0).cpu().numpy()
+                # viz_img_l = np.clip(viz_img_l * 255, 0, 255).astype(np.uint8)
+                # plt_img_l.set_data(viz_img_l)
+                # 
+                # # 3. Right Input (Half Width)
+                # viz_img_r_t = get_image_independent(ts, camera_names, 'right', mask=args.mask_images)
+                # viz_img_r = viz_img_r_t[0, 0].permute(1, 2, 0).cpu().numpy()
+                # viz_img_r = np.clip(viz_img_r * 255, 0, 255).astype(np.uint8)
+                # plt_img_r.set_data(viz_img_r)
 
-                plt.pause(DT)
+                # Non-blocking update (prevents focus stealing)
+                fig.canvas.draw()
+                fig.canvas.flush_events()
+                time.sleep(DT)
 
             if args.save_video:
                  # Render at 720p (1280x720) for video saving
@@ -1000,7 +1041,49 @@ def main(args):
                             transition_window_active_r = 2 * args.temporal_agg_window
                             print(f"[Step {t}] Right transition {last_active_r_state} -> {plan_r_state}, temporal agg window: {transition_window_active_r} steps")
                     
+                    # Update last active moving state
                     last_active_r_state = plan_r_state
+
+
+            # -----------------------
+            # 4.3 HUMAN-IN-THE-LOOP OVERRIDE
+            # -----------------------
+            key = get_hitl_key()
+            if key:
+                if key == 'q':   hitl_mode_l, hitl_mode_r = 'HOLD', 'INDEP'
+                elif key == 'w': hitl_mode_l, hitl_mode_r = 'INDEP', 'INDEP'
+                elif key == 'e': hitl_mode_l, hitl_mode_r = 'INDEP', 'HOLD'
+                elif key == 'a': hitl_mode_l, hitl_mode_r = 'INDEP', 'COOP'
+                elif key == 's': hitl_mode_l, hitl_mode_r = 'COOP', 'COOP'
+                elif key == 'd': hitl_mode_l, hitl_mode_r = 'COOP', 'INDEP'
+                elif key == ' ': hitl_mode_l, hitl_mode_r = 'AUTO', 'AUTO'
+                
+            # Apply Override
+            is_override = False
+            if hitl_mode_l != 'AUTO':
+                 plan_l_state = hitl_mode_l
+                 # Force commit to prevent debounce from reverting
+                 committed_plan_l_state = plan_l_state 
+                 is_override = True
+            if hitl_mode_r != 'AUTO':
+                 plan_r_state = hitl_mode_r
+                 committed_plan_r_state = plan_r_state
+                 is_override = True
+                 
+            if is_override:
+                 print(f" [HITL override] {hitl_mode_l}/{hitl_mode_r}", end='\r')
+
+
+            # Determine Final Effective State for Saving
+            effective_l = plan_l_state
+            effective_r = plan_r_state
+            
+            # --- Record HITL Data (if enabled) ---
+            if args.save_hitl_data_path:
+                curr_img_top = ts.observation['images']['top'] # (H, W, C) uint8
+                hitl_images.append(curr_img_top)
+                hitl_labels_l.append(state_to_int(effective_l))
+                hitl_labels_r.append(state_to_int(effective_r))
 
             obs = ts.observation
             qpos_numpy = np.array(obs['qpos'])
@@ -1422,6 +1505,20 @@ def main(args):
                     except Exception as e:
                         print(f"Error saving stats: {e}")
 
+                # Save HITL Data if collected
+                if args.save_hitl_data_path and len(hitl_images) > 0:
+                    try:
+                         # Convert to numpy
+                         # Images: list of (H, W, C) -> (N, H, W, C) ? Or (N, H, W, C)?
+                         # Sim render returns (H, W, C)
+                         imgs_np = np.array(hitl_images) 
+                         lbls_l_np = np.array(hitl_labels_l)
+                         lbls_r_np = np.array(hitl_labels_r)
+                         
+                         save_hitl_data(args.save_hitl_data_path, episode_count, imgs_np, lbls_l_np, lbls_r_np)
+                    except Exception as e:
+                         print(f"Error saving HITL data: {e}")
+
                 if episode_count >= args.num_rollouts:
                     break
 
@@ -1436,11 +1533,35 @@ def main(args):
                     all_time_actions_dual.fill_(float_nan)
                     all_time_actions_left.fill_(float_nan)
                     all_time_actions_right.fill_(float_nan)
+                
+                # Reset HITL Buffers
+                hitl_mode_l = 'AUTO'
+                hitl_mode_r = 'AUTO'
+                hitl_images = []
+                hitl_labels_l = []
+                hitl_labels_r = []
                     
         # Summary
-        avg_return = np.mean(episode_returns)
-        print(f"\nEvaluation Finished.")
-        print(f"Average Return: {avg_return:.2f}")
+        # Save any partial HITL data if loop was broken early
+        if args.save_hitl_data_path and len(hitl_images) > 0:
+            try:
+                 print(f"Saving partial HITL data ({len(hitl_images)} frames)...")
+                 imgs_np = np.array(hitl_images) 
+                 lbls_l_np = np.array(hitl_labels_l)
+                 lbls_r_np = np.array(hitl_labels_r)
+                 
+                 # Use a distinct suffix for partial data
+                 save_hitl_data(args.save_hitl_data_path, f"{episode_count}_partial", imgs_np, lbls_l_np, lbls_r_np)
+            except Exception as e:
+                 print(f"Error saving partial HITL data: {e}")
+
+        if len(episode_returns) > 0:
+            avg_return = np.mean(episode_returns)
+            print(f"\nEvaluation Finished.")
+            print(f"Average Return: {avg_return:.2f}")
+        else:
+            print(f"\nEvaluation Finished (No complete episodes).")
+            print(f"Average Return: N/A")
 
     except KeyboardInterrupt:
         print("\nStopped.")
@@ -1478,6 +1599,10 @@ if __name__ == '__main__':
     parser.add_argument('--temporal_agg_transition_only', action='store_true', help='Enable temporal ensembling only around transitions')
     parser.add_argument('--temporal_agg_window', action='store', type=int, default=50, help='Number of steps around transition to enable temporal agg')
     parser.add_argument('--x_shift', action='store', type=float, default=0.0, help='Shift all objects along X-axis')
+    parser.add_argument('--x_shift_start_idx', action='store', type=int, default=0, help='Start index for applying x-shift (0-indexed)')
+    
+    # HITL Arguments
+    parser.add_argument('--save_hitl_data_path', action='store', type=str, help='Path to save HITL correction data (HDF5)')
     parser.add_argument('--seed', action='store', type=int, default=1000, help='Random seed for reproducibility')
     
     parser.add_argument('--mask_images', action='store_true', help="Enable masking of objects based on policy type")

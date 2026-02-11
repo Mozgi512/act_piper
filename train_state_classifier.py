@@ -49,7 +49,7 @@ class StateDataset(Dataset):
             for file_path in tqdm(files, desc=f"Loading Metadata from {os.path.basename(d)}"):
                 try:
                     with h5py.File(file_path, 'r') as f:
-                        if 'metadata' not in f:
+                        if 'metadata' not in f and 'labels/left' not in f:
                             continue
                         
                         # Use length of images or qpos
@@ -57,6 +57,22 @@ class StateDataset(Dataset):
                              continue
                         num_frames = f['observations/images/top'].shape[0]
                         
+                        # --- HITL Data Format Detection ---
+                        if 'labels/left' in f and 'labels/right' in f:
+                            # HITL format: frame-wise labels already provided
+                            print(f"  [HITL] {os.path.basename(file_path)}")
+                            labels_l = f['labels/left'][:]
+                            labels_r = f['labels/right'][:]
+                            
+                            # No lookahead needed, use all frames
+                            stride = 5
+                            for t in range(0, num_frames, stride):
+                                lbl_l = labels_l[t]
+                                lbl_r = labels_r[t]
+                                self.samples.append((file_path, t, lbl_l, lbl_r))
+                            continue
+                        
+                        # --- Original Segment-based Format ---
                         if num_frames <= lookahead:
                             continue
 

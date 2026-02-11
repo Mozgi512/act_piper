@@ -751,7 +751,8 @@ def main(args):
     import piper_constants
     if args.x_shift:
         piper_constants.MANYCUBES_CONFIG['x_shift'] = args.x_shift
-        print(f"Applying x-shift: {args.x_shift}")
+        piper_constants.MANYCUBES_CONFIG['x_shift_start_idx'] = args.x_shift_start_idx
+        print(f"Applying x-shift: {args.x_shift} starting from index {args.x_shift_start_idx}")
     
     # Environment Setup
     from piper_sim_env import make_sim_env
@@ -955,10 +956,9 @@ def main(args):
                     plt.pause(DT)
 
                 if args.save_video:
-                     # User requested 480p (640x480) for video, but obs is 320x240.
-                     # We must re-render for high quality video.
+                     # Render at 720p (1280x720) for video saving
                      onscreen_cam = 'top'
-                     video_frame_highres = env._physics.render(height=240, width=320, camera_id=onscreen_cam)
+                     video_frame_highres = env._physics.render(height=720, width=1280, camera_id=onscreen_cam)
                      video_frames.append(video_frame_highres) 
                 
                 obs = ts.observation
@@ -1456,6 +1456,7 @@ if __name__ == '__main__':
     parser.add_argument('--sync_arms', action='store_true', help='Enable Sync Wait logic (Hold) before Cooperative tasks')
     parser.add_argument('--reset_on_subtask', action='store_true', help='Reset independent policy buffers on subtask switch')
     parser.add_argument('--x_shift', action='store', type=float, default=0.0, help='Shift all objects along X-axis')
+    parser.add_argument('--x_shift_start_idx', action='store', type=int, default=0, help='Start index for applying x-shift (0-indexed)')
     
     args = parser.parse_args()
     main(args)

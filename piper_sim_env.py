@@ -635,7 +635,7 @@ class ManyCubesTask(BimanualPiperTask):
             for i in range(10):
                 # Standard application loop
                 if i in poses:
-                    cube_pose = poses[i]
+                    cube_pose = poses[i].copy()
                 else:
                     # ... legacy queue logic ...
                     # If this runs, it means i wasn't in poses.
@@ -647,6 +647,11 @@ class ManyCubesTask(BimanualPiperTask):
                     cube_y = np.random.uniform(0.30, 0.45)
                     cube_quat = np.array([1, 0, 0, 0])
                     cube_pose = np.concatenate([[cube_x, cube_y, 0.02], cube_quat])
+
+                # Apply x_shift
+                start_shift_idx = MANYCUBES_CONFIG.get('x_shift_start_idx', 0)
+                if i >= start_shift_idx:
+                    cube_pose[0] += MANYCUBES_CONFIG.get('x_shift', 0.0)
 
                 start_idx = physics.model.name2id(f'cube_{i}_joint', 'joint')
                 qpos_adr = physics.model.jnt_qposadr[start_idx]
