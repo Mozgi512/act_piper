@@ -1342,17 +1342,7 @@ def main(args):
                 try: return color_seq[idx]
                 except: return None
 
-            # Merge heuristic targets with currently held objects for Independent view
-            # Independent view should only show RED targets.
-            held_red = []
-            for h_idx in held_indices:
-                 if safe_get_color_local(h_idx) == 'r':
-                      held_red.append(h_idx)
-
-            # We copy to avoid mutating the cached list
-            final_target_indices_i = list(set(current_target_indices_i) | set(held_red))
-
-            # Split independent display per arm: each arm shadow shows at most one RED target.
+            # Independent display candidates: all non-removed cubes.
             def safe_cube_x_local(idx):
                 try:
                     bid = env.physics.model.name2id(f'cube_{idx}', 'body')
@@ -1360,11 +1350,29 @@ def main(args):
                 except:
                     return None
 
+            def is_removed_cube_local(idx):
+                try:
+                    geom_id = env.physics.model.name2id(f'cube_{idx}', 'geom')
+                    alpha = float(env.physics.model.geom_rgba[geom_id, 3])
+                except:
+                    alpha = 1.0
+                try:
+                    body_id = env.physics.model.name2id(f'cube_{idx}', 'body')
+                    z_pos = float(env.physics.data.xpos[body_id][2])
+                except:
+                    z_pos = 0.0
+                return (alpha <= 0.01) or (z_pos < -1.0)
+
+            final_target_indices_i = [
+                idx for idx in range(10)
+                if not is_removed_cube_local(idx)
+            ]
+
             def pick_single_indep_target(arm, candidates, exclude=None):
                 if exclude is None:
                     exclude = set()
 
-                # Split by x=0 and choose max-X red on that side.
+                # Split by x=0 and choose the rightmost (max-X) object on that side.
                 side_candidates = []
                 for idx in candidates:
                     if idx in exclude:
@@ -1386,7 +1394,7 @@ def main(args):
                     best_idx = max(side_candidates, key=lambda t_: t_[0])[1]
                     return [best_idx]
 
-                # If no red exists on this side, show none.
+                # If no candidate exists on this side, show none.
                 return []
 
             final_target_indices_i_left = pick_single_indep_target('left', final_target_indices_i)
@@ -1395,13 +1403,6 @@ def main(args):
                 final_target_indices_i,
                 exclude=set(final_target_indices_i_left),
             )
-
-            # Show independent targets only for arms currently in INDEP mode.
-            # This prevents R objects from appearing in independent shadows during CC/HOLD.
-            if committed_plan_l_state != 'INDEP':
-                final_target_indices_i_left = []
-            if committed_plan_r_state != 'INDEP':
-                final_target_indices_i_right = []
                 
             # Cooperative view must be atomic: exactly one G + one B (or empty).
             # If a pair is latched for delayed removal, keep showing that pair until removed.
@@ -1982,6 +1983,34 @@ def main(args):
                     if transition_window_active_r == 0:
                         # TE finished for Right, force local re-query only
                         force_query_r = True
+
+            # Home-only HL mode: at home update ticks, discard remaining chunks and
+            # start fresh inference so previous task leftovers do not bleed into next task.
+            if args.hl_update_at_home_only:
+                refresh_left_indep = hl_update_tick_l and (plan_l_state == 'INDEP')
+                refresh_right_indep = hl_update_tick_r and (plan_r_state == 'INDEP')
+                refresh_dual_coop = hl_update_tick_l and hl_update_tick_r and (plan_l_state == 'COOP') and (plan_r_state == 'COOP')
+
+                if refresh_left_indep:
+                    current_action_chunk_left = None
+                    step_in_chunk_left = 0
+                    all_time_actions_left.fill_(float_nan)
+                    force_query_l = True
+                    print(f"[Step {t}] Home refresh: LEFT INDEP chunk dropped -> force re-infer")
+
+                if refresh_right_indep:
+                    current_action_chunk_right = None
+                    step_in_chunk_right = 0
+                    all_time_actions_right.fill_(float_nan)
+                    force_query_r = True
+                    print(f"[Step {t}] Home refresh: RIGHT INDEP chunk dropped -> force re-infer")
+
+                if refresh_dual_coop:
+                    current_action_chunk_dual = None
+                    step_in_chunk_dual = 0
+                    all_time_actions_dual.fill_(float_nan)
+                    force_query_dual = True
+                    print(f"[Step {t}] Home refresh: COOP chunk dropped (both home) -> force re-infer")
             with torch.inference_mode():
                 if step_in_chunk_dual >= chunk_size and not (use_temporal_agg_l or use_temporal_agg_r):
                     step_in_chunk_dual = 0
