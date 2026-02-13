@@ -1,0 +1,4 @@
+Episode,Total_Reward,Is_Success,Obj0_Color,Obj0_Status,Obj0_Reward,Obj1_Color,Obj1_Status,Obj1_Reward,Obj2_Color,Obj2_Status,Obj2_Reward,Obj3_Color,Obj3_Status,Obj3_Reward,Obj4_Color,Obj4_Status,Obj4_Reward,Obj5_Color,Obj5_Status,Obj5_Reward,Obj6_Color,Obj6_Status,Obj6_Reward,Obj7_Color,Obj7_Status,Obj7_Reward,Obj8_Color,Obj8_Status,Obj8_Reward,Obj9_Color,Obj9_Status,Obj9_Reward
+1,12374,True,b,Coop_Success,2,r,Indep_Success,1,g,Coop_Success,2,b,Coop_Success,2,r,Indep_Success,1,g,Coop_Success,2,g,Coop_Success,2,b,Coop_Success,2,r,Indep_Success,1,r,Indep_Success,1
+2,4805,False,r,Indep_Success,1,r,Indep_Success,1,b,Fail,0,g,Fail,0,r,Fail,0,g,Fail,0,r,Fail,0,b,Fail,0,g,Fail,0,b,Fail,0
+1,7733,False,r,Indep_Success,1,g,Coop_Success,2,b,Coop_Success,2,r,Indep_Success,1,b,Fail,0,r,Fail,0,r,Fail,0,g,Fail,0,g,Fail,0,b,Fail,0
