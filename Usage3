@@ -106,3 +106,22 @@ python3 label_dataset.py \
 python3 extract_transitions.py \
     --input_path testdata/episode_0.hdf5 \
     --output_dir transition_images  
+
+
+python3 train_state_classifier.py \
+    --dataset_dirs data4/random \
+    --lookahead 50 \
+    --epochs 20 \
+    --batch_size 32
+
+python3 state_switcher.py \
+    --task_name sim_many_cubes \
+    --ckpt_dual ckpt4/pretrained_c \
+    --ckpt_left ckpt4/pretrained_left \
+    --ckpt_right ckpt4/pretrained_right \
+    --state_ckpt state_classifier_best.pth \
+    --policy_class ACT --kl_weight 10 --chunk_size 30 --hidden_dim 512 --dim_feedforward 3200 \
+    --inherit_temporal_buffer --temporal_agg_k 0.1\
+    --warmup_steps 50 --num_rollouts 1  --onscreen_render --episode_len 2500 --seed 0 \
+    --sequence_file sequences.csv \
+    --save_stats_path evaluation_results.txt

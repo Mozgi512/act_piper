@@ -320,9 +320,9 @@ python3 imitate_episodes.py \
 #状態分類器の学習
 
 python3 train_state_classifier.py \
-    --dataset_dirs data2/interval_dara data2/prev_data data2/coherence_data \
+    --dataset_dirs data4/random \
     --lookahead 50 \
-    --epochs 100 \
+    --epochs 20 \
     --batch_size 32
 
 #検証
@@ -445,9 +445,9 @@ python3 evaluate_policy_switcher.py \
 
 python3 state_switcher.py \
     --task_name sim_many_cubes \
-    --ckpt_dual ckpt3/finetune_c/policy_best.ckpt \
-    --ckpt_left ckpt3/finetune_left/policy_best.ckpt \
-    --ckpt_right ckpt3/finetune_right/policy_best.ckpt \
+    --ckpt_dual ckpt4/pretrain_c \
+    --ckpt_left ckpt4/pretrain_left \
+    --ckpt_right ckpt4/pretrain_right \
     --state_ckpt state_classifier_best.pth \
     --policy_class ACT --kl_weight 10 --chunk_size 50 --hidden_dim 512 --dim_feedforward 3200 \
     --inherit_temporal_buffer \
