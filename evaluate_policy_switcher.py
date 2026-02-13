@@ -617,30 +617,41 @@ def main(args):
     # Default Fallback (if not defined elsewhere)
     COLOR_SEQUENCE = list('rrgbrrgbrr') # Default if not provided
 
-    # Parse Command Sequence
-    command_queue = list(args.commands) if args.commands else []
-    print(f"Command Sequence: {command_queue}")
+    # --- Sequence Loading Logic ---
+    available_sequences = []
+    if args.sequence_file:
+        import csv
+        if not os.path.isfile(args.sequence_file):
+            print(f"Error: Sequence file {args.sequence_file} not found.")
+            return
+        
+        with open(args.sequence_file, 'r', newline='') as f:
+            reader = csv.reader(f)
+            for row in reader:
+                # Filter for 'success' sequences (3rd column)
+                if len(row) >= 3 and row[2] == 'success':
+                    available_sequences.append({
+                        'color_seq': list(row[0].lower()),
+                        'commands': row[1]
+                    })
+        
+        if not available_sequences:
+            print(f"Error: No successful sequences found in {args.sequence_file}")
+            return
+        print(f"Loaded {len(available_sequences)} successful sequences from {args.sequence_file}")
     
-    # Parse Color Sequence
-    color_seq = None
-    if args.color_sequence:
-        color_seq = list(args.color_sequence.lower())
-        if len(color_seq) != 10:
-            print(f"Warning: Color sequence should be 10 chars (got {len(color_seq)})")
-    
-    # Inject Globals
-    MANYCUBES_COLORS[0] = color_seq if color_seq is not None else COLOR_SEQUENCE
-    MANYCUBES_TASK_COUNT[0] = len(command_queue)
-    
-    
+    # Validation check for non-CSV mode
+    if not args.sequence_file and not args.commands:
+        print("Error: --commands is required unless --sequence_file is specified.")
+        return
+
     from piper_constants import SIM_TASK_CONFIGS
     task_config = SIM_TASK_CONFIGS[task_name]
-    # episode_len overridden by dynamic subtask lengths
-    # episode_len = task_config['episode_len']
     camera_names = task_config['camera_names']
 
-    camera_names = task_config['camera_names']
-
+    # Initial command queue for scheduler (will be overridden in loop if using sequence_file)
+    command_queue = list(args.commands) if args.commands else []
+    
     # E2E Mode Logic
     if args.ckpt_e2e:
         print(f"Loading E2E Policy from {args.ckpt_e2e}...")
@@ -774,9 +785,11 @@ def main(args):
     temporal_agg = not args.no_temporal_agg
     num_queries = args.chunk_size
     
-    MAX_BUFFER_STEPS = scheduler.max_timesteps + 500
-    if MAX_BUFFER_STEPS < 3000: MAX_BUFFER_STEPS = 3000 # Minimum safety
-
+    # Calculate a safe MAX_BUFFER_STEPS
+    # Since sequences can vary if loaded from CSV, we use a large enough default or user override
+    max_steps_allowed = args.max_timesteps if args.max_timesteps else 3500
+    MAX_BUFFER_STEPS = max_steps_allowed + 500
+    
     float_nan = float('nan')
     all_time_actions_dual = torch.full([MAX_BUFFER_STEPS, MAX_BUFFER_STEPS+num_queries, 14], float_nan).cuda()
     all_time_actions_left = torch.full([MAX_BUFFER_STEPS, MAX_BUFFER_STEPS+num_queries, 7], float_nan).cuda()
@@ -800,6 +813,45 @@ def main(args):
 
     try:
         while episode_count < args.num_rollouts:
+            # --- Sequence Selection ---
+            if available_sequences:
+                # Randomly pick from successful sequences
+                selected = np.random.choice(available_sequences)
+                color_seq = selected['color_seq']
+                command_queue = list(selected['commands'])
+                # Override if CLI provided (user request: "flexible")
+                if args.color_sequence:
+                    color_seq = list(args.color_sequence.lower())
+                if args.commands:
+                    command_queue = list(args.commands)
+                    
+                print(f"Rollout {episode_count} | Loaded Sequence: {''.join(color_seq)}, Commands: {''.join(command_queue)}")
+            else:
+                # Use CLI values
+                command_queue = list(args.commands)
+                color_seq = list(args.color_sequence.lower()) if args.color_sequence else COLOR_SEQUENCE
+            
+            # Update Globals for simulation environment
+            MANYCUBES_COLORS[0] = color_seq
+            MANYCUBES_TASK_COUNT[0] = len(command_queue)
+            
+            # Re-initialize Scheduler for this sequence
+            duration_config = {
+                'I': args.step_i,
+                'C_assembly': int(args.step_c * 0.6) if args.step_c else 300, 
+                'C_place': int(args.step_c * 0.4) if args.step_c else 220,    
+                'Single': 200      
+            }
+            if args.ckpt_e2e:
+                duration_config['I'] = 1000
+                duration_config['C_assembly'] = 1000
+                duration_config['C_place'] = 1000
+                duration_config['Single'] = 1000
+                
+            scheduler = TaskScheduler(command_queue, duration_config)
+            if args.max_timesteps:
+                scheduler.max_timesteps = args.max_timesteps
+            
             # Reset tracking per episode
             touching_goal_start_step = {} 
             # Reset Environment
@@ -838,7 +890,6 @@ def main(args):
                 current_mode = MODE_COOP
             
             print(f"\nEpisode {episode_count} Started.")
-            
             while True:
                 def handle_mode_switch(t, from_mode, to_mode):
                     """Unified mode switch with inheritance for evaluation."""
@@ -1434,6 +1485,7 @@ if __name__ == '__main__':
     
     parser.add_argument('--commands', action='store', type=str, help='Command sequence (e.g. ICI)', required=False)
     parser.add_argument('--color_sequence', action='store', type=str, help='Color sequence', default=None)
+    parser.add_argument('--sequence_file', action='store', type=str, help='Path to CSV sequence file', default=None)
     parser.add_argument('--step_i', action='store', type=int, default=400, help='Steps for Independent task')
     parser.add_argument('--step_c', action='store', type=int, default=520, help='Steps for Cooperative task')
     

@@ -421,7 +421,19 @@ class InteractivePolicy(VariableCoopPolicy):
         goal_xyz = np.array([0, 0.10, 0.025])
         
         # Start time: max(last_end, current) + buffer
+        
+        # FIX: Add bridge waypoint at current step to anchor trajectory
+        # This prevents the interpolator from using a very old t_last to interpolate to start_t,
+        # ensuring the robot holds its position until the new command starts.
+        if self.step_count > t_last:
+             traj.append({"t": self.step_count, "xyz": last_wp['xyz'], "quat": last_wp['quat'], "gripper": last_wp['gripper']})
+             # Update t_last since we added a waypoint
+             t_last = self.step_count
+
         start_t = max(t_last, self.step_count) + 20
+
+        if t_last < start_t:
+             traj.append({"t": start_t, "xyz": last_wp['xyz'], "quat": last_wp['quat'], "gripper": last_wp['gripper']})
         
         offset_x = -0.08 if is_left else 0.08
         

@@ -157,8 +157,146 @@ def remove_cubes(physics, indices):
             physics.data.qpos[qpos_adr + 1] = 10.0 + i # Y far
             physics.data.qpos[qpos_adr + 2] = -10.0    # Z under
             print(f"Removed cube {i}")
+            
+            # 2. Set Alpha to 0 (Visual Hide)
+            name = f'cube_{i}'
+            geom_id = physics.model.name2id(name, 'geom')
+            physics.model.geom_rgba[geom_id, 3] = 0.0
         except Exception as e:
             pass
+    physics.forward()
+
+def sync_envs(main_physics, shadow_physics):
+    """Sync robot/object state AND visual properties (geom_rgba) from main to shadow."""
+    # 1. State Sync
+    shadow_physics.data.qpos[:] = main_physics.data.qpos[:]
+    shadow_physics.data.qvel[:] = main_physics.data.qvel[:]
+    
+    # 2. Visual Sync (geom_rgba determines cube colors)
+    shadow_physics.model.geom_rgba[:] = main_physics.model.geom_rgba[:]
+    
+    shadow_physics.forward()
+
+def get_spatial_object_map(physics):
+    """Map L0, R0 etc to cube indices based on x-coordinate relative to x=0."""
+    cubes = []
+    for i in range(10):
+        try:
+            name = f'cube_{i}'
+            bid = physics.model.name2id(name, 'body')
+            x = physics.data.xpos[bid][0]
+            cubes.append({'id': i, 'x': x})
+        except: pass
+    
+    # Sort symmetrically (Matches extract_transitions.py)
+    # L0 is closest to center (highest X), L1 is further left.
+    left_cubes = sorted([c for c in cubes if c['x'] < 0], key=lambda c: c['x'], reverse=True)
+    # R0 is closest to center (lowest X), R1 is further right.
+    right_cubes = sorted([c for c in cubes if c['x'] >= 0], key=lambda c: c['x'])
+    
+    obj_map = {}
+    for i, c in enumerate(left_cubes): obj_map[f'L{i}'] = c['id']
+    for i, c in enumerate(right_cubes): obj_map[f'R{i}'] = c['id']
+    
+    return obj_map
+
+def get_heuristic_targets(physics, spatial_map, color_sequence):
+    """
+    Determine target indices based on mode requirements and spatial heuristics.
+    Returns: (target_indices_i, target_indices_c)
+    """
+    target_indices_i = []
+    target_indices_c = []
+    
+    def safe_get_color(idx):
+        try: return color_sequence[idx]
+        except: return None
+
+    # 1. Cooperative Shadow (target_indices_c)
+    coop_candidates = []
+    for label, c_idx in spatial_map.items():
+        try:
+            bid = physics.model.name2id(f'cube_{c_idx}', 'body')
+            x_pos = physics.data.xpos[bid][0]
+            # Ensure STRICTLY no red objects ('r') enter here
+            color = safe_get_color(c_idx)
+            if x_pos < 0.3:
+                if color in ['g', 'b']:
+                    coop_candidates.append((x_pos, c_idx, color))
+        except: pass
+    
+    if coop_candidates:
+        rightmost_g = max([c for c in coop_candidates if c[2] == 'g'], key=lambda x: x[0], default=None)
+        rightmost_b = max([c for c in coop_candidates if c[2] == 'b'], key=lambda x: x[0], default=None)
+        if rightmost_g: target_indices_c.append(rightmost_g[1])
+        if rightmost_b: target_indices_c.append(rightmost_b[1])
+
+    # 2. Independent Shadow (target_indices_i)
+    rh_candidates = []
+    lh_candidates = []
+    for label, c_idx in spatial_map.items():
+        try:
+            bid = physics.model.name2id(f'cube_{c_idx}', 'body')
+            x_pos = physics.data.xpos[bid][0]
+            color = safe_get_color(c_idx)
+            if color == 'r':
+                # Right Arm (Positive X): Prefer Closest to Center (Min Positive)
+                # Expand center overlap widely to catch items near 0 even if slightly negative
+                if x_pos > -0.15 and x_pos < 0.4:
+                    rh_candidates.append((x_pos, c_idx))
+                # Left Arm (Negative X): Prefer Closest to Center (Max Negative)
+                if x_pos < 0.15 and x_pos > -0.4: 
+                    lh_candidates.append((x_pos, c_idx))
+        except: pass
+    
+    # Sort candidates by proximity to 0
+    rh_candidates.sort(key=lambda x: x[0]) # Ascending (Smallest X first -> Closest to 0 from Right)
+    lh_candidates.sort(key=lambda x: x[0], reverse=True) # Descending (Largest X first -> Closest to 0 from Left)
+
+    r_best = rh_candidates[0][1] if rh_candidates else None
+    l_best = lh_candidates[0][1] if lh_candidates else None
+    
+    selected_i = set()
+    if r_best is not None: selected_i.add(r_best)
+    if l_best is not None: selected_i.add(l_best)
+    
+    # Fallback: If Right and Left selected the SAME object (overlap), 
+    # try to pick the next best candidate from either side to ensure visibility.
+    if r_best is not None and l_best is not None and r_best == l_best:
+         if len(rh_candidates) > 1:
+             selected_i.add(rh_candidates[1][1])
+         if len(lh_candidates) > 1:
+             selected_i.add(lh_candidates[1][1])
+             
+    target_indices_i = list(selected_i)
+
+    return list(set(target_indices_i)), list(set(target_indices_c))
+
+def hide_objects(physics, target_indices, env_name="?"):
+    """Hide objects NOT in target_indices AND not already removed."""
+    target_set = set(target_indices)
+    for i in range(10):
+        name = f'cube_{i}'
+        
+        # 1. Start with Geom visibility
+        try:
+            geom_id = physics.model.name2id(name, 'geom')
+            if i in target_set:
+                physics.model.geom_rgba[geom_id, 3] = 1.0 # Show
+            else:
+                physics.model.geom_rgba[geom_id, 3] = 0.0 # Hide
+        except: pass
+        
+        # 2. Move qpos if hiding (independent of geom success)
+        if i not in target_set:
+            try:
+                joint_name = f'cube_{i}_joint'
+                addr = physics.model.name2id(joint_name, 'joint')
+                qpos_adr = physics.model.jnt_qposadr[addr]
+                physics.data.qpos[qpos_adr + 2] = -5.0 # Well below table
+            except: pass
+            
+    physics.forward()
 
 def get_touched_cubes_per_arm(physics):
     """Return dict of sets of cube indices contacted by each gripper (based on link body names)."""
@@ -608,16 +746,58 @@ def main(args):
     print("Loading Dual Policy...")
     policy_dual, stats_dual = load_policy_and_stats(ckpt_dual, policy_class, args, override_state_dim=14)
     
-    # Handle Color Sequence
+    # Handle Sequence Loading
+    sequences = []
+    if args.sequence_file:
+         if os.path.exists(args.sequence_file):
+             print(f"Loading sequence file: {args.sequence_file}")
+             with open(args.sequence_file, 'r') as f:
+                 reader = csv.reader(f)
+                 def _is_valid_color_seq(s):
+                     s = s.strip().lower()
+                     return len(s) == 10 and all(c in ['r', 'g', 'b'] for c in s)
+
+                 for row in reader:
+                     if not row:
+                         continue
+
+                     # Preferred format: col0=color_sequence, col1=commands, col2=status(optional)
+                     # Fallback support: col1=color_sequence in older/custom CSV layouts.
+                     candidate0 = row[0].strip() if len(row) >= 1 else ""
+                     candidate1 = row[1].strip() if len(row) >= 2 else ""
+
+                     if _is_valid_color_seq(candidate0):
+                         sequences.append(candidate0.lower())
+                     elif _is_valid_color_seq(candidate1):
+                         sequences.append(candidate1.lower())
+                     else:
+                         # Skip header/invalid rows silently.
+                         continue
+             print(f"Loaded {len(sequences)} sequences.")
+             if len(sequences) == 0:
+                 print(f"Error: No valid color sequences found in {args.sequence_file}.")
+                 return
+             if args.num_rollouts > len(sequences):
+                 print(f"Warning: num_rollouts ({args.num_rollouts}) > loaded sequences ({len(sequences)}). Clamping num_rollouts to {len(sequences)}.")
+                 args.num_rollouts = len(sequences)
+         else:
+             print(f"Error: Sequence file {args.sequence_file} not found.")
+             return
+
+    # Handle Color Sequence (Default or Override)
+    default_color_seq = None
     if args.color_sequence:
-        color_seq = list(args.color_sequence.lower())
-        if len(color_seq) != 10:
-             print(f"WARNING: Color sequence must be 10 chars. Got {len(color_seq)}. Using default.")
-        elif any(c not in ['r', 'g', 'b'] for c in color_seq):
+        default_color_seq = args.color_sequence.lower()
+        if len(default_color_seq) != 10:
+             print(f"WARNING: Color sequence must be 10 chars. Got {len(default_color_seq)}. Using default.")
+             default_color_seq = None
+        elif any(c not in ['r', 'g', 'b'] for c in default_color_seq):
              print(f"WARNING: Invalid chars in color sequence. Using default.")
-        else:
-             print(f"Setting Color Sequence: {color_seq}")
-             MANYCUBES_COLORS[0] = color_seq
+             default_color_seq = None
+             
+    if default_color_seq:
+         print(f"Setting Default Color Sequence: {default_color_seq}")
+         MANYCUBES_COLORS[0] = list(default_color_seq)
 
     # --- Mode Classifier ---
     print(f"Loading State Classifier from {args.state_ckpt}...")
@@ -677,27 +857,19 @@ def main(args):
         print(f"Applying x-shift: {args.x_shift} starting from index {args.x_shift_start_idx}")
 
     print(f"Creating Simulation Environment with time_limit={time_limit:.2f}s ({max_timesteps} steps + buffer)")
-    env = make_sim_env(task_name, time_limit=time_limit)
+    env = make_sim_env(task_name, camera_names=camera_names, time_limit=time_limit)
+    env_shadow_c = make_sim_env(task_name, camera_names=camera_names, time_limit=time_limit)
+    env_shadow_i = make_sim_env(task_name, camera_names=camera_names, time_limit=time_limit)
     
     if onscreen_render:
-        # plt.ion()
-        # ax = plt.subplot()
-        # plt_img = ax.imshow(env._physics.render(height=240, width=320, camera_id='top'))
          plt.ion()
-         # Layout: Sim (2), Coop (2), Left (1), Right (1)
-         fig, (ax_main, ax_coop, ax_l, ax_r) = plt.subplots(1, 4, figsize=(18, 5), gridspec_kw={'width_ratios': [2, 2, 1, 1]})
-         ax_main.set_title("Sim View")
-         ax_coop.set_title("Coop Input")
-         ax_l.set_title("Left Indep")
-         ax_r.set_title("Right Indep")
-         
-         dummy_img = np.zeros((240, 320, 3), dtype=np.uint8)
-         dummy_img_half = np.zeros((240, 160, 3), dtype=np.uint8)
-         
-         plt_img_main = ax_main.imshow(dummy_img)
-         plt_img_coop = ax_coop.imshow(dummy_img)
-         plt_img_l = ax_l.imshow(dummy_img_half)
-         plt_img_r = ax_r.imshow(dummy_img_half)
+         fig, (ax_main, ax_c, ax_i) = plt.subplots(1, 3, figsize=(15, 5))
+         plt_img_main = ax_main.imshow(np.zeros((240, 320, 3), dtype=np.uint8))
+         plt_img_c = ax_c.imshow(np.zeros((240, 320, 3), dtype=np.uint8))
+         plt_img_i = ax_i.imshow(np.zeros((240, 320, 3), dtype=np.uint8))
+         ax_main.set_title("Main")
+         ax_c.set_title("Coop Shadow")
+         ax_i.set_title("Indep Shadow")
     
     def reset_with_new_pose():
         # Pose sampling based on task name
@@ -717,7 +889,35 @@ def main(args):
             GREENBOX_POSE[0] = sample_greenbox_pose()
             BLUEBOX_POSE[0] = sample_bluebox_pose()
             pass
-        return env.reset()
+        
+        ts = env.reset()
+        # Explicitly reset shadow environments to ensure they pick up new config (e.g. colors)
+        env_shadow_c.reset()
+        env_shadow_i.reset()
+        return ts
+
+    def apply_next_episode_sequence(ep_idx):
+        if not args.sequence_file:
+            return True
+        if ep_idx >= len(sequences):
+            print(f"[Switcher] Error: Episode {ep_idx} exceeds loaded sequences ({len(sequences)}).")
+            return False
+
+        seq = sequences[ep_idx]
+        seq_list = list(seq.lower().strip())
+        if len(seq_list) == 10 and all(c in ['r', 'g', 'b'] for c in seq_list):
+             MANYCUBES_COLORS[0] = seq_list
+             # Update args so Magnet Logic sees it
+             args.color_sequence = "".join(seq_list)
+             print(f"[Switcher] Applied Sequence for Episode {ep_idx}: {args.color_sequence}")
+             return True
+
+        print(f"[Switcher] Error: Invalid sequence for Episode {ep_idx}: {seq}")
+        return False
+
+    # Set initial sequence (Episode 0)
+    if not apply_next_episode_sequence(0):
+        return
 
     ts = reset_with_new_pose()
     
@@ -811,9 +1011,32 @@ def main(args):
         steps_since_switch_l = 0
         steps_since_switch_r = 0
         MIN_STATE_DURATION_STEPS = 25  # Increased to 25 steps (0.5s) to filter 6-10 step glitches seen in logs.
+
+        # Home-gated switch state
+        switch_candidate_l = None
+        switch_candidate_r = None
+        switch_candidate_count_l = 0
+        switch_candidate_count_r = 0
+        waiting_home_target_l = None
+        waiting_home_target_r = None
+        home_pause_count_l = 0
+        home_pause_count_r = 0
+
         # Conditional Temporal Ensembling: Transition Window Tracking
         transition_window_active_l = 0
         transition_window_active_r = 0
+        
+        # Display Logic State
+        last_removal_step = -100
+        current_target_indices_i = []
+        current_target_indices_c = []
+        
+        # Smoothing logic for non-temporal agg transitions (Post-Switch)
+        # NOTE: Pre-switch smoothing attempts to handle this, but if TE is off, 
+        # we might still need standard smoothing or just rely on pre-switch.
+        # Assuming Pre-switch logic is sufficient if MIN_STATE_DURATION >> 20.
+        smoothing_l_steps = 0
+        smoothing_r_steps = 0
         
         while True:
             # Check input (for quit)
@@ -822,7 +1045,58 @@ def main(args):
                 quit_key = get_hitl_key()
             if quit_key == 'q':
                 break
+            
+            # --- SHADOW SYNC & HIDING ---
+            # 1. Sync
+            sync_envs(env.physics, env_shadow_c.physics)
+            sync_envs(env.physics, env_shadow_i.physics)
+            
+            # 2. Heuristic Targets
+            # UPDATE LOGIC: Only look for new targets if 50 steps have passed since last removal
+            if t - last_removal_step >= 50:
+                spatial_map = get_spatial_object_map(env.physics)
+                color_seq = getattr(env.task, 'color_sequence', MANYCUBES_COLORS[0])
+                current_target_indices_i, current_target_indices_c = get_heuristic_targets(env.physics, spatial_map, color_seq)
+
+            # --- FIX: Keep grasped objects visible ---
+            # Ensure held objects don't disappear when moved out of heuristic zones
+            if t % 5 == 0 or True: # Check every step to be safe
+                grasped_dict = get_grasped_cubes(env.physics)
+                held_indices = grasped_dict['left'].union(grasped_dict['right'])
+            else:
+                held_indices = set()
+            
+            # For Coop, ONLY add held objects if they are NOT Red.
+            # Red objects should NEVER appear in Coop view, even if held.
+            held_non_red = []
+            
+            def safe_get_color_local(idx):
+                try: return color_seq[idx]
+                except: return None
+
+            # Merge heuristic targets with currently held objects for Independent view
+            # Independent view should only show RED targets.
+            held_red = []
+            for h_idx in held_indices:
+                 if safe_get_color_local(h_idx) == 'r':
+                      held_red.append(h_idx)
+
+            # We copy to avoid mutating the cached list
+            final_target_indices_i = list(set(current_target_indices_i) | set(held_red))
                 
+            for h_idx in held_indices:
+                 if safe_get_color_local(h_idx) != 'r':
+                      held_non_red.append(h_idx)
+            
+            final_target_indices_c = list(set(current_target_indices_c) | set(held_non_red))
+            
+            if t % 50 == 0:
+                 print(f"  [Heuristic Targets] Indep={final_target_indices_i}, Coop={final_target_indices_c}")
+
+            # 3. Hide
+            hide_objects(env_shadow_i.physics, final_target_indices_i, "Indep")
+            hide_objects(env_shadow_c.physics, final_target_indices_c, "Coop")
+
             # Render update (optimized: every 5 frames)
             if onscreen_render and t % 5 == 0:
                 # Exit if window is closed
@@ -833,24 +1107,11 @@ def main(args):
                 image = env._physics.render(height=240, width=320, camera_id='top')
                 plt_img_main.set_data(image)
                 
-                # Real-time Visualization of Policy Inputs (DISABLED for performance)
-                # # 1. Coop Input (Full Width)
-                # viz_img_coop_t = get_image_dual(ts, camera_names, mask=args.mask_images)
-                # viz_img_coop = viz_img_coop_t[0, 0].permute(1, 2, 0).cpu().numpy()
-                # viz_img_coop = np.clip(viz_img_coop * 255, 0, 255).astype(np.uint8)
-                # plt_img_coop.set_data(viz_img_coop)
-                # 
-                # # 2. Left Input (Half Width)
-                # viz_img_l_t = get_image_independent(ts, camera_names, 'left', mask=args.mask_images)
-                # viz_img_l = viz_img_l_t[0, 0].permute(1, 2, 0).cpu().numpy()
-                # viz_img_l = np.clip(viz_img_l * 255, 0, 255).astype(np.uint8)
-                # plt_img_l.set_data(viz_img_l)
-                # 
-                # # 3. Right Input (Half Width)
-                # viz_img_r_t = get_image_independent(ts, camera_names, 'right', mask=args.mask_images)
-                # viz_img_r = viz_img_r_t[0, 0].permute(1, 2, 0).cpu().numpy()
-                # viz_img_r = np.clip(viz_img_r * 255, 0, 255).astype(np.uint8)
-                # plt_img_r.set_data(viz_img_r)
+                # Shadow Views
+                img_c = env_shadow_c.physics.render(height=240, width=320, camera_id='top')
+                img_i = env_shadow_i.physics.render(height=240, width=320, camera_id='top')
+                plt_img_c.set_data(img_c)
+                plt_img_i.set_data(img_i)
 
                 # Non-blocking update (prevents focus stealing)
                 fig.canvas.draw()
@@ -858,9 +1119,12 @@ def main(args):
                 time.sleep(DT)
 
             if args.save_video:
-                 # Render at 720p (1280x720) for video saving
-                 video_frame = env._physics.render(height=720, width=1280, camera_id='top')
-                 video_frames.append(video_frame) 
+                # Render at 720p (1280x720) for video saving
+                video_frame = env._physics.render(height=720, width=1280, camera_id='top')
+                video_frames.append(video_frame)
+
+            # Current joint state for this control step
+            qpos_numpy = np.array(ts.observation['qpos'])
             
             # --- State Classifier Inference ---
             # 1. Get raw image for classifier
@@ -911,6 +1175,8 @@ def main(args):
             
             # --- Debounce / Latching Logic ---
             steps_since_switch_l += 1
+            proposed_l_state = plan_l_state # Store raw intent
+            
             if plan_l_state != committed_plan_l_state:
                 if steps_since_switch_l > MIN_STATE_DURATION_STEPS:
                      committed_plan_l_state = plan_l_state
@@ -920,6 +1186,8 @@ def main(args):
                      plan_l_state = committed_plan_l_state
 
             steps_since_switch_r += 1
+            proposed_r_state = plan_r_state # Store raw intent
+            
             if plan_r_state != committed_plan_r_state:
                 if steps_since_switch_r > MIN_STATE_DURATION_STEPS:
                      committed_plan_r_state = plan_r_state
@@ -927,6 +1195,129 @@ def main(args):
                 else:
                      # Suppress switch - stay committed
                      plan_r_state = committed_plan_r_state
+
+            # --- Home-Gated Switching Logic ---
+            # Don't switch immediately on high-level prediction.
+            # Require stable prediction window, then wait until arm reaches home,
+            # pause briefly, clear buffers, and only then activate new policy.
+            force_hold_l = False
+            force_hold_r = False
+
+            # LEFT arm: track stable switch request
+            if proposed_l_state in ['INDEP', 'COOP'] and proposed_l_state != committed_plan_l_state:
+                if switch_candidate_l == proposed_l_state:
+                    switch_candidate_count_l += 1
+                else:
+                    switch_candidate_l = proposed_l_state
+                    switch_candidate_count_l = 1
+            else:
+                switch_candidate_l = None
+                switch_candidate_count_l = 0
+
+            if waiting_home_target_l is None and switch_candidate_l is not None and switch_candidate_count_l >= args.switch_guard_steps:
+                waiting_home_target_l = switch_candidate_l
+                home_pause_count_l = 0
+                print(f"[Step {t}] Left switch requested: {committed_plan_l_state} -> {waiting_home_target_l} (home-gated)")
+
+            # RIGHT arm: track stable switch request
+            if proposed_r_state in ['INDEP', 'COOP'] and proposed_r_state != committed_plan_r_state:
+                if switch_candidate_r == proposed_r_state:
+                    switch_candidate_count_r += 1
+                else:
+                    switch_candidate_r = proposed_r_state
+                    switch_candidate_count_r = 1
+            else:
+                switch_candidate_r = None
+                switch_candidate_count_r = 0
+
+            if waiting_home_target_r is None and switch_candidate_r is not None and switch_candidate_count_r >= args.switch_guard_steps:
+                waiting_home_target_r = switch_candidate_r
+                home_pause_count_r = 0
+                print(f"[Step {t}] Right switch requested: {committed_plan_r_state} -> {waiting_home_target_r} (home-gated)")
+
+            # LEFT arm: hold current policy until home reached, then pause and switch
+            if waiting_home_target_l is not None:
+                if is_at_home(qpos_numpy[:7], home_pose[:7], threshold=args.switch_home_threshold):
+                    if home_pause_count_l < args.switch_home_pause_steps:
+                        force_hold_l = True
+                        plan_l_state = 'HOLD'
+                        proposed_l_state = 'HOLD'
+                        home_pause_count_l += 1
+                    else:
+                        committed_plan_l_state = waiting_home_target_l
+                        plan_l_state = committed_plan_l_state
+                        proposed_l_state = committed_plan_l_state
+                        steps_since_switch_l = 0
+
+                        waiting_home_target_l = None
+                        switch_candidate_l = None
+                        switch_candidate_count_l = 0
+                        home_pause_count_l = 0
+
+                        all_time_actions_left.fill_(float_nan)
+                        all_time_actions_dual[:, :, :7].fill_(float_nan)
+                        current_action_chunk_left = None
+                        current_action_chunk_dual = None
+                        transition_window_active_l = 0
+                        step_in_chunk = 0
+                        print(f"[Step {t}] Left switch activated at home -> {plan_l_state}")
+                else:
+                    plan_l_state = committed_plan_l_state
+                    proposed_l_state = committed_plan_l_state
+
+            # RIGHT arm: hold current policy until home reached, then pause and switch
+            if waiting_home_target_r is not None:
+                if is_at_home(qpos_numpy[7:14], home_pose[7:14], threshold=args.switch_home_threshold):
+                    if home_pause_count_r < args.switch_home_pause_steps:
+                        force_hold_r = True
+                        plan_r_state = 'HOLD'
+                        proposed_r_state = 'HOLD'
+                        home_pause_count_r += 1
+                    else:
+                        committed_plan_r_state = waiting_home_target_r
+                        plan_r_state = committed_plan_r_state
+                        proposed_r_state = committed_plan_r_state
+                        steps_since_switch_r = 0
+
+                        waiting_home_target_r = None
+                        switch_candidate_r = None
+                        switch_candidate_count_r = 0
+                        home_pause_count_r = 0
+
+                        all_time_actions_right.fill_(float_nan)
+                        all_time_actions_dual[:, :, 7:].fill_(float_nan)
+                        current_action_chunk_right = None
+                        current_action_chunk_dual = None
+                        transition_window_active_r = 0
+                        step_in_chunk = 0
+                        print(f"[Step {t}] Right switch activated at home -> {plan_r_state}")
+                else:
+                    plan_r_state = committed_plan_r_state
+                    proposed_r_state = committed_plan_r_state
+            
+            # --- Pre-Switch Transition Blending Logic ---
+            # Detect if we are in the "final approach" of a switch
+            TRANSITION_WINDOW = 20
+            
+            # LEFT
+            is_transitioning_l = False
+            alpha_l = 0.0
+            if plan_l_state != proposed_l_state: # Switch is currently suppressed
+                steps_remaining = MIN_STATE_DURATION_STEPS - steps_since_switch_l
+                if steps_remaining <= TRANSITION_WINDOW:
+                    is_transitioning_l = True
+                    # alpha goes 0 -> 1 as steps_remaining goes 20 -> 0
+                    alpha_l = (TRANSITION_WINDOW - steps_remaining) / TRANSITION_WINDOW
+                    # print(f"DEBUG: Smooth Left {plan_l_state}->{proposed_l_state} alpha={alpha_l:.2f}")
+
+            # RIGHT
+            is_transitioning_r = False
+            alpha_r = 0.0
+            if plan_r_state != proposed_r_state:
+                steps_remaining = MIN_STATE_DURATION_STEPS - steps_since_switch_r
+                if steps_remaining <= TRANSITION_WINDOW:
+                    is_transitioning_r = True
+                    alpha_r = (TRANSITION_WINDOW - steps_remaining) / TRANSITION_WINDOW
             
             # ---------------------------------
             
@@ -935,7 +1326,9 @@ def main(args):
             # force continue previous state (or default to INDEP if None).
             
             # Left Arm
-            if plan_l_state == 'HOLD':
+            if force_hold_l:
+                plan_l_state = 'HOLD'
+            elif plan_l_state == 'HOLD':
                 # Check if at home
                 # qpos_numpy is 14 dim. Left is [:7]
                 if is_at_home(qpos_numpy[:7], home_pose[:7]):
@@ -954,7 +1347,9 @@ def main(args):
                 consecutive_at_home_l = 0
             
             # Right Arm
-            if plan_r_state == 'HOLD':
+            if force_hold_r:
+                plan_r_state = 'HOLD'
+            elif plan_r_state == 'HOLD':
                 if is_at_home(qpos_numpy[7:14], home_pose[7:14]):
                     consecutive_at_home_r += 1
                     if consecutive_at_home_r < 50:
@@ -970,7 +1365,7 @@ def main(args):
 
             # Logging
             if t % 50 == 0:
-                print(f"[Step {t}] Classifier: L={STATE_NAMES[s_l]} R={STATE_NAMES[s_r]} -> Plan: L={plan_l_state} R={plan_r_state}")
+                print(f"[Step {t}] Classifier: L={STATE_NAMES[s_l]} R={STATE_NAMES[s_r]} -> Plan: L={plan_l_state} R={plan_r_state} (Agg: {temporal_agg})")
                 if onscreen_render:
                     plt.title(f"Plan: L={plan_l_state} R={plan_r_state} (State: {STATE_NAMES[s_l]}/{STATE_NAMES[s_r]})")
 
@@ -1057,6 +1452,9 @@ def main(args):
                 elif key == 's': hitl_mode_l, hitl_mode_r = 'COOP', 'COOP'
                 elif key == 'd': hitl_mode_l, hitl_mode_r = 'COOP', 'INDEP'
                 elif key == ' ': hitl_mode_l, hitl_mode_r = 'AUTO', 'AUTO'
+                elif key == 't': 
+                    temporal_agg = not temporal_agg
+                    print(f" [System] Temporal Aggregation: {temporal_agg}        ")
                 
             # Apply Override
             is_override = False
@@ -1128,9 +1526,26 @@ def main(args):
 
                 # 1. Query Dual (if needed by ANY arm)
                 # Query condition: Start of chunk OR Temporal Aggregation Active
-                should_query_dual = (step_in_chunk == 0) or (plan_l_state == 'COOP' and use_temporal_agg_l) or (plan_r_state == 'COOP' and use_temporal_agg_r)
+                # ALSO Query if transition demands it (Secondary Policy)
+                need_dual_l = (plan_l_state == 'COOP') or (is_transitioning_l and proposed_l_state == 'COOP')
+                need_dual_r = (plan_r_state == 'COOP') or (is_transitioning_r and proposed_r_state == 'COOP')
                 
-                if (plan_l_state == 'COOP' or plan_r_state == 'COOP') and should_query_dual:
+                should_query_dual = (step_in_chunk == 0) or (need_dual_l and use_temporal_agg_l) or (need_dual_r and use_temporal_agg_r)
+                # Force query if we are transitioning (need fresh frames for blending) even if TE is off?
+                # If TE is off, we usually query every chunk start (every 100 steps). 
+                # If we transition mid-chunk, we simply use the chunk relevant to that policy.
+                # BUT if we assume chunk alignment, we might need to force query.
+                # However, forcing query every step is expensive.
+                # Let's rely on standard logic: If transition is active, we behave "as if" that mode is active?
+                # Simpler: If transitioning, we might need to query if we haven't already.
+                
+                # If TE is OFF, we rely on chunks. 
+                # If plan='INDEP' but proposed='COOP', we need COOP chunk.
+                # If current_action_chunk_dual is None, we MUST query.
+                if (need_dual_l or need_dual_r) and (current_action_chunk_dual is None):
+                    should_query_dual = True
+
+                if (need_dual_l or need_dual_r) and should_query_dual:
                      # Prepare input for Dual Policy
                     qpos_numpy_dual = qpos_numpy.copy()
                       
@@ -1141,15 +1556,21 @@ def main(args):
                      # The policy should be robust enough, or at least it won't see a teleport.
                      # So we DO NOT mask the input anymore.
                      # -------------------------------------------
+                     
+                    # Shadow Env Observation
+                    obs_c = env_shadow_c.task.get_observation(env_shadow_c.physics)
+                    ts_c = type('TS', (object,), {'observation': obs_c})()
 
                     qpos = pre_process_dual(qpos_numpy_dual)
                     qpos = torch.from_numpy(qpos).float().cuda().unsqueeze(0)
-                    curr_image = get_image_dual(ts, camera_names, mask=args.mask_images)
+                    curr_image = get_image_dual(ts_c, camera_names, mask=False)
                       
                     action_chunk = policy_dual(qpos, curr_image) # [1, chunk_size, 14]
                     
                     # Store in buffer if either arm using COOP needs temporal agg
-                    if (plan_l_state == 'COOP' and use_temporal_agg_l) or (plan_r_state == 'COOP' and use_temporal_agg_r):
+                    if (plan_l_state == 'COOP' and use_temporal_agg_l) or (plan_r_state == 'COOP' and use_temporal_agg_r) or \
+                       (is_transitioning_l and proposed_l_state == 'COOP' and use_temporal_agg_l) or \
+                       (is_transitioning_r and proposed_r_state == 'COOP' and use_temporal_agg_r):
                         all_time_actions_dual[[t], t:t+num_queries] = action_chunk
                     
                     # ALWAYS update chunk for standardized access (fixes transition crashes)
@@ -1157,27 +1578,40 @@ def main(args):
 
 
                 # 2. Query Independent Left (if needed)
-                should_query_l = (step_in_chunk == 0) or (plan_l_state == 'INDEP' and use_temporal_agg_l)
-                if plan_l_state == 'INDEP' and should_query_l:
+                need_indep_l = (plan_l_state == 'INDEP') or (is_transitioning_l and proposed_l_state == 'INDEP')
+                should_query_l = (step_in_chunk == 0) or (need_indep_l and use_temporal_agg_l)
+                if need_indep_l and current_action_chunk_left is None: should_query_l = True
+                
+                # Pre-fetch shadow obs if needed
+                obs_i = None
+                need_indep_r = (plan_r_state == 'INDEP') or (is_transitioning_r and proposed_r_state == 'INDEP')
+                should_query_r = (step_in_chunk == 0) or (need_indep_r and use_temporal_agg_r)
+                if need_indep_r and current_action_chunk_right is None: should_query_r = True
+
+                if (need_indep_l and should_query_l) or (need_indep_r and should_query_r):
+                     obs_i = env_shadow_i.task.get_observation(env_shadow_i.physics)
+                     ts_i = type('TS', (object,), {'observation': obs_i})()
+
+                if need_indep_l and should_query_l:
                     qpos_left_numpy = qpos_numpy[:7]
                     qpos_left = pre_process_left(qpos_left_numpy)
                     qpos_left = torch.from_numpy(qpos_left).float().cuda().unsqueeze(0)
-                    curr_image_left = get_image_independent(ts, camera_names, 'left', mask=args.mask_images)
+                    curr_image_left = get_image_independent(ts_i, camera_names, 'left', mask=False)
                     
                     action_chunk_l = policy_left(qpos_left, curr_image_left)
                     if use_temporal_agg_l:
+                         # Store even if transitioning? Yes.
                         all_time_actions_left[[t], t:t+num_queries] = action_chunk_l
                     
                     # ALWAYS update chunk
                     current_action_chunk_left = action_chunk_l.squeeze(0).cpu().numpy()
                 
                 # 3. Query Independent Right (if needed)
-                should_query_r = (step_in_chunk == 0) or (plan_r_state == 'INDEP' and use_temporal_agg_r)
-                if plan_r_state == 'INDEP' and should_query_r:
+                if need_indep_r and should_query_r:
                     qpos_right_numpy = qpos_numpy[7:14]
                     qpos_right = pre_process_right(qpos_right_numpy)
                     qpos_right = torch.from_numpy(qpos_right).float().cuda().unsqueeze(0)
-                    curr_image_right = get_image_independent(ts, camera_names, 'right', mask=args.mask_images)
+                    curr_image_right = get_image_independent(ts_i, camera_names, 'right', mask=False)
                      
                     action_chunk_r = policy_right(qpos_right, curr_image_right)
                     if use_temporal_agg_r:
@@ -1188,139 +1622,124 @@ def main(args):
                 
                 # 4. Anchor HOLD state in buffers to prevent jumps when restarting
                 if temporal_agg:
-                    if plan_l_state == 'HOLD':
+                    if plan_l_state == 'HOLD' and not is_transitioning_l:
                         # Fill future with CURRENT pose (Stay Here intention)
                         q_l_norm = pre_process_left(qpos_numpy[:7])
                         q_l_norm_dual = (qpos_numpy[:7] - stats_dual['qpos_mean'][:7]) / stats_dual['qpos_std'][:7]
                         all_time_actions_left[t, t:t+num_queries] = torch.from_numpy(q_l_norm).cuda()
                         all_time_actions_dual[t, t:t+num_queries, :7] = torch.from_numpy(q_l_norm_dual).cuda()
                         
-                    if plan_r_state == 'HOLD':
+                    if plan_r_state == 'HOLD' and not is_transitioning_r:
                         q_r_norm = pre_process_right(qpos_numpy[7:14])
                         q_r_norm_dual = (qpos_numpy[7:14] - stats_dual['qpos_mean'][7:14]) / stats_dual['qpos_std'][7:14]
                         all_time_actions_right[t, t:t+num_queries] = torch.from_numpy(q_r_norm).cuda()
                         all_time_actions_dual[t, t:t+num_queries, 7:] = torch.from_numpy(q_r_norm_dual).cuda()
                              
                 
-                
+                # --- HELPER: Get Action for a specific state ---
+                def get_action_for_state(target_state, arm_side, input_qpos_slice):
+                    """
+                    arm_side: 'left' or 'right'
+                    input_qpos_slice: qpos of that arm (7,)
+                    Returns: (7,) numpy action
+                    """
+                    # Left Arm Logic
+                    if arm_side == 'left':
+                        if target_state == 'COOP':
+                            if use_temporal_agg_l:
+                                actions = all_time_actions_dual[:, t]
+                                valid = torch.all(~torch.isnan(actions[:, :7]), axis=1)
+                                actions = actions[valid]
+                                if len(actions) == 0: return input_qpos_slice # Fail safe
+                                k = args.temporal_agg_k
+                                w_len = len(actions)
+                                weights = np.exp(-k * (w_len - 1 - np.arange(w_len)))
+                                weights = weights / weights.sum()
+                                weights = torch.from_numpy(weights).cuda().unsqueeze(dim=1)
+                                raw = (actions * weights).sum(dim=0, keepdim=True).squeeze(0).cpu().numpy()[:7]
+                            else:
+                                safe_step = step_in_chunk if step_in_chunk < chunk_size else 0
+                                raw = current_action_chunk_dual[safe_step][:7]
+                            return raw * stats_dual['action_std'][:7] + stats_dual['action_mean'][:7]
+
+                        elif target_state == 'INDEP':
+                            if use_temporal_agg_l:
+                                actions = all_time_actions_left[:, t]
+                                valid = torch.all(~torch.isnan(actions), axis=1)
+                                actions = actions[valid]
+                                if len(actions) == 0:
+                                    return input_qpos_slice
+                                k = args.temporal_agg_k
+                                w_len = len(actions)
+                                weights = np.exp(-k * (w_len - 1 - np.arange(w_len)))
+                                weights = weights / weights.sum()
+                                weights = torch.from_numpy(weights).cuda().unsqueeze(dim=1)
+                                raw = (actions * weights).sum(dim=0, keepdim=True).squeeze(0).cpu().numpy()
+                            else:
+                                safe_step = step_in_chunk if step_in_chunk < chunk_size else 0
+                                raw = current_action_chunk_left[safe_step]
+                            return raw * stats_left['action_std'] + stats_left['action_mean']
+                        else:
+                            return input_qpos_slice # HOLD
+
+                    # Right Arm Logic
+                    else:
+                        if target_state == 'COOP':
+                            if use_temporal_agg_r:
+                                actions = all_time_actions_dual[:, t]
+                                valid = torch.all(~torch.isnan(actions[:, 7:]), axis=1)
+                                actions = actions[valid]
+                                if len(actions) == 0: return input_qpos_slice
+                                k = args.temporal_agg_k
+                                w_len = len(actions)
+                                weights = np.exp(-k * (w_len - 1 - np.arange(w_len)))
+                                weights = weights / weights.sum()
+                                weights = torch.from_numpy(weights).cuda().unsqueeze(dim=1)
+                                raw = (actions * weights).sum(dim=0, keepdim=True).squeeze(0).cpu().numpy()[7:]
+                            else:
+                                safe_step = step_in_chunk if step_in_chunk < chunk_size else 0
+                                raw = current_action_chunk_dual[safe_step][7:]
+                            return raw * stats_dual['action_std'][7:] + stats_dual['action_mean'][7:]
+
+                        elif target_state == 'INDEP':
+                            if use_temporal_agg_r:
+                                actions = all_time_actions_right[:, t]
+                                valid = torch.all(~torch.isnan(actions), axis=1)
+                                actions = actions[valid]
+                                if len(actions) == 0: return input_qpos_slice
+                                k = args.temporal_agg_k
+                                w_len = len(actions)
+                                weights = np.exp(-k * (w_len - 1 - np.arange(w_len)))
+                                weights = weights / weights.sum()
+                                weights = torch.from_numpy(weights).cuda().unsqueeze(dim=1)
+                                raw = (actions * weights).sum(dim=0, keepdim=True).squeeze(0).cpu().numpy()
+                            else:
+                                safe_step = step_in_chunk if step_in_chunk < chunk_size else 0
+                                raw = current_action_chunk_right[safe_step]
+                            return raw * stats_right['action_std'] + stats_right['action_mean']
+                        else:
+                            return input_qpos_slice # HOLD
+
                 # --- 1. Get Left Action ---
-                if plan_l_state == 'COOP':
-                    # Use Dual Output (Left Slice)
-                    if use_temporal_agg_l:
-                        actions_for_curr_step = all_time_actions_dual[:, t]
-                        # FIX: Only check if Left Side (0-7) is valid.
-                        # Inherited buffer might have Right Side as NaN.
-                        actions_populated = torch.all(~torch.isnan(actions_for_curr_step[:, :7]), axis=1)
-                        actions_for_curr_step = actions_for_curr_step[actions_populated]
-                        k = args.temporal_agg_k
-                        weights_len = len(actions_for_curr_step)
-                        exp_weights = np.exp(-k * (weights_len - 1 - np.arange(weights_len)))
-                        exp_weights = exp_weights / exp_weights.sum()
-                        exp_weights = torch.from_numpy(exp_weights).cuda().unsqueeze(dim=1)
-                        raw_action_dual = (actions_for_curr_step * exp_weights).sum(dim=0, keepdim=True)
-                        raw_action_dual = raw_action_dual.squeeze(0).cpu().numpy()
-                        current_raw_action_l = raw_action_dual[:7]
-                    else:
-                        # Ensure step_in_chunk is safe, though it should be reset by logic above
-                        safe_step = step_in_chunk 
-                        if safe_step >= chunk_size: safe_step = 0
-                        current_raw_action_l = current_action_chunk_dual[safe_step][:7]
-                    
-                elif plan_l_state == 'INDEP':
-                    # Independent Mode for Left
-                    if use_temporal_agg_l:
-                        actions_for_curr_step_l = all_time_actions_left[:, t]
-                        actions_populated_l = torch.all(~torch.isnan(actions_for_curr_step_l), axis=1)
-                        actions_for_curr_step_l = actions_for_curr_step_l[actions_populated_l]
-                        
-                        if len(actions_for_curr_step_l) == 0:
-                             actions_for_curr_step_l = all_time_actions_left[:, t] 
-                             
-                        k = args.temporal_agg_k
-                        weights_len_l = len(actions_for_curr_step_l)
-                        exp_weights_l = np.exp(-k * (weights_len_l - 1 - np.arange(weights_len_l)))
-                        exp_weights_l = exp_weights_l / exp_weights_l.sum()
-                        exp_weights_l = torch.from_numpy(exp_weights_l).cuda().unsqueeze(dim=1)
-                        raw_action_l = (actions_for_curr_step_l * exp_weights_l).sum(dim=0, keepdim=True)
-                        current_raw_action_l = raw_action_l.squeeze(0).cpu().numpy()
-                    else:
-                        safe_step = step_in_chunk
-                        if safe_step >= chunk_size: safe_step = 0
-                        current_raw_action_l = current_action_chunk_left[safe_step]
+                action_l_committed = get_action_for_state(plan_l_state, 'left', qpos_numpy[:7])
+                if is_transitioning_l:
+                    action_l_proposed = get_action_for_state(proposed_l_state, 'left', qpos_numpy[:7])
+                    # Blend: alpha=0 means 100% committed, alpha=1 means 100% proposed
+                    action_l = (1 - alpha_l) * action_l_committed + alpha_l * action_l_proposed
                 else:
-                    # HOLD mode - no raw action needed
-                    current_raw_action_l = None
+                    action_l = action_l_committed
 
                 # --- 2. Get Right Action ---
-                if plan_r_state == 'COOP':
-                    # Use Dual Output (Right Slice)
-                    if use_temporal_agg_r:
-                         # Re-calculate Dual (redundant if Left was also Coop, but safe)
-                        actions_for_curr_step = all_time_actions_dual[:, t]
-                        # FIX: Only check if Right Side (7-14) is valid.
-                        actions_populated = torch.all(~torch.isnan(actions_for_curr_step[:, 7:]), axis=1)
-                        actions_for_curr_step = actions_for_curr_step[actions_populated]
-                        k = args.temporal_agg_k
-                        weights_len = len(actions_for_curr_step)
-                        exp_weights = np.exp(-k * (weights_len - 1 - np.arange(weights_len)))
-                        exp_weights = exp_weights / exp_weights.sum()
-                        exp_weights = torch.from_numpy(exp_weights).cuda().unsqueeze(dim=1)
-                        raw_action_dual = (actions_for_curr_step * exp_weights).sum(dim=0, keepdim=True)
-                        raw_action_dual = raw_action_dual.squeeze(0).cpu().numpy()
-                        current_raw_action_r = raw_action_dual[7:]
-                    else:
-                        safe_step = step_in_chunk
-                        if safe_step >= chunk_size: safe_step = 0
-                        current_raw_action_r = current_action_chunk_dual[safe_step][7:]
-                elif plan_r_state == 'INDEP':
-                    # Independent Mode for Right
-                    if use_temporal_agg_r:
-                        actions_for_curr_step_r = all_time_actions_right[:, t]
-                        actions_populated_r = torch.all(~torch.isnan(actions_for_curr_step_r), axis=1)
-                        actions_for_curr_step_r = actions_for_curr_step_r[actions_populated_r]
-                         
-                        k = args.temporal_agg_k
-                        weights_len_r = len(actions_for_curr_step_r)
-                        
-                        if weights_len_r == 0:
-                            safe_step = step_in_chunk
-                            if safe_step >= chunk_size: safe_step = 0
-                            current_raw_action_r = current_action_chunk_right[safe_step]
-                        else:
-                            exp_weights_r = np.exp(-k * (weights_len_r - 1 - np.arange(weights_len_r)))
-                            exp_weights_r = exp_weights_r / exp_weights_r.sum()
-                            exp_weights_r = torch.from_numpy(exp_weights_r).cuda().unsqueeze(dim=1)
-                            raw_action_r = (actions_for_curr_step_r * exp_weights_r).sum(dim=0, keepdim=True)
-                            current_raw_action_r = raw_action_r.squeeze(0).cpu().numpy()
-                    else:
-                        safe_step = step_in_chunk
-                        if safe_step >= chunk_size: safe_step = 0
-                        current_raw_action_r = current_action_chunk_right[safe_step]
+                action_r_committed = get_action_for_state(plan_r_state, 'right', qpos_numpy[7:14])
+                if is_transitioning_r:
+                    action_r_proposed = get_action_for_state(proposed_r_state, 'right', qpos_numpy[7:14])
+                    action_r = (1 - alpha_r) * action_r_committed + alpha_r * action_r_proposed
                 else:
-                    # HOLD mode - no raw action needed
-                    current_raw_action_r = None
-
-                # --- 3. Denormalize & Combine ---
-                # Left
-                if plan_l_state == 'COOP':
-                    action_l = current_raw_action_l * stats_dual['action_std'][:7] + stats_dual['action_mean'][:7]
-                elif plan_l_state == 'INDEP':
-                    action_l = current_raw_action_l * stats_left['action_std'] + stats_left['action_mean']
-                else:
-                    # HOLD Mode: Maintain current joint position
-                    action_l = qpos_numpy[:7]
-                
-                # Right
-                if plan_r_state == 'COOP':
-                    action_r = current_raw_action_r * stats_dual['action_std'][7:] + stats_dual['action_mean'][7:]
-                elif plan_r_state == 'INDEP':
-                    action_r = current_raw_action_r * stats_right['action_std'] + stats_right['action_mean']
-                else:
-                    # HOLD Mode: Maintain current joint position
-                    action_r = qpos_numpy[7:14]
+                    action_r = action_r_committed
                 
                 # Combine
                 action = np.concatenate([action_l, action_r])
+                
                 target_qpos = action
                 
                 # --- Safety Clamp REMOVED for debugging ---
@@ -1382,6 +1801,12 @@ def main(args):
                      print(f"[Step {t}] Auto-Removing objects: {to_remove}")
                      remove_cubes(env.physics, list(to_remove))
                      pending_removal -= to_remove
+                     
+                     # Update Display Logic: Trigger cooldown and remove from current display list
+                     last_removal_step = t
+                     # Re-cast to lists to allow modification if they are tuples/etc, though initiated as lists
+                     current_target_indices_i = [idx for idx in current_target_indices_i if idx not in to_remove]
+                     current_target_indices_c = [idx for idx in current_target_indices_c if idx not in to_remove]
             
             step_in_chunk += 1
             t += 1
@@ -1443,6 +1868,14 @@ def main(args):
                 last_active_r_state = None
                 state_history_l.clear()
                 state_history_r.clear()
+                switch_candidate_l = None
+                switch_candidate_r = None
+                switch_candidate_count_l = 0
+                switch_candidate_count_r = 0
+                waiting_home_target_l = None
+                waiting_home_target_r = None
+                home_pause_count_l = 0
+                home_pause_count_r = 0
 
                 # Save Stats to CSV
                 if args.save_stats_path:
@@ -1523,6 +1956,8 @@ def main(args):
                     break
 
                 # Cleanup / Preparation for next episode
+                if not apply_next_episode_sequence(episode_count):
+                    break
                 reset_magnet_logic(env.physics, args.color_sequence)
                 ts = reset_with_new_pose()
                 t = 0
@@ -1598,6 +2033,9 @@ if __name__ == '__main__':
     parser.add_argument('--no_temporal_agg', action='store_true', help='Disable temporal aggregation')
     parser.add_argument('--temporal_agg_transition_only', action='store_true', help='Enable temporal ensembling only around transitions')
     parser.add_argument('--temporal_agg_window', action='store', type=int, default=50, help='Number of steps around transition to enable temporal agg')
+    parser.add_argument('--switch_guard_steps', action='store', type=int, default=8, help='Stable high-level prediction steps required before requesting mode switch')
+    parser.add_argument('--switch_home_pause_steps', action='store', type=int, default=8, help='Pause steps at home before activating next policy')
+    parser.add_argument('--switch_home_threshold', action='store', type=float, default=0.12, help='Home detection threshold for gated switching')
     parser.add_argument('--x_shift', action='store', type=float, default=0.0, help='Shift all objects along X-axis')
     parser.add_argument('--x_shift_start_idx', action='store', type=int, default=0, help='Start index for applying x-shift (0-indexed)')
     
@@ -1607,6 +2045,7 @@ if __name__ == '__main__':
     
     parser.add_argument('--mask_images', action='store_true', help="Enable masking of objects based on policy type")
     parser.add_argument('--temporal_agg_k', action='store', type=float, default=0.01, help='Exponential decay factor k for Temporal Aggregation')
+    parser.add_argument('--sequence_file', action='store', type=str, help='Path to CSV sequence file (Optional override for color_sequence)', default=None)
 
     args = parser.parse_args()
     main(args)

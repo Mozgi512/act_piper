@@ -13,7 +13,6 @@ from piper_constants import MASTER_GRIPPER_POSITION_NORMALIZE_FN
 from piper_constants import PUPPET_GRIPPER_POSITION_NORMALIZE_FN
 from piper_constants import PUPPET_GRIPPER_VELOCITY_NORMALIZE_FN
 from piper_constants import MANYCUBES_COLORS, MANYCUBES_CONFIG
-
 from utils import sample_cube_pose, sample_redbox_pose, sample_greenbox_pose, sample_bluebox_pose
 
 import IPython
@@ -23,7 +22,7 @@ REDBOX_POSE = [None] # to be changed from outside
 BLUEBOX_POSE = [None]
 GREENBOX_POSE = [None]
 MANYCUBES_POSES = [None]
-MANYCUBES_COLORS = [None]
+# MANYCUBES_COLORS imported directly now
 MANYCUBES_TASK_COUNT = [None]  # Expected number of tasks to complete
 
 def make_sim_env(task_name, camera_names=None, time_limit=20, interleave_last_four=False):
@@ -454,7 +453,7 @@ class ManyCubesTask(BimanualPiperTask):
             np.copyto(physics.data.ctrl, ctrl_with_belt)
             
             # Start position and spacing for queue
-            start_x = 0.02
+            start_x = 0.0
             spacing = -0.15 
             
             # Colors: R, G, B
@@ -487,10 +486,10 @@ class ManyCubesTask(BimanualPiperTask):
                     # Sample new poses
                     # Green (8) at goal + noise
                     # noise_range: 2cm
-                    noise_g = np.random.uniform(-0.02, 0.02, size=2)
+                    noise_g = np.random.uniform(-0.05, 0.05, size=2)
                     poses[8] = np.array([0 + noise_g[0], 0.1 + noise_g[1], 0.025, 1, 0, 0, 0])
                     # Blue (9) at goal + noise
-                    noise_b = np.random.uniform(-0.02, 0.02, size=2)
+                    noise_b = np.random.uniform(-0.05, 0.05, size=2)
                     poses[9] = np.array([0.08 + noise_b[0], 0.1 + noise_b[1], 0.025, 1, 0, 0, 0])
                     # Red (7) at original
                     poses[7] = sample_redbox_pose()+np.array([0.2, 0, 0,0,0,0,0])
@@ -534,7 +533,7 @@ class ManyCubesTask(BimanualPiperTask):
                 # 1 should be Upstream of 0.
                 if MANYCUBES_COLORS[0] is not None:
                      poses = {} # Clear specials
-                     start_x = 0.00 # Start of working area
+                     start_x = 0.0 # Start of working area
                      spacing = 0.15 # Spacing towards Upstream (+X)
                      for i in range(10):
                          # x = start + i*spacing
@@ -542,18 +541,32 @@ class ManyCubesTask(BimanualPiperTask):
                          # 1: 0.53
                          # ...
                          px = start_x - i * spacing
+                         # Apply global shift
+                         shift_val = MANYCUBES_CONFIG.get('x_shift', 0.0)
+                         px += shift_val
+                         
                          #if i == 3:
-                             #px += 0.01
-                         if i == 5:
-                             px += 0.02
+                             #px -= 0.02
+                         #if i == 1:
+                             #px -= 0.02
+                         #if i == 5:
+                             #px += 0.02
                          #if i == 8:
                              #px -= 0.05  
                          #if i == 9:
                              #px -= 0.05
-                         py = np.random.uniform(0.35, 0.40)
-                         poses[i] = np.array([px, py, 0.025, 1, 0, 0, 0])
-                         print(f"Debug: Cube {i} initialized at X={px:.3f}, Y={py:.3f}")
-                     ref_x = 0 # Ignored
+                         # Apply X Randomization
+                         px += np.random.uniform(-0.04, 0.04)
+                         py = np.random.uniform(0.32, 0.45)
+
+                         # Check for target_indices filter
+                         target_indices = MANYCUBES_CONFIG.get('target_indices')
+                         if target_indices is not None and i not in target_indices:
+                             # Hide non-target object
+                             poses[i] = np.array([10.0 + i, -10.0, -1.0, 1, 0, 0, 0])
+                         else:
+                             poses[i] = np.array([px, py, 0.025, 1, 0, 0, 0])
+                             print(f"Debug: Cube {i} initialized at X={px:.3f}, Y={py:.3f}")
             
                      ref_x = 0 # Ignored
             
@@ -628,14 +641,26 @@ class ManyCubesTask(BimanualPiperTask):
                  for slot_i in range(10):
                      cube_idx = slot_to_cube_map[slot_i]
                      px = start_x - slot_i * spacing
-                     py = np.random.uniform(0.35, 0.40)
-                     poses[cube_idx] = np.array([px, py, 0.025, 1, 0, 0, 0])
-                     print(f"DEBUG: Interleave Dense - Cube {cube_idx} at Slot {slot_i} (X={px:.3f})")
+                     # Apply global shift
+                     px += MANYCUBES_CONFIG.get('x_shift', 0.0)
+
+                     # Apply X Randomization
+                     px += np.random.uniform(-0.05, 0.05)
+                     py = np.random.uniform(0.30, 0.50)
+                     
+                     # Check for target_indices filter
+                     target_indices = MANYCUBES_CONFIG.get('target_indices')
+                     if target_indices is not None and cube_idx not in target_indices:
+                         # Hide non-target object
+                         poses[cube_idx] = np.array([10.0 + cube_idx, -10.0, -1.0, 1, 0, 0, 0])
+                     else:
+                         poses[cube_idx] = np.array([px, py, 0.025, 1, 0, 0, 0])
+                         print(f"DEBUG: Interleave Dense - Cube {cube_idx} at Slot {slot_i} (X={px:.3f})")
 
             for i in range(10):
                 # Standard application loop
                 if i in poses:
-                    cube_pose = poses[i].copy()
+                    cube_pose = poses[i]
                 else:
                     # ... legacy queue logic ...
                     # If this runs, it means i wasn't in poses.
@@ -647,11 +672,6 @@ class ManyCubesTask(BimanualPiperTask):
                     cube_y = np.random.uniform(0.30, 0.45)
                     cube_quat = np.array([1, 0, 0, 0])
                     cube_pose = np.concatenate([[cube_x, cube_y, 0.02], cube_quat])
-
-                # Apply x_shift
-                start_shift_idx = MANYCUBES_CONFIG.get('x_shift_start_idx', 0)
-                if i >= start_shift_idx:
-                    cube_pose[0] += MANYCUBES_CONFIG.get('x_shift', 0.0)
 
                 start_idx = physics.model.name2id(f'cube_{i}_joint', 'joint')
                 qpos_adr = physics.model.jnt_qposadr[start_idx]

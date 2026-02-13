@@ -1,0 +1,15 @@
+/home/act/miniconda3/envs/aloha/lib/python3.10/site-packages/torchvision/models/_utils.py:208: UserWarning: The parameter 'pretrained' is deprecated since 0.13 and may be removed in the future, please use 'weights' instead.
+  warnings.warn(
+/home/act/miniconda3/envs/aloha/lib/python3.10/site-packages/torchvision/models/_utils.py:223: UserWarning: Arguments other than a weight enum or `None` for 'weights' are deprecated since 0.13 and may be removed in the future. The current behavior is equivalent to passing `weights=None`.
+  warnings.warn(msg)
+Dataset loaded with 124 samples.
+Traceback (most recent call last):
+  File "/home/act/act_piper/eval_multihead_classifier.py", line 142, in <module>
+    evaluate_multihead(args.data_dir, args.model_path, args.batch_size)
+  File "/home/act/act_piper/eval_multihead_classifier.py", line 71, in evaluate_multihead
+    model.load_state_dict(torch.load(model_path))
+  File "/home/act/miniconda3/envs/aloha/lib/python3.10/site-packages/torch/nn/modules/module.py", line 2629, in load_state_dict
+    raise RuntimeError(
+RuntimeError: Error(s) in loading state_dict for MultiHeadResNet18:
+	Missing key(s) in state_dict: "fc_l_mode.weight", "fc_l_mode.bias", "fc_r_mode.weight", "fc_r_mode.bias", "fc_l_obj.weight", "fc_l_obj.bias", "fc_r_obj.weight", "fc_r_obj.bias". 
+	Unexpected key(s) in state_dict: "fc_left.weight", "fc_left.bias", "fc_right.weight", "fc_right.bias". 

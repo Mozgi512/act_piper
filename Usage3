@@ -1,0 +1,108 @@
+#E2E評価のため
+#データ生成
+python3 generate_dataset.py \
+   --task_name sim_many_cubes \
+   --dataset_dir data4/random \
+   --num_episodes 100 \
+   --sequence_file sequences.csv
+
+python3 pad_dataset.py --input_dir data4/random --output_dir data4/random_padded
+
+#学習
+python3 imitate_episodes.py \
+    --task_name sim_dataset_c \
+    --ckpt_dir ckpt4/random \
+    --dataset_dir data4/random_padded \
+    --policy_class ACT --kl_weight 10 --chunk_size 100 --hidden_dim 512 \
+    --batch_size 32 \
+    --dim_feedforward 3200 \
+    --num_epochs 20000 --lr 1e-5 \
+    --seed 0 \
+    --num_workers 4 \
+    --persistent_workers \
+    --prefetch_factor 2 \
+    --use_cache \
+    --use_cuda_graph \
+    --load_ckpt ckpt4/random_40000/policy_epoch_20000_seed_0.ckpt \
+    --validation_interval 100 --num_episodes 100 --episode_len 3000
+
+
+
+#E2E評価
+python3 evaluate_policy_switcher.py \
+    --task_name sim_many_cubes \
+    --ckpt_e2e ckpt4/random \
+    --policy_class ACT --kl_weight 10 --chunk_size 100 --hidden_dim 512 --dim_feedforward 3200 \
+    --num_rollouts 10 \
+    --sequence_file sequences.csv \
+    --max_timesteps 2500 --onscreen_render --save_video videos/result_random_e2e
+
+----------------------------------------------------------------------------------------------------
+#事前学習
+python3 generate_dataset.py --pretrain_mode independent --num_episodes 100 --dataset_dir data4/pretrain_i --onscreen_render --no_save_data
+python3 generate_dataset.py --pretrain_mode cooperative --num_episodes 100 --dataset_dir data4/pretrain_c --onscreen_render --no_save_data
+
+python3 process_async_data.py --dataset_dir data4/pretrain_i --num_episodes 100
+
+python3 pad_dataset.py --input_dir data4/pretrain_i/L/seg_0 --output_dir data4/pretrain_left_padded
+python3 pad_dataset.py --input_dir data4/pretrain_i/R/seg_1 --output_dir data4/pretrain_right_padded
+python3 pad_dataset.py --input_dir data4/pretrain_c --output_dir data4/pretrain_c_padded
+
+
+python3 independent_imitate_episodes.py \
+    --task_name sim_dataset_i \
+    --ckpt_dir ckpt4/pretrained_left \
+    --dataset_dir data4/pretrain_left_padded \
+    --policy_class ACT \
+    --kl_weight 10 --chunk_size 100 --hidden_dim 512 --batch_size 32 --dim_feedforward 3200 \
+    --num_epochs 40000 --lr 1e-5 \
+    --seed 0 --arm left --num_episodes 100 --num_workers 4 \
+    --persistent_workers \
+    --prefetch_factor 2 \
+    --use_cache \
+    --use_cuda_graph \
+    --validation_interval 100 --episode_len 370
+
+python3 independent_imitate_episodes.py \
+    --task_name sim_dataset_i \
+    --ckpt_dir ckpt4/pretrained_right \
+    --dataset_dir data4/pretrain_right_padded \
+    --policy_class ACT \
+    --kl_weight 10 --chunk_size 100 --hidden_dim 512 --batch_size 32 --dim_feedforward 3200 \
+    --num_epochs 40000 --lr 1e-5 \
+    --seed 0 --arm right --num_episodes 100 --num_workers 4 \
+    --persistent_workers \
+    --prefetch_factor 2 \
+    --use_cache \
+    --use_cuda_graph \
+    --validation_interval 100 --episode_len 370
+
+python3 imitate_episodes.py \
+    --task_name sim_dataset_c \
+    --ckpt_dir ckpt4/pretrained_c \
+    --dataset_dir data4/pretrain_c_padded \
+    --policy_class ACT --kl_weight 10 --chunk_size 100 --hidden_dim 512 \
+    --batch_size 32 \
+    --dim_feedforward 3200 \
+    --num_epochs 40000 --lr 1e-5 \
+    --seed 0 \
+    --num_workers 4 \
+    --persistent_workers \
+    --prefetch_factor 2 \
+    --use_cache \
+    --use_cuda_graph \
+    --validation_interval 100 --num_episodes 100 --episode_len 570
+
+--------------------------------------------------------------------------------------------------
+#ハイレベルのため
+# データセット画像ラベリング
+python3 label_dataset.py \
+    --input_path testdata/episode_0.hdf5 \
+    --output_dir labeled_output \
+    --max_frames 10
+
+
+
+python3 extract_transitions.py \
+    --input_path testdata/episode_0.hdf5 \
+    --output_dir transition_images  

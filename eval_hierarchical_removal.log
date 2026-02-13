@@ -1,0 +1,103 @@
+Loading Multi-head High-level Classifier...
+/home/act/miniconda3/envs/aloha/lib/python3.10/site-packages/torchvision/models/_utils.py:208: UserWarning: The parameter 'pretrained' is deprecated since 0.13 and may be removed in the future, please use 'weights' instead.
+  warnings.warn(
+/home/act/miniconda3/envs/aloha/lib/python3.10/site-packages/torchvision/models/_utils.py:223: UserWarning: Arguments other than a weight enum or `None` for 'weights' are deprecated since 0.13 and may be removed in the future. The current behavior is equivalent to passing `weights=None`.
+  warnings.warn(msg)
+Loading Low-level Policies...
+/home/act/miniconda3/envs/aloha/lib/python3.10/site-packages/torchvision/models/_utils.py:223: UserWarning: Arguments other than a weight enum or `None` for 'weights' are deprecated since 0.13 and may be removed in the future. The current behavior is equivalent to passing `weights=ResNet18_Weights.IMAGENET1K_V1`. You can also use `weights=ResNet18_Weights.DEFAULT` to get the most up-to-date weights.
+  warnings.warn(msg)
+number of parameters: 83.92M
+KL Weight 10
+number of parameters: 83.91M
+KL Weight 10
+number of parameters: 83.91M
+KL Weight 10
+Debug: Cube 0 initialized at X=-0.009, Y=0.423
+Debug: Cube 1 initialized at X=-0.148, Y=0.394
+Debug: Cube 2 initialized at X=-0.266, Y=0.329
+Debug: Cube 3 initialized at X=-0.483, Y=0.323
+Debug: Cube 4 initialized at X=-0.573, Y=0.421
+Debug: Cube 5 initialized at X=-0.720, Y=0.447
+Debug: Cube 6 initialized at X=-0.876, Y=0.380
+Debug: Cube 7 initialized at X=-1.028, Y=0.335
+Debug: Cube 8 initialized at X=-1.189, Y=0.339
+Debug: Cube 9 initialized at X=-1.314, Y=0.388
+Starting loop for 3000 steps...
+[0] High-level Pred -> L_Mode:1, R_Mode:1, L_Obj:L1, R_Obj:L0
+  [Spatial Mapping] 10 objects detected:
+    - L0: cube_0 (X=-0.009)
+    - L1: cube_1 (X=-0.148)
+    - L2: cube_2 (X=-0.266)
+    - L3: cube_3 (X=-0.483)
+    - L4: cube_4 (X=-0.573)
+    - L5: cube_5 (X=-0.720)
+    - L6: cube_6 (X=-0.876)
+    - L7: cube_7 (X=-1.028)
+    - L8: cube_8 (X=-1.189)
+    - L9: cube_9 (X=-1.314)
+  Step 0/3000 done. L_M:1 R_M:1
+  Step 100/3000 done. L_M:1 R_M:1
+  Step 200/3000 done. L_M:1 R_M:1
+  Step 300/3000 done. L_M:1 R_M:1
+  Step 400/3000 done. L_M:1 R_M:1
+  Step 500/3000 done. L_M:1 R_M:1
+[600] High-level Pred -> L_Mode:0, R_Mode:1, L_Obj:L0, R_Obj:R0
+  [Spatial Mapping] 10 objects detected:
+    - L0: cube_3 (X=-0.162)
+    - L1: cube_4 (X=-0.252)
+    - L2: cube_5 (X=-0.399)
+    - L3: cube_6 (X=-0.555)
+    - L4: cube_7 (X=-0.706)
+    - L5: cube_8 (X=-0.868)
+    - L6: cube_9 (X=-0.993)
+    - R0: cube_2 (X=0.055)
+    - R1: cube_1 (X=0.174)
+    - R2: cube_0 (X=0.312)
+  Step 600/3000 done. L_M:0 R_M:1
+  Step 700/3000 done. L_M:0 R_M:1
+  Step 800/3000 done. L_M:0 R_M:1
+  Step 900/3000 done. L_M:0 R_M:1
+[1000] High-level Pred -> L_Mode:0, R_Mode:0, L_Obj:L0, R_Obj:None
+  [Spatial Mapping] 10 objects detected:
+    - L0: cube_4 (X=-0.040)
+    - L1: cube_5 (X=-0.187)
+    - L2: cube_6 (X=-0.343)
+    - L3: cube_7 (X=-0.494)
+    - L4: cube_8 (X=-0.655)
+    - L5: cube_9 (X=-0.781)
+    - R0: cube_3 (X=0.032)
+    - R1: cube_2 (X=0.267)
+    - R2: cube_1 (X=0.386)
+    - R3: cube_0 (X=0.524)
+  Step 1000/3000 done. L_M:0 R_M:0
+  Step 1100/3000 done. L_M:0 R_M:0
+  Step 1200/3000 done. L_M:0 R_M:0
+  Step 1300/3000 done. L_M:0 R_M:0
+  Step 1400/3000 done. L_M:0 R_M:0
+  Step 1500/3000 done. L_M:0 R_M:0
+  Step 1600/3000 done. L_M:0 R_M:0
+Debug: Cube 0 initialized at X=0.035, Y=0.409
+Debug: Cube 1 initialized at X=-0.161, Y=0.377
+Debug: Cube 2 initialized at X=-0.284, Y=0.328
+Debug: Cube 3 initialized at X=-0.437, Y=0.407
+Debug: Cube 4 initialized at X=-0.623, Y=0.337
+Debug: Cube 5 initialized at X=-0.765, Y=0.367
+Debug: Cube 6 initialized at X=-0.894, Y=0.377
+Debug: Cube 7 initialized at X=-1.011, Y=0.333
+Debug: Cube 8 initialized at X=-1.223, Y=0.341
+Debug: Cube 9 initialized at X=-1.338, Y=0.353
+  Step 1700/3000 done. L_M:0 R_M:0
+  Step 1800/3000 done. L_M:0 R_M:0
+  Step 1900/3000 done. L_M:0 R_M:0
+  Step 2000/3000 done. L_M:0 R_M:0
+  Step 2100/3000 done. L_M:0 R_M:0
+  Step 2200/3000 done. L_M:0 R_M:0
+  Step 2300/3000 done. L_M:0 R_M:0
+[Step 2399] SUCCESS: Object 3 in Goal. Removing.
+  Step 2400/3000 done. L_M:0 R_M:0
+  Step 2500/3000 done. L_M:0 R_M:0
+  Step 2600/3000 done. L_M:0 R_M:0
+  Step 2700/3000 done. L_M:0 R_M:0
+  Step 2800/3000 done. L_M:0 R_M:0
+  Step 2900/3000 done. L_M:0 R_M:0
+Finished.
