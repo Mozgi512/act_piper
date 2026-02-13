@@ -654,7 +654,7 @@ class ManyCubesTask(BimanualPiperTask):
                          # Hide non-target object
                          poses[cube_idx] = np.array([10.0 + cube_idx, -10.0, -1.0, 1, 0, 0, 0])
                      else:
-                         poses[cube_idx] = np.array([px, py, 0.025, 1, 0, 0, 0])
+                         poses[cube_idx] = np.array([px, py, 0.005, 1, 0, 0, 0])
                          print(f"DEBUG: Interleave Dense - Cube {cube_idx} at Slot {slot_i} (X={px:.3f})")
 
             for i in range(10):
@@ -671,7 +671,7 @@ class ManyCubesTask(BimanualPiperTask):
                     cube_x = orig_x + np.random.uniform(-0.01, 0.01)
                     cube_y = np.random.uniform(0.30, 0.45)
                     cube_quat = np.array([1, 0, 0, 0])
-                    cube_pose = np.concatenate([[cube_x, cube_y, 0.02], cube_quat])
+                    cube_pose = np.concatenate([[cube_x, cube_y, 0.005], cube_quat])
 
                 start_idx = physics.model.name2id(f'cube_{i}_joint', 'joint')
                 qpos_adr = physics.model.jnt_qposadr[start_idx]

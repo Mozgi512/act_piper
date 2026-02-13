@@ -203,6 +203,32 @@ def get_spatial_object_map(physics):
     
     return obj_map
 
+def mode_to_char(mode_str):
+    if mode_str == 'COOP':
+        return 'C'
+    if mode_str == 'HOLD':
+        return 'H'
+    return 'I'
+
+def compose_video_frame(main_rgb, coop_rgb, indep_l_rgb, indep_r_rgb, left_mode_char, right_mode_char):
+    tile_w, tile_h = 640, 360
+    main_tile = cv2.resize(main_rgb, (tile_w, tile_h), interpolation=cv2.INTER_LINEAR)
+    coop_tile = cv2.resize(coop_rgb, (tile_w, tile_h), interpolation=cv2.INTER_LINEAR)
+    indep_l_tile = cv2.resize(indep_l_rgb, (tile_w, tile_h), interpolation=cv2.INTER_LINEAR)
+    indep_r_tile = cv2.resize(indep_r_rgb, (tile_w, tile_h), interpolation=cv2.INTER_LINEAR)
+
+    top_row = np.hstack([main_tile, coop_tile])
+    bottom_row = np.hstack([indep_l_tile, indep_r_tile])
+    canvas = np.vstack([top_row, bottom_row])
+
+    font = cv2.FONT_HERSHEY_SIMPLEX
+    cv2.putText(canvas, f"{left_mode_char}", (20, canvas.shape[0] - 20), font, 1.1, (255, 255, 255), 2, cv2.LINE_AA)
+    text_r = f"{right_mode_char}"
+    text_size, _ = cv2.getTextSize(text_r, font, 1.1, 2)
+    cv2.putText(canvas, text_r, (canvas.shape[1] - text_size[0] - 20, canvas.shape[0] - 20), font, 1.1, (255, 255, 255), 2, cv2.LINE_AA)
+
+    return canvas
+
 def get_heuristic_targets(physics, spatial_map, color_sequence):
     """
     Determine target indices based on mode requirements and spatial heuristics.
@@ -746,6 +772,7 @@ def load_state_classifier(ckpt_path, device='cuda'):
 
 def main(args):
     set_seed(args.seed)
+    scripted_ll_test_mode = bool(getattr(args, 'debug_scripted_low_level', False) or getattr(args, 'unit_test_scripted_low_level', False))
     
     task_name = args.task_name
     ckpt_dual = args.ckpt_dual
@@ -1023,7 +1050,7 @@ def main(args):
 
     def setup_debug_scripted_low_level(ts_main, command_seq):
         """Create EE scripted runner aligned to current main episode initialization."""
-        if not args.debug_scripted_low_level:
+        if not scripted_ll_test_mode:
             return None, None, None
 
         if 'sim_many_cubes' in task_name:
@@ -1053,6 +1080,25 @@ def main(args):
 
         print(f"[Debug Scripted LL] Enabled. Commands={scripted_cmds}")
         return ee_env, scripted_policy, ts_ee
+
+    def sync_debug_ee_objects_from_main(ts_main, ee_env):
+        """Sync cube poses from main env observation to EE debug env every step."""
+        if ee_env is None or ts_main is None:
+            return
+        try:
+            env_state = np.array(ts_main.observation.get('env_state', []))
+            if env_state.shape[0] < 70:
+                return
+            for i in range(10):
+                try:
+                    joint_id = ee_env.physics.model.name2id(f'cube_{i}_joint', 'joint')
+                    qpos_adr = ee_env.physics.model.jnt_qposadr[joint_id]
+                    ee_env.physics.data.qpos[qpos_adr:qpos_adr+7] = env_state[i*7:(i+1)*7]
+                except Exception:
+                    continue
+            ee_env.physics.forward()
+        except Exception:
+            pass
 
     def apply_next_episode_sequence(ep_idx):
         if args.hl_oracle_metadata_csv:
@@ -1215,6 +1261,8 @@ def main(args):
             (oracle_l0, oracle_r0), _ = _oracle_states_at_t(current_hl_oracle_schedule, 0)
             committed_plan_l_state = 'COOP' if oracle_l0 == STATE_COOP else ('HOLD' if oracle_l0 == STATE_HOLD else 'INDEP')
             committed_plan_r_state = 'COOP' if oracle_r0 == STATE_COOP else ('HOLD' if oracle_r0 == STATE_HOLD else 'INDEP')
+        video_mode_l_char = mode_to_char(committed_plan_l_state)
+        video_mode_r_char = mode_to_char(committed_plan_r_state)
         steps_since_switch_l = 0
         steps_since_switch_r = 0
         MIN_STATE_DURATION_STEPS = 25  # Increased to 25 steps (0.5s) to filter 6-10 step glitches seen in logs.
@@ -1228,6 +1276,8 @@ def main(args):
         waiting_home_target_r = None
         home_pause_count_l = 0
         home_pause_count_r = 0
+        settle_after_switch_l = 0
+        settle_after_switch_r = 0
 
         # Conditional Temporal Ensembling: Transition Window Tracking
         transition_window_active_l = 0
@@ -1334,8 +1384,12 @@ def main(args):
             # Ensure held objects don't disappear when moved out of heuristic zones
             if t % 5 == 0 or True: # Check every step to be safe
                 grasped_dict = get_grasped_cubes(env.physics)
-                held_indices = grasped_dict['left'].union(grasped_dict['right'])
+                held_indices_left = set(grasped_dict['left'])
+                held_indices_right = set(grasped_dict['right'])
+                held_indices = held_indices_left.union(held_indices_right)
             else:
+                held_indices_left = set()
+                held_indices_right = set()
                 held_indices = set()
             
             def safe_get_color_local(idx):
@@ -1384,10 +1438,10 @@ def main(args):
                         continue
 
                     if arm == 'left':
-                        if x_val < 0:
+                        if x_val < -0.05:
                             side_candidates.append((x_val, idx))
                     else:
-                        if x_val >= 0:
+                        if x_val >= -0.05:
                             side_candidates.append((x_val, idx))
 
                 if side_candidates:
@@ -1403,6 +1457,19 @@ def main(args):
                 final_target_indices_i,
                 exclude=set(final_target_indices_i_left),
             )
+
+            # Keep grasped RED cubes visible per arm in independent shadows.
+            for idx in held_indices_left:
+                if is_removed_cube_local(idx):
+                    continue
+                if safe_get_color_local(idx) == 'r' and idx not in final_target_indices_i_left:
+                    final_target_indices_i_left.append(idx)
+
+            for idx in held_indices_right:
+                if is_removed_cube_local(idx):
+                    continue
+                if safe_get_color_local(idx) == 'r' and idx not in final_target_indices_i_right:
+                    final_target_indices_i_right.append(idx)
                 
             # Cooperative view must be atomic: exactly one G + one B (or empty).
             # If a pair is latched for delayed removal, keep showing that pair until removed.
@@ -1478,11 +1545,6 @@ def main(args):
                 fig.canvas.draw()
                 fig.canvas.flush_events()
                 time.sleep(DT)
-
-            if args.save_video:
-                # Render at 720p (1280x720) for video saving
-                video_frame = env._physics.render(height=720, width=1280, camera_id='top')
-                video_frames.append(video_frame)
 
             # --- State Classifier Inference / Oracle Replay ---
             if current_hl_oracle_schedule is not None:
@@ -1734,6 +1796,7 @@ def main(args):
                         transition_window_active_l = 0
                         step_in_chunk_left = 0
                         step_in_chunk_dual = 0
+                        settle_after_switch_l = max(0, args.switch_home_settle_steps)
                         print(f"[Step {t}] Left switch activated at home -> {plan_l_state}")
                 else:
                     plan_l_state = committed_plan_l_state
@@ -1765,6 +1828,7 @@ def main(args):
                         transition_window_active_r = 0
                         step_in_chunk_right = 0
                         step_in_chunk_dual = 0
+                        settle_after_switch_r = max(0, args.switch_home_settle_steps)
                         print(f"[Step {t}] Right switch activated at home -> {plan_r_state}")
                 else:
                     plan_r_state = committed_plan_r_state
@@ -1950,6 +2014,23 @@ def main(args):
             # Determine Final Effective State for Saving
             effective_l = plan_l_state
             effective_r = plan_r_state
+            video_mode_l_char = mode_to_char(effective_l)
+            video_mode_r_char = mode_to_char(effective_r)
+
+            if args.save_video:
+                main_rgb = env._physics.render(height=240, width=320, camera_id='top')
+                coop_rgb = env_shadow_c.physics.render(height=240, width=320, camera_id='top')
+                indep_l_rgb = env_shadow_i_left.physics.render(height=240, width=320, camera_id='top')
+                indep_r_rgb = env_shadow_i_right.physics.render(height=240, width=320, camera_id='top')
+                video_frame = compose_video_frame(
+                    main_rgb,
+                    coop_rgb,
+                    indep_l_rgb,
+                    indep_r_rgb,
+                    video_mode_l_char,
+                    video_mode_r_char,
+                )
+                video_frames.append(video_frame)
             
             # --- Record HITL Data (if enabled) ---
             if args.save_hitl_data_path:
@@ -2240,6 +2321,12 @@ def main(args):
                         else:
                             return input_qpos_slice # HOLD
 
+                def interp_toward_home(curr_qpos_slice, home_qpos_slice):
+                    max_step = float(args.switch_home_interp_max_delta)
+                    delta = home_qpos_slice - curr_qpos_slice
+                    step = np.clip(delta, -max_step, max_step)
+                    return curr_qpos_slice + step
+
                 # --- 1. Get Left Action ---
                 action_l_committed = get_action_for_state(plan_l_state, 'left', qpos_numpy[:7])
                 if is_transitioning_l:
@@ -2249,6 +2336,12 @@ def main(args):
                 else:
                     action_l = action_l_committed
 
+                # Smoothly move toward home during switch hold/settle
+                if force_hold_l or settle_after_switch_l > 0:
+                    action_l = interp_toward_home(qpos_numpy[:7], home_pose[:7])
+                    if settle_after_switch_l > 0:
+                        settle_after_switch_l -= 1
+
                 # --- 2. Get Right Action ---
                 action_r_committed = get_action_for_state(plan_r_state, 'right', qpos_numpy[7:14])
                 if is_transitioning_r:
@@ -2256,6 +2349,12 @@ def main(args):
                     action_r = (1 - alpha_r) * action_r_committed + alpha_r * action_r_proposed
                 else:
                     action_r = action_r_committed
+
+                # Smoothly move toward home during switch hold/settle
+                if force_hold_r or settle_after_switch_r > 0:
+                    action_r = interp_toward_home(qpos_numpy[7:14], home_pose[7:14])
+                    if settle_after_switch_r > 0:
+                        settle_after_switch_r -= 1
                 
                 # Combine
                 action = np.concatenate([action_l, action_r])
@@ -2263,7 +2362,10 @@ def main(args):
                 target_qpos = action
 
                 # Debug mode: override learned low-level with scripted policy trajectory used in data generation.
-                if args.debug_scripted_low_level and debug_ee_env is not None and debug_scripted_policy is not None and debug_ts_ee is not None:
+                if scripted_ll_test_mode and debug_ee_env is not None and debug_scripted_policy is not None and debug_ts_ee is not None:
+                    # Keep EE debug environment object poses aligned with current main env state.
+                    sync_debug_ee_objects_from_main(ts, debug_ee_env)
+                    debug_ts_ee = type('TS', (object,), {'observation': debug_ee_env.task.get_observation(debug_ee_env.physics)})()
                     debug_scripted_policy.process_command_buffer(debug_ts_ee)
                     ee_action = debug_scripted_policy(debug_ts_ee)
                     debug_ts_ee = debug_ee_env.step(ee_action)
@@ -2542,6 +2644,8 @@ def main(args):
                 waiting_home_target_r = None
                 home_pause_count_l = 0
                 home_pause_count_r = 0
+                settle_after_switch_l = 0
+                settle_after_switch_r = 0
 
                 # Save Stats to CSV
                 if args.save_stats_path:
@@ -2715,6 +2819,8 @@ if __name__ == '__main__':
     parser.add_argument('--hl_update_log_interval', action='store', type=int, default=50, help='Step interval for logging non-fired high-level updates in home-only mode')
     parser.add_argument('--switch_guard_steps', action='store', type=int, default=8, help='Stable high-level prediction steps required before requesting mode switch')
     parser.add_argument('--switch_home_pause_steps', action='store', type=int, default=8, help='Pause steps at home before activating next policy')
+    parser.add_argument('--switch_home_settle_steps', action='store', type=int, default=6, help='Additional steps to keep exact home pose after switch activation')
+    parser.add_argument('--switch_home_interp_max_delta', action='store', type=float, default=0.04, help='Max per-step joint delta when interpolating toward home during switch hold/settle')
     parser.add_argument('--switch_home_threshold', action='store', type=float, default=0.12, help='Home detection threshold for gated switching')
     parser.add_argument('--x_shift', action='store', type=float, default=0.0, help='Shift all objects along X-axis')
     parser.add_argument('--x_shift_start_idx', action='store', type=int, default=0, help='Start index for applying x-shift (0-indexed)')
@@ -2727,6 +2833,7 @@ if __name__ == '__main__':
     parser.add_argument('--temporal_agg_k', action='store', type=float, default=0.01, help='Exponential decay factor k for Temporal Aggregation')
     parser.add_argument('--sequence_file', action='store', type=str, help='Path to CSV sequence file (Optional override for color_sequence)', default=None)
     parser.add_argument('--debug_scripted_low_level', action='store_true', help='Debug mode: override low-level actions with data-generation scripted policy (InteractivePolicy in EE env)')
+    parser.add_argument('--unit_test_scripted_low_level', action='store_true', help='Unit-test mode: run low-level using the data-generation scripted policy (alias of --debug_scripted_low_level)')
     parser.add_argument('--hl_oracle_metadata_csv', action='store', type=str, default=None,
                         help='Optional metadata CSV (e.g., dryrun_sequence_metadata output) to replay handcrafted high-level mode transitions')
 

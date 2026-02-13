@@ -93,6 +93,17 @@ python3 imitate_episodes.py \
     --use_cuda_graph \
     --validation_interval 100 --num_episodes 100 --episode_len 570
 
+
+python3 evaluate_policy_switcher.py \
+    --task_name sim_many_cubes \
+    --ckpt_dual ckpt4/pretrained_c \
+    --ckpt_independent_dual ckpt4/pretrained_c \
+    --policy_class ACT \
+    --chunk_size 100 \
+    --num_rollouts 10 \
+    --max_timesteps 700 \
+    --match_pretrain_coop_env \
+    --onscreen_render
 --------------------------------------------------------------------------------------------------
 #ハイレベルのため
 # データセット画像ラベリング
@@ -124,4 +135,46 @@ python3 state_switcher.py \
     --inherit_temporal_buffer --temporal_agg_k 0.1\
     --warmup_steps 50 --num_rollouts 1  --onscreen_render --episode_len 2500 --seed 0 \
     --sequence_file sequences.csv \
+    --hl_update_at_home_only
+
     --save_stats_path evaluation_results.txt
+
+
+
+
+python3 state_switcher.py \
+        --task_name sim_many_cubes \
+        --ckpt_dual ckpt4/pretrained_c  \
+        --ckpt_left ckpt4/pretrained_left  \
+        --ckpt_right ckpt4/pretrained_right  \
+        --state_ckpt state_classifier_best.pth \
+        --chunk_size 75 \
+        --temporal_agg_k 0.03  \
+        --warmup_steps 50 --num_rollouts 10  --episode_len 3000 --seed 2 \
+        --sequence_file sequences.csv --hl_update_at_home_only --hl_update_interval 50 --no_temporal_agg --onscreen_render --save_stats_path hie_evaluation_results.txt --save_video videos/test_random_hie
+
+
+
+python3 state_switcher.py \
+        --task_name sim_many_cubes \
+        --ckpt_dual ckpt4/pretrained_c  \
+        --ckpt_left ckpt4/pretrained_left  \
+        --ckpt_right ckpt4/pretrained_right  \
+        --state_ckpt state_classifier_best.pth \
+        --chunk_size 75 \
+        --inherit_temporal_buffer --temporal_agg_k 0.03  \
+        --warmup_steps 50 --num_rollouts 10  --episode_len 2700 --seed 2 \
+        --sequence_file sequences.csv --no_temporal_agg --onscreen_render --hl_oracle_metadata_csv random_dryrun_metadata.csv
+
+
+python3 event_based_evaluator.py \
+--task_name sim_many_cubes \
+--cls_ckpt state_classifier_best.pth \
+--ckpt_dual ckpt4/pretrained_c \
+--ckpt_left ckpt4/pretrained_left \
+--ckpt_right ckpt4/pretrained_right \
+--chunk_size 75 \
+--num_rollouts 10 \
+--seed 2 \
+--color_sequence rgrbrbrggb \
+--onscreen_render

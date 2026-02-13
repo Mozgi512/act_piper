@@ -583,7 +583,7 @@ class ManyCubesEETask(BimanualPiperEETask):
                 cube_x = orig_x + np.random.uniform(-0.01, 0.01)
 
                 cube_y = np.random.uniform(0.30, 0.45) 
-                cube_z = 0.02 
+                cube_z = 0.005 
                 
                 cube_quat = np.array([1, 0, 0, 0])
                 cube_pose = np.concatenate([[cube_x, cube_y, cube_z], cube_quat])
@@ -608,7 +608,7 @@ class ManyCubesEETask(BimanualPiperEETask):
                      # Hide non-target object
                      np.copyto(physics.data.qpos[qpos_adr : qpos_adr + 7], [10.0 + i, -10.0, -1.0, 1, 0, 0, 0])
                  else:
-                     np.copyto(physics.data.qpos[qpos_adr : qpos_adr + 7], [px, py, 0.025, 1, 0, 0, 0])
+                     np.copyto(physics.data.qpos[qpos_adr : qpos_adr + 7], [px, py, 0.005, 1, 0, 0, 0])
             else:
                  np.copyto(physics.data.qpos[qpos_adr : qpos_adr + 7], cube_pose)
             

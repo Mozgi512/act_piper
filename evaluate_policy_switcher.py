@@ -31,7 +31,7 @@ from policy import ACTPolicy
 
 # Import Sim Env
 from piper_sim_env import REDBOX_POSE, GREENBOX_POSE, BLUEBOX_POSE
-from piper_sim_env import make_sim_env, MANYCUBES_COLORS, MANYCUBES_TASK_COUNT
+from piper_sim_env import make_sim_env, MANYCUBES_COLORS, MANYCUBES_TASK_COUNT, MANYCUBES_CONFIG
 from piper_ee_sim_env import make_ee_sim_env
 from utils import apply_rgb_mask_to_strip, apply_rgb_mask_to_right_strip
 # Constants
@@ -611,7 +611,7 @@ def main(args):
     onscreen_render = args.onscreen_render
 
     # Import Globals from Sim Env (Moved up to fix UnboundLocalError)
-    from piper_sim_env import MANYCUBES_COLORS, MANYCUBES_TASK_COUNT
+    from piper_sim_env import MANYCUBES_COLORS, MANYCUBES_TASK_COUNT, MANYCUBES_CONFIG
     import piper_constants
     
     # Default Fallback (if not defined elsewhere)
@@ -641,8 +641,8 @@ def main(args):
         print(f"Loaded {len(available_sequences)} successful sequences from {args.sequence_file}")
     
     # Validation check for non-CSV mode
-    if not args.sequence_file and not args.commands:
-        print("Error: --commands is required unless --sequence_file is specified.")
+    if not args.sequence_file and not args.commands and not args.match_pretrain_coop_env:
+        print("Error: --commands is required unless --sequence_file or --match_pretrain_coop_env is specified.")
         return
 
     from piper_constants import SIM_TASK_CONFIGS
@@ -792,6 +792,7 @@ def main(args):
     
     float_nan = float('nan')
     all_time_actions_dual = torch.full([MAX_BUFFER_STEPS, MAX_BUFFER_STEPS+num_queries, 14], float_nan).cuda()
+    all_time_actions_indep_dual = torch.full([MAX_BUFFER_STEPS, MAX_BUFFER_STEPS+num_queries, 14], float_nan).cuda()
     all_time_actions_left = torch.full([MAX_BUFFER_STEPS, MAX_BUFFER_STEPS+num_queries, 7], float_nan).cuda()
     all_time_actions_right = torch.full([MAX_BUFFER_STEPS, MAX_BUFFER_STEPS+num_queries, 7], float_nan).cuda()
 
@@ -814,7 +815,49 @@ def main(args):
     try:
         while episode_count < args.num_rollouts:
             # --- Sequence Selection ---
-            if available_sequences:
+            if args.match_pretrain_coop_env:
+                x_shift = 1.0 + np.random.uniform(-0.10, 0.10)
+                MANYCUBES_CONFIG['x_shift'] = x_shift
+
+                start_x = 0.0
+                spacing = 0.15
+                xs = [(start_x - i * spacing) + x_shift for i in range(10)]
+
+                l_bound_u, l_bound_l = 0.10, -0.50
+                r_bound_l, r_bound_u = -0.30, 0.50
+
+                left_candidates = [i for i, x in enumerate(xs) if x <= l_bound_u and x > l_bound_l]
+                right_candidates = [i for i, x in enumerate(xs) if x >= r_bound_l and x < r_bound_u]
+
+                if not left_candidates or not right_candidates:
+                    indices = np.random.choice(10, 2, replace=False)
+                    l_idx, r_idx = int(indices[0]), int(indices[1])
+                else:
+                    possible_pairs = [(li, ri) for li in left_candidates for ri in right_candidates if li != ri]
+                    proximate_pairs = [p for p in possible_pairs if abs(p[0] - p[1]) <= 3]
+                    if proximate_pairs:
+                        p_idx = np.random.choice(len(proximate_pairs))
+                        l_idx, r_idx = proximate_pairs[p_idx]
+                    else:
+                        possible_pairs.sort(key=lambda p: abs(p[0] - p[1]))
+                        l_idx, r_idx = possible_pairs[0]
+
+                c_list = ['r'] * 10
+                pair = ['g', 'b']
+                np.random.shuffle(pair)
+                c_list[l_idx] = pair[0]
+                c_list[r_idx] = pair[1]
+
+                color_seq = c_list
+                command_queue = list('C')
+                MANYCUBES_CONFIG['target_indices'] = set([int(l_idx), int(r_idx)])
+
+                print(
+                    f"Rollout {episode_count} | pretrain_coop_match x_shift={x_shift:.3f} "
+                    f"targets=({l_idx},{r_idx}) colors={''.join(color_seq)} commands=C"
+                )
+
+            elif available_sequences:
                 # Randomly pick from successful sequences
                 selected = np.random.choice(available_sequences)
                 color_seq = selected['color_seq']
@@ -830,6 +873,7 @@ def main(args):
                 # Use CLI values
                 command_queue = list(args.commands)
                 color_seq = list(args.color_sequence.lower()) if args.color_sequence else COLOR_SEQUENCE
+                MANYCUBES_CONFIG['target_indices'] = None
             
             # Update Globals for simulation environment
             MANYCUBES_COLORS[0] = color_seq
@@ -863,11 +907,13 @@ def main(args):
             
             # Reset buffers
             all_time_actions_dual.fill_(float_nan)
+            all_time_actions_indep_dual.fill_(float_nan)
             all_time_actions_left.fill_(float_nan)
             all_time_actions_right.fill_(float_nan)
             
             step_in_chunk = 0
             current_action_chunk_dual = None
+            current_action_chunk_indep_dual = None
             current_action_chunk_left = None
             current_action_chunk_right = None
             
@@ -1100,10 +1146,17 @@ def main(args):
                                      all_time_actions_left[[t], t:t+num_queries] = action_chunk_l
                                  else:
                                      current_action_chunk_left = action_chunk_l.squeeze(0).cpu().numpy()
-                             elif policy_independent_dual: # Using Unified Independent Policy
-                                  # TODO: Support unified independent in Mixed Mode? 
-                                  # For now assuming user provided --ckpt_left/--ckpt_right as per logic
-                                  pass
+
+                        # 2.5 Query Unified Independent Dual (if configured)
+                        if (plan_l_state == 'INDEP' or plan_r_state == 'INDEP') and policy_independent_dual:
+                            qpos_i_dual = pre_process_independent_dual(qpos_numpy)
+                            qpos_i_dual = torch.from_numpy(qpos_i_dual).float().cuda().unsqueeze(0)
+                            curr_image_i_dual = get_image_dual(ts, camera_names)
+                            action_chunk_i_dual = policy_independent_dual(qpos_i_dual, curr_image_i_dual)
+                            if temporal_agg:
+                                all_time_actions_indep_dual[[t], t:t+num_queries] = action_chunk_i_dual
+                            else:
+                                current_action_chunk_indep_dual = action_chunk_i_dual.squeeze(0).cpu().numpy()
 
                         # 3. Query Independent Right
                         if plan_r_state == 'INDEP':
@@ -1159,23 +1212,40 @@ def main(args):
                         if safe_step >= chunk_size: safe_step = 0
                         current_raw_action_l = current_action_chunk_dual[safe_step][:7]
                 else:
-                    if temporal_agg:
-                        actions_for_curr_step_l = all_time_actions_left[:, t] # No offset in eval usually?
-                        actions_populated_l = torch.all(~torch.isnan(actions_for_curr_step_l), axis=1)
-                        actions_for_curr_step_l = actions_for_curr_step_l[actions_populated_l]
-                        if len(actions_for_curr_step_l) == 0:
-                             actions_for_curr_step_l = all_time_actions_left[:, t]
-                        k = 0.01
-                        weights_len_l = len(actions_for_curr_step_l)
-                        exp_weights_l = np.exp(-k * (weights_len_l - 1 - np.arange(weights_len_l)))
-                        exp_weights_l = exp_weights_l / exp_weights_l.sum()
-                        exp_weights_l = torch.from_numpy(exp_weights_l).cuda().unsqueeze(dim=1)
-                        raw_action_l = (actions_for_curr_step_l * exp_weights_l).sum(dim=0, keepdim=True)
-                        current_raw_action_l = raw_action_l.squeeze(0).cpu().numpy()
+                    if policy_independent_dual:
+                        if temporal_agg:
+                            actions_for_curr_step_i = all_time_actions_indep_dual[:, t]
+                            actions_populated_i = torch.all(~torch.isnan(actions_for_curr_step_i), axis=1)
+                            actions_for_curr_step_i = actions_for_curr_step_i[actions_populated_i]
+                            k = 0.01
+                            weights_len_i = len(actions_for_curr_step_i)
+                            exp_weights_i = np.exp(-k * (weights_len_i - 1 - np.arange(weights_len_i)))
+                            exp_weights_i = exp_weights_i / exp_weights_i.sum()
+                            exp_weights_i = torch.from_numpy(exp_weights_i).cuda().unsqueeze(dim=1)
+                            raw_action_i = (actions_for_curr_step_i * exp_weights_i).sum(dim=0, keepdim=True)
+                            current_raw_action_l = raw_action_i.squeeze(0).cpu().numpy()[:7]
+                        else:
+                            safe_step = step_in_chunk
+                            if safe_step >= chunk_size: safe_step = 0
+                            current_raw_action_l = current_action_chunk_indep_dual[safe_step][:7]
                     else:
-                        safe_step = step_in_chunk 
-                        if safe_step >= chunk_size: safe_step = 0
-                        current_raw_action_l = current_action_chunk_left[safe_step]
+                        if temporal_agg:
+                            actions_for_curr_step_l = all_time_actions_left[:, t] # No offset in eval usually?
+                            actions_populated_l = torch.all(~torch.isnan(actions_for_curr_step_l), axis=1)
+                            actions_for_curr_step_l = actions_for_curr_step_l[actions_populated_l]
+                            if len(actions_for_curr_step_l) == 0:
+                                 actions_for_curr_step_l = all_time_actions_left[:, t]
+                            k = 0.01
+                            weights_len_l = len(actions_for_curr_step_l)
+                            exp_weights_l = np.exp(-k * (weights_len_l - 1 - np.arange(weights_len_l)))
+                            exp_weights_l = exp_weights_l / exp_weights_l.sum()
+                            exp_weights_l = torch.from_numpy(exp_weights_l).cuda().unsqueeze(dim=1)
+                            raw_action_l = (actions_for_curr_step_l * exp_weights_l).sum(dim=0, keepdim=True)
+                            current_raw_action_l = raw_action_l.squeeze(0).cpu().numpy()
+                        else:
+                            safe_step = step_in_chunk 
+                            if safe_step >= chunk_size: safe_step = 0
+                            current_raw_action_l = current_action_chunk_left[safe_step]
 
                 # --- Right ---
                 if r_state == 'COOP':
@@ -1197,34 +1267,57 @@ def main(args):
                         if safe_step >= chunk_size: safe_step = 0
                         current_raw_action_r = current_action_chunk_dual[safe_step][7:]
                 else:
-                    if temporal_agg:
-                        actions_for_curr_step_r = all_time_actions_right[:, t]
-                        actions_populated_r = torch.all(~torch.isnan(actions_for_curr_step_r), axis=1)
-                        actions_for_curr_step_r = actions_for_curr_step_r[actions_populated_r]
-                        if len(actions_for_curr_step_r) == 0:
-                             actions_for_curr_step_r = all_time_actions_right[:, t]
-                        k = 0.01
-                        weights_len_r = len(actions_for_curr_step_r)
-                        exp_weights_r = np.exp(-k * (weights_len_r - 1 - np.arange(weights_len_r)))
-                        exp_weights_r = exp_weights_r / exp_weights_r.sum()
-                        exp_weights_r = torch.from_numpy(exp_weights_r).cuda().unsqueeze(dim=1)
-                        raw_action_r = (actions_for_curr_step_r * exp_weights_r).sum(dim=0, keepdim=True)
-                        current_raw_action_r = raw_action_r.squeeze(0).cpu().numpy()
+                    if policy_independent_dual:
+                        if temporal_agg:
+                            actions_for_curr_step_i = all_time_actions_indep_dual[:, t]
+                            actions_populated_i = torch.all(~torch.isnan(actions_for_curr_step_i), axis=1)
+                            actions_for_curr_step_i = actions_for_curr_step_i[actions_populated_i]
+                            k = 0.01
+                            weights_len_i = len(actions_for_curr_step_i)
+                            exp_weights_i = np.exp(-k * (weights_len_i - 1 - np.arange(weights_len_i)))
+                            exp_weights_i = exp_weights_i / exp_weights_i.sum()
+                            exp_weights_i = torch.from_numpy(exp_weights_i).cuda().unsqueeze(dim=1)
+                            raw_action_i = (actions_for_curr_step_i * exp_weights_i).sum(dim=0, keepdim=True)
+                            current_raw_action_r = raw_action_i.squeeze(0).cpu().numpy()[7:]
+                        else:
+                            safe_step = step_in_chunk
+                            if safe_step >= chunk_size: safe_step = 0
+                            current_raw_action_r = current_action_chunk_indep_dual[safe_step][7:]
                     else:
-                        safe_step = step_in_chunk 
-                        if safe_step >= chunk_size: safe_step = 0
-                        current_raw_action_r = current_action_chunk_right[safe_step]
+                        if temporal_agg:
+                            actions_for_curr_step_r = all_time_actions_right[:, t]
+                            actions_populated_r = torch.all(~torch.isnan(actions_for_curr_step_r), axis=1)
+                            actions_for_curr_step_r = actions_for_curr_step_r[actions_populated_r]
+                            if len(actions_for_curr_step_r) == 0:
+                                 actions_for_curr_step_r = all_time_actions_right[:, t]
+                            k = 0.01
+                            weights_len_r = len(actions_for_curr_step_r)
+                            exp_weights_r = np.exp(-k * (weights_len_r - 1 - np.arange(weights_len_r)))
+                            exp_weights_r = exp_weights_r / exp_weights_r.sum()
+                            exp_weights_r = torch.from_numpy(exp_weights_r).cuda().unsqueeze(dim=1)
+                            raw_action_r = (actions_for_curr_step_r * exp_weights_r).sum(dim=0, keepdim=True)
+                            current_raw_action_r = raw_action_r.squeeze(0).cpu().numpy()
+                        else:
+                            safe_step = step_in_chunk 
+                            if safe_step >= chunk_size: safe_step = 0
+                            current_raw_action_r = current_action_chunk_right[safe_step]
 
                 # --- Denorm ---
                 if l_state == 'COOP':
                      action_l = current_raw_action_l * stats_dual['action_std'][:7] + stats_dual['action_mean'][:7]
                 else:
-                     action_l = current_raw_action_l * stats_left['action_std'] + stats_left['action_mean']
+                     if policy_independent_dual:
+                         action_l = current_raw_action_l * stats_independent_dual['action_std'][:7] + stats_independent_dual['action_mean'][:7]
+                     else:
+                         action_l = current_raw_action_l * stats_left['action_std'] + stats_left['action_mean']
                 
                 if r_state == 'COOP':
                      action_r = current_raw_action_r * stats_dual['action_std'][7:] + stats_dual['action_mean'][7:]
                 else:
-                     action_r = current_raw_action_r * stats_right['action_std'] + stats_right['action_mean']
+                     if policy_independent_dual:
+                         action_r = current_raw_action_r * stats_independent_dual['action_std'][7:] + stats_independent_dual['action_mean'][7:]
+                     else:
+                         action_r = current_raw_action_r * stats_right['action_std'] + stats_right['action_mean']
                 
                 action = np.concatenate([action_l, action_r])
                 target_qpos = action
@@ -1509,6 +1602,7 @@ if __name__ == '__main__':
     parser.add_argument('--reset_on_subtask', action='store_true', help='Reset independent policy buffers on subtask switch')
     parser.add_argument('--x_shift', action='store', type=float, default=0.0, help='Shift all objects along X-axis')
     parser.add_argument('--x_shift_start_idx', action='store', type=int, default=0, help='Start index for applying x-shift (0-indexed)')
+    parser.add_argument('--match_pretrain_coop_env', action='store_true', help='Match generate_dataset --pretrain_mode cooperative conditions (2 visible cubes + random x-shift)')
     
     args = parser.parse_args()
     main(args)
