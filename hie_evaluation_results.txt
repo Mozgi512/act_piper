@@ -2,3 +2,13 @@ Episode,Total_Reward,Is_Success,Obj0_Color,Obj0_Status,Obj0_Reward,Obj1_Color,Ob
 1,12374,True,b,Coop_Success,2,r,Indep_Success,1,g,Coop_Success,2,b,Coop_Success,2,r,Indep_Success,1,g,Coop_Success,2,g,Coop_Success,2,b,Coop_Success,2,r,Indep_Success,1,r,Indep_Success,1
 2,4805,False,r,Indep_Success,1,r,Indep_Success,1,b,Fail,0,g,Fail,0,r,Fail,0,g,Fail,0,r,Fail,0,b,Fail,0,g,Fail,0,b,Fail,0
 1,7733,False,r,Indep_Success,1,g,Coop_Success,2,b,Coop_Success,2,r,Indep_Success,1,b,Fail,0,r,Fail,0,r,Fail,0,g,Fail,0,g,Fail,0,b,Fail,0
+1,6252,False,g,Coop_Success,2,b,Coop_Success,2,r,Fail,0,r,Indep_Success,1,b,Fail,0,r,Fail,0,g,Fail,0,g,Fail,0,b,Fail,0,r,Fail,0
+2,8545,False,r,Indep_Success,1,r,Indep_Success,1,g,Coop_Success,2,b,Coop_Success,2,g,Fail,0,r,Fail,0,b,Fail,0,g,Fail,0,b,Fail,0,r,Fail,0
+3,4424,False,b,Coop_Success,2,g,Coop_Success,2,g,Fail,0,b,Fail,0,b,Fail,0,g,Fail,0,g,Fail,0,r,Fail,0,r,Fail,0,b,Fail,0
+4,4426,False,g,Coop_Success,2,b,Coop_Success,2,r,Fail,0,b,Fail,0,g,Fail,0,b,Fail,0,g,Fail,0,r,Fail,0,b,Fail,0,g,Fail,0
+5,8199,False,b,Coop_Success,2,r,Fail,0,g,Coop_Success,2,r,Indep_Success,1,r,Indep_Success,1,r,Fail,0,r,Fail,0,b,Fail,0,r,Fail,0,g,Fail,0
+6,9092,False,g,Coop_Success,2,b,Coop_Success,2,g,Coop_Success,2,r,Indep_Success,1,b,Coop_Success,2,b,Fail,0,g,Fail,0,b,Fail,0,r,Fail,0,g,Fail,0
+7,9298,False,r,Indep_Success,1,b,Coop_Success,2,g,Coop_Success,2,r,Indep_Success,1,r,Indep_Success,1,r,Fail,0,g,Fail,0,r,Fail,0,b,Fail,0,r,Fail,0
+8,4824,False,r,Indep_Success,1,r,Indep_Success,1,b,Fail,0,g,Fail,0,b,Fail,0,g,Fail,0,b,Fail,0,g,Fail,0,g,Fail,0,b,Fail,0
+9,10038,False,b,Coop_Success,2,r,Indep_Success,1,g,Coop_Success,2,g,Coop_Success,2,r,Indep_Success,1,b,Coop_Success,2,b,Fail,0,g,Fail,0,r,Fail,0,r,Fail,0
+10,12574,True,r,Indep_Success,1,b,Coop_Success,2,r,Indep_Success,1,g,Coop_Success,2,b,Coop_Success,2,g,Coop_Success,2,b,Coop_Success,2,g,Coop_Success,2,g,Coop_Success,2,b,Coop_Success,2

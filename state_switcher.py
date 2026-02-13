@@ -11,6 +11,7 @@ import argparse
 import json
 import csv
 import collections
+from collections import defaultdict
 import matplotlib.pyplot as plt
 import numpy as np
 import torch
@@ -31,13 +32,15 @@ sys.path.append(os.path.join(cwd, 'detr'))
 # Import existing modules
 from piper_constants import DT, START_ARM_POSE
 from piper_constants import PUPPET_GRIPPER_JOINT_OPEN
+from piper_constants import PUPPET_GRIPPER_POSITION_NORMALIZE_FN
 from utils import load_data
 from utils import sample_redbox_pose, sample_insertion_pose, sample_greenbox_pose, sample_bluebox_pose
 from utils import compute_dict_mean, set_seed, detach_dict
 from policy import ACTPolicy
+from interactive_policy import InteractivePolicy
 
 # Import Sim Env
-from piper_sim_env import REDBOX_POSE, GREENBOX_POSE, BLUEBOX_POSE, MANYCUBES_COLORS
+from piper_sim_env import REDBOX_POSE, GREENBOX_POSE, BLUEBOX_POSE, MANYCUBES_COLORS, MANYCUBES_POSES
 from piper_sim_env import make_sim_env
 from piper_ee_sim_env import make_ee_sim_env
 from piper_ee_sim_env import make_ee_sim_env
@@ -212,10 +215,25 @@ def get_heuristic_targets(physics, spatial_map, color_sequence):
         try: return color_sequence[idx]
         except: return None
 
+    def is_removed_cube(idx):
+        try:
+            geom_id = physics.model.name2id(f'cube_{idx}', 'geom')
+            alpha = float(physics.model.geom_rgba[geom_id, 3])
+        except:
+            alpha = 1.0
+        try:
+            body_id = physics.model.name2id(f'cube_{idx}', 'body')
+            z_pos = float(physics.data.xpos[body_id][2])
+        except:
+            z_pos = 0.0
+        return (alpha <= 0.01) or (z_pos < -1.0)
+
     # 1. Cooperative Shadow (target_indices_c)
     coop_candidates = []
     for label, c_idx in spatial_map.items():
         try:
+            if is_removed_cube(c_idx):
+                continue
             bid = physics.model.name2id(f'cube_{c_idx}', 'body')
             x_pos = physics.data.xpos[bid][0]
             # Ensure STRICTLY no red objects ('r') enter here
@@ -234,43 +252,20 @@ def get_heuristic_targets(physics, spatial_map, color_sequence):
             target_indices_c.append(rightmost_b[1])
 
     # 2. Independent Shadow (target_indices_i)
-    rh_candidates = []
-    lh_candidates = []
+    # Keep this arm-agnostic here: collect all red cubes.
+    # Per-arm selection (x=0 split, max-X on each side) is done later.
+    red_candidates = []
     for label, c_idx in spatial_map.items():
         try:
-            bid = physics.model.name2id(f'cube_{c_idx}', 'body')
-            x_pos = physics.data.xpos[bid][0]
+            if is_removed_cube(c_idx):
+                continue
             color = safe_get_color(c_idx)
             if color == 'r':
-                # Right Arm (Positive X): Prefer Closest to Center (Min Positive)
-                # Expand center overlap widely to catch items near 0 even if slightly negative
-                if x_pos > -0.15 and x_pos < 0.4:
-                    rh_candidates.append((x_pos, c_idx))
-                # Left Arm (Negative X): Prefer Closest to Center (Max Negative)
-                if x_pos < 0.15 and x_pos > -0.4: 
-                    lh_candidates.append((x_pos, c_idx))
-        except: pass
-    
-    # Sort candidates by proximity to 0
-    rh_candidates.sort(key=lambda x: x[0]) # Ascending (Smallest X first -> Closest to 0 from Right)
-    lh_candidates.sort(key=lambda x: x[0], reverse=True) # Descending (Largest X first -> Closest to 0 from Left)
+                red_candidates.append(c_idx)
+        except:
+            pass
 
-    r_best = rh_candidates[0][1] if rh_candidates else None
-    l_best = lh_candidates[0][1] if lh_candidates else None
-    
-    selected_i = set()
-    if r_best is not None: selected_i.add(r_best)
-    if l_best is not None: selected_i.add(l_best)
-    
-    # Fallback: If Right and Left selected the SAME object (overlap), 
-    # try to pick the next best candidate from either side to ensure visibility.
-    if r_best is not None and l_best is not None and r_best == l_best:
-         if len(rh_candidates) > 1:
-             selected_i.add(rh_candidates[1][1])
-         if len(lh_candidates) > 1:
-             selected_i.add(lh_candidates[1][1])
-             
-    target_indices_i = list(selected_i)
+    target_indices_i = red_candidates
 
     return list(set(target_indices_i)), list(set(target_indices_c))
 
@@ -766,19 +761,115 @@ def main(args):
 
     print("Loading Dual Policy...")
     policy_dual, stats_dual = load_policy_and_stats(ckpt_dual, policy_class, args, override_state_dim=14)
+
+    # High-level oracle metadata (optional): replay pair_at_t0/transitions_json as HL states
+    hl_oracle_by_seqrow = defaultdict(list)
+    hl_oracle_by_episode = {}
+    hl_oracle_cursor_by_seqrow = defaultdict(int)
+    hl_oracle_loaded_count = 0
+
+    def _parse_int_safe(v, default=-1):
+        try:
+            return int(v)
+        except Exception:
+            return default
+
+    def _mode_char_to_state(ch):
+        ch = (ch or 'H').upper()
+        if ch == 'C':
+            return STATE_COOP
+        if ch == 'I':
+            return STATE_INDEP
+        return STATE_HOLD
+
+    def _pair_to_states(pair):
+        p = (pair or 'HH').strip().upper()
+        if len(p) < 2:
+            p = (p + 'HH')[:2]
+        return _mode_char_to_state(p[0]), _mode_char_to_state(p[1])
+
+    def _is_valid_color_seq(s):
+        s = (s or '').strip().lower()
+        return len(s) == 10 and all(c in ['r', 'g', 'b'] for c in s)
+
+    def _oracle_states_at_t(schedule, step_t):
+        pair = schedule['pair0']
+        for tr in schedule['transitions']:
+            if step_t >= tr['t']:
+                pair = tr['pair']
+            else:
+                break
+        return _pair_to_states(pair), pair
+
+    def _select_oracle_schedule(ep_idx, sequence_row_idx):
+        if sequence_row_idx is not None and sequence_row_idx in hl_oracle_by_seqrow:
+            rows = hl_oracle_by_seqrow[sequence_row_idx]
+            if rows:
+                cursor = hl_oracle_cursor_by_seqrow[sequence_row_idx]
+                picked = rows[cursor % len(rows)]
+                hl_oracle_cursor_by_seqrow[sequence_row_idx] = cursor + 1
+                return picked
+        if ep_idx in hl_oracle_by_episode:
+            return hl_oracle_by_episode[ep_idx]
+        return None
+
+    if args.hl_oracle_metadata_csv:
+        if not os.path.exists(args.hl_oracle_metadata_csv):
+            print(f"Error: hl_oracle_metadata_csv not found: {args.hl_oracle_metadata_csv}")
+            return
+        print(f"Loading HL oracle metadata: {args.hl_oracle_metadata_csv}")
+        loaded_oracle_rows = 0
+        with open(args.hl_oracle_metadata_csv, 'r') as f:
+            reader = csv.DictReader(f)
+            for row in reader:
+                pair0 = (row.get('pair_at_t0') or 'HH').strip().upper()
+                trans_raw = row.get('transitions_json') or '[]'
+                try:
+                    transitions = json.loads(trans_raw)
+                except Exception:
+                    transitions = []
+
+                parsed_transitions = []
+                for tr in transitions:
+                    try:
+                        tr_t = int(tr.get('t', 0))
+                        tr_pair = str(tr.get('pair', 'HH')).strip().upper()
+                        if len(tr_pair) >= 2:
+                            parsed_transitions.append({'t': tr_t, 'pair': tr_pair[:2]})
+                    except Exception:
+                        continue
+                parsed_transitions.sort(key=lambda x: x['t'])
+
+                entry = {
+                    'pair0': pair0[:2] if len(pair0) >= 2 else 'HH',
+                    'transitions': parsed_transitions,
+                    'color_sequence': (row.get('color_sequence') or '').strip().lower(),
+                    'command_sequence': (row.get('command_sequence') or '').strip().upper(),
+                }
+
+                seq_row = _parse_int_safe(row.get('sequence_row'), default=-1)
+                ep = _parse_int_safe(row.get('episode'), default=-1)
+                entry['sequence_row'] = seq_row if seq_row >= 0 else None
+                if seq_row >= 0:
+                    hl_oracle_by_seqrow[seq_row].append(entry)
+                if ep >= 0:
+                    hl_oracle_by_episode[ep] = entry
+                loaded_oracle_rows += 1
+        hl_oracle_loaded_count = loaded_oracle_rows
+        print(f"Loaded HL oracle rows: {loaded_oracle_rows}")
+        if len(hl_oracle_by_episode) > 0 and args.num_rollouts > len(hl_oracle_by_episode):
+            print(f"Warning: num_rollouts ({args.num_rollouts}) > oracle episodes ({len(hl_oracle_by_episode)}). Clamping to {len(hl_oracle_by_episode)}.")
+            args.num_rollouts = len(hl_oracle_by_episode)
     
     # Handle Sequence Loading
     sequences = []
+    sequence_commands = []
     sequence_episode_order = None
-    if args.sequence_file:
+    if args.sequence_file and not args.hl_oracle_metadata_csv:
          if os.path.exists(args.sequence_file):
              print(f"Loading sequence file: {args.sequence_file}")
              with open(args.sequence_file, 'r') as f:
                  reader = csv.reader(f)
-                 def _is_valid_color_seq(s):
-                     s = s.strip().lower()
-                     return len(s) == 10 and all(c in ['r', 'g', 'b'] for c in s)
-
                  for row in reader:
                      if not row:
                          continue
@@ -790,8 +881,10 @@ def main(args):
 
                      if _is_valid_color_seq(candidate0):
                          sequences.append(candidate0.lower())
+                         sequence_commands.append(candidate1.upper() if len(candidate1) > 0 else None)
                      elif _is_valid_color_seq(candidate1):
                          sequences.append(candidate1.lower())
+                         sequence_commands.append(candidate0.upper() if len(candidate0) > 0 else None)
                      else:
                          # Skip header/invalid rows silently.
                          continue
@@ -809,6 +902,8 @@ def main(args):
          else:
              print(f"Error: Sequence file {args.sequence_file} not found.")
              return
+    elif args.sequence_file and args.hl_oracle_metadata_csv:
+         print("[Switcher] hl_oracle_metadata_csv is set. Ignoring --sequence_file and using oracle metadata colors/commands.")
 
     # Handle Color Sequence (Default or Override)
     default_color_seq = None
@@ -885,17 +980,20 @@ def main(args):
     print(f"Creating Simulation Environment with time_limit={time_limit:.2f}s ({max_timesteps} steps + buffer)")
     env = make_sim_env(task_name, camera_names=camera_names, time_limit=time_limit)
     env_shadow_c = make_sim_env(task_name, camera_names=camera_names, time_limit=time_limit)
-    env_shadow_i = make_sim_env(task_name, camera_names=camera_names, time_limit=time_limit)
+    env_shadow_i_left = make_sim_env(task_name, camera_names=camera_names, time_limit=time_limit)
+    env_shadow_i_right = make_sim_env(task_name, camera_names=camera_names, time_limit=time_limit)
     
     if onscreen_render:
          plt.ion()
-         fig, (ax_main, ax_c, ax_i) = plt.subplots(1, 3, figsize=(15, 5))
+         fig, (ax_main, ax_c, ax_i_l, ax_i_r) = plt.subplots(1, 4, figsize=(20, 5))
          plt_img_main = ax_main.imshow(np.zeros((240, 320, 3), dtype=np.uint8))
          plt_img_c = ax_c.imshow(np.zeros((240, 320, 3), dtype=np.uint8))
-         plt_img_i = ax_i.imshow(np.zeros((240, 320, 3), dtype=np.uint8))
+         plt_img_i_l = ax_i_l.imshow(np.zeros((240, 320, 3), dtype=np.uint8))
+         plt_img_i_r = ax_i_r.imshow(np.zeros((240, 320, 3), dtype=np.uint8))
          ax_main.set_title("Main")
          ax_c.set_title("Coop Shadow")
-         ax_i.set_title("Indep Shadow")
+         ax_i_l.set_title("Indep Shadow (Left)")
+         ax_i_r.set_title("Indep Shadow (Right)")
     
     def reset_with_new_pose():
         # Pose sampling based on task name
@@ -919,11 +1017,67 @@ def main(args):
         ts = env.reset()
         # Explicitly reset shadow environments to ensure they pick up new config (e.g. colors)
         env_shadow_c.reset()
-        env_shadow_i.reset()
+        env_shadow_i_left.reset()
+        env_shadow_i_right.reset()
         return ts
 
+    def setup_debug_scripted_low_level(ts_main, command_seq):
+        """Create EE scripted runner aligned to current main episode initialization."""
+        if not args.debug_scripted_low_level:
+            return None, None, None
+
+        if 'sim_many_cubes' in task_name:
+            env_state = np.array(ts_main.observation['env_state']).copy()
+            if env_state.shape[0] >= 70:
+                poses = {}
+                for i in range(10):
+                    poses[i] = env_state[i*7:(i+1)*7].copy()
+                MANYCUBES_POSES[0] = poses
+
+        ee_env = make_ee_sim_env(task_name)
+        ts_ee = ee_env.reset()
+
+        scripted_cmds = command_seq
+        if scripted_cmds is None or len(scripted_cmds) == 0:
+            # Fallback command expansion from color sequence (debug only)
+            seq = args.color_sequence if args.color_sequence else ""
+            r_n = seq.count('r')
+            c_n = min(seq.count('g'), seq.count('b'))
+            scripted_cmds = ('I' * r_n) + ('C' * c_n)
+
+        scripted_policy = InteractivePolicy(inject_noise=False, color_sequence=list(args.color_sequence))
+        scripted_policy.init_pose(ts_ee)
+        for cmd in scripted_cmds:
+            if cmd in ['I', 'C', 'L', 'R', 'T', 'B']:
+                scripted_policy.schedule_command(cmd, ts_ee)
+
+        print(f"[Debug Scripted LL] Enabled. Commands={scripted_cmds}")
+        return ee_env, scripted_policy, ts_ee
+
     def apply_next_episode_sequence(ep_idx):
+        if args.hl_oracle_metadata_csv:
+            oracle_entry = _select_oracle_schedule(ep_idx, None)
+            if oracle_entry is None:
+                print(f"[Switcher] Error: No oracle metadata row for episode {ep_idx}.")
+                return False
+
+            oracle_color = oracle_entry.get('color_sequence', '')
+            if _is_valid_color_seq(oracle_color):
+                seq_list = list(oracle_color)
+                MANYCUBES_COLORS[0] = seq_list
+                args.color_sequence = ''.join(seq_list)
+            else:
+                print(f"[Switcher] Error: Oracle row for episode {ep_idx} has invalid/missing color_sequence: '{oracle_color}'")
+                return False
+
+            args.current_command_sequence = oracle_entry.get('command_sequence') or None
+            args.current_sequence_row = oracle_entry.get('sequence_row')
+            print(f"[Switcher] Applied ORACLE sequence for Episode {ep_idx}: {args.color_sequence} (seq_row={args.current_sequence_row})")
+            return True
+
         if not args.sequence_file:
+            args.current_command_sequence = None
+            args.current_sequence_row = None
             return True
         if ep_idx >= len(sequences):
             print(f"[Switcher] Error: Episode {ep_idx} exceeds loaded sequences ({len(sequences)}).")
@@ -934,13 +1088,16 @@ def main(args):
             seq_idx = sequence_episode_order[ep_idx]
 
         seq = sequences[seq_idx]
+        cmd_seq = sequence_commands[seq_idx] if seq_idx < len(sequence_commands) else None
         seq_list = list(seq.lower().strip())
         if len(seq_list) == 10 and all(c in ['r', 'g', 'b'] for c in seq_list):
-             MANYCUBES_COLORS[0] = seq_list
-             # Update args so Magnet Logic sees it
-             args.color_sequence = "".join(seq_list)
-             print(f"[Switcher] Applied Sequence for Episode {ep_idx} (row {seq_idx}): {args.color_sequence}")
-             return True
+            MANYCUBES_COLORS[0] = seq_list
+            # Update args so Magnet Logic sees it
+            args.color_sequence = "".join(seq_list)
+            args.current_command_sequence = cmd_seq
+            args.current_sequence_row = seq_idx
+            print(f"[Switcher] Applied Sequence for Episode {ep_idx} (row {seq_idx}): {args.color_sequence}")
+            return True
 
         print(f"[Switcher] Error: Invalid sequence for Episode {ep_idx}: {seq}")
         return False
@@ -950,6 +1107,10 @@ def main(args):
         return
 
     ts = reset_with_new_pose()
+    debug_ee_env, debug_scripted_policy, debug_ts_ee = setup_debug_scripted_low_level(ts, getattr(args, 'current_command_sequence', None))
+    current_hl_oracle_schedule = _select_oracle_schedule(0, getattr(args, 'current_sequence_row', None)) if args.hl_oracle_metadata_csv else None
+    if current_hl_oracle_schedule is not None:
+        print(f"[HL Oracle] Enabled for episode 0 (sequence_row={getattr(args, 'current_sequence_row', None)})")
     
     old_settings = None
     if sys.stdin.isatty():
@@ -1020,6 +1181,8 @@ def main(args):
         acc_touched_left = set()
         acc_touched_right = set()
         pending_removal = set()
+        ever_grasped_objects = set()
+        removed_objects = set()
         coop_goal_pair_start_step = {}  # {(g_idx, b_idx): step_when_both_on_goal}
         coop_display_lock_pair = None   # (g_idx, b_idx) locked pair for coop shadow display
         active_coop_pair = None         # (g_idx, b_idx) currently assigned coop pair
@@ -1048,6 +1211,10 @@ def main(args):
         # Debounce State Tracking
         committed_plan_l_state = 'INDEP' # Start assumption
         committed_plan_r_state = 'INDEP' 
+        if current_hl_oracle_schedule is not None:
+            (oracle_l0, oracle_r0), _ = _oracle_states_at_t(current_hl_oracle_schedule, 0)
+            committed_plan_l_state = 'COOP' if oracle_l0 == STATE_COOP else ('HOLD' if oracle_l0 == STATE_HOLD else 'INDEP')
+            committed_plan_r_state = 'COOP' if oracle_r0 == STATE_COOP else ('HOLD' if oracle_r0 == STATE_HOLD else 'INDEP')
         steps_since_switch_l = 0
         steps_since_switch_r = 0
         MIN_STATE_DURATION_STEPS = 25  # Increased to 25 steps (0.5s) to filter 6-10 step glitches seen in logs.
@@ -1143,11 +1310,12 @@ def main(args):
             # --- SHADOW SYNC & HIDING ---
             # 1. Sync
             sync_envs(env.physics, env_shadow_c.physics)
-            sync_envs(env.physics, env_shadow_i.physics)
+            sync_envs(env.physics, env_shadow_i_left.physics)
+            sync_envs(env.physics, env_shadow_i_right.physics)
             
             # 2. Heuristic Targets
             color_seq = getattr(env.task, 'color_sequence', MANYCUBES_COLORS[0])
-            # Update target objects timing
+            # Cooperative target update timing
             # - home-only mode: same tick as high-level updates
             # - default mode: original cooldown behavior
             if args.hl_update_at_home_only:
@@ -1155,9 +1323,12 @@ def main(args):
             else:
                 should_update_targets = (t - last_removal_step >= 50)
 
+            # Independent R targets are updated every step.
+            spatial_map = get_spatial_object_map(env.physics)
+            latest_target_indices_i, latest_target_indices_c = get_heuristic_targets(env.physics, spatial_map, color_seq)
+            current_target_indices_i = latest_target_indices_i
             if should_update_targets:
-                spatial_map = get_spatial_object_map(env.physics)
-                current_target_indices_i, current_target_indices_c = get_heuristic_targets(env.physics, spatial_map, color_seq)
+                current_target_indices_c = latest_target_indices_c
 
             # --- FIX: Keep grasped objects visible ---
             # Ensure held objects don't disappear when moved out of heuristic zones
@@ -1180,6 +1351,57 @@ def main(args):
 
             # We copy to avoid mutating the cached list
             final_target_indices_i = list(set(current_target_indices_i) | set(held_red))
+
+            # Split independent display per arm: each arm shadow shows at most one RED target.
+            def safe_cube_x_local(idx):
+                try:
+                    bid = env.physics.model.name2id(f'cube_{idx}', 'body')
+                    return float(env.physics.data.xpos[bid][0])
+                except:
+                    return None
+
+            def pick_single_indep_target(arm, candidates, exclude=None):
+                if exclude is None:
+                    exclude = set()
+
+                # Split by x=0 and choose max-X red on that side.
+                side_candidates = []
+                for idx in candidates:
+                    if idx in exclude:
+                        continue
+                    if safe_get_color_local(idx) != 'r':
+                        continue
+                    x_val = safe_cube_x_local(idx)
+                    if x_val is None:
+                        continue
+
+                    if arm == 'left':
+                        if x_val < 0:
+                            side_candidates.append((x_val, idx))
+                    else:
+                        if x_val >= 0:
+                            side_candidates.append((x_val, idx))
+
+                if side_candidates:
+                    best_idx = max(side_candidates, key=lambda t_: t_[0])[1]
+                    return [best_idx]
+
+                # If no red exists on this side, show none.
+                return []
+
+            final_target_indices_i_left = pick_single_indep_target('left', final_target_indices_i)
+            final_target_indices_i_right = pick_single_indep_target(
+                'right',
+                final_target_indices_i,
+                exclude=set(final_target_indices_i_left),
+            )
+
+            # Show independent targets only for arms currently in INDEP mode.
+            # This prevents R objects from appearing in independent shadows during CC/HOLD.
+            if committed_plan_l_state != 'INDEP':
+                final_target_indices_i_left = []
+            if committed_plan_r_state != 'INDEP':
+                final_target_indices_i_right = []
                 
             # Cooperative view must be atomic: exactly one G + one B (or empty).
             # If a pair is latched for delayed removal, keep showing that pair until removed.
@@ -1222,10 +1444,15 @@ def main(args):
                         final_target_indices_c = []
             
             if t % 50 == 0:
-                 print(f"  [Heuristic Targets] Indep={final_target_indices_i}, Coop={final_target_indices_c}")
+                 print(
+                     f"  [Heuristic Targets] IndepRaw={final_target_indices_i}, "
+                     f"IndepL={final_target_indices_i_left}, IndepR={final_target_indices_i_right}, "
+                     f"Coop={final_target_indices_c}"
+                 )
 
             # 3. Hide
-            hide_objects(env_shadow_i.physics, final_target_indices_i, "Indep")
+            hide_objects(env_shadow_i_left.physics, final_target_indices_i_left, "IndepLeft")
+            hide_objects(env_shadow_i_right.physics, final_target_indices_i_right, "IndepRight")
             hide_objects(env_shadow_c.physics, final_target_indices_c, "Coop")
 
             # Render update (optimized: every 5 frames)
@@ -1240,9 +1467,11 @@ def main(args):
                 
                 # Shadow Views
                 img_c = env_shadow_c.physics.render(height=240, width=320, camera_id='top')
-                img_i = env_shadow_i.physics.render(height=240, width=320, camera_id='top')
+                img_i_l = env_shadow_i_left.physics.render(height=240, width=320, camera_id='top')
+                img_i_r = env_shadow_i_right.physics.render(height=240, width=320, camera_id='top')
                 plt_img_c.set_data(img_c)
-                plt_img_i.set_data(img_i)
+                plt_img_i_l.set_data(img_i_l)
+                plt_img_i_r.set_data(img_i_r)
 
                 # Non-blocking update (prevents focus stealing)
                 fig.canvas.draw()
@@ -1254,30 +1483,39 @@ def main(args):
                 video_frame = env._physics.render(height=720, width=1280, camera_id='top')
                 video_frames.append(video_frame)
 
-            # --- State Classifier Inference ---
-            if args.hl_update_at_home_only:
-                should_update_hl = (hl_update_tick_l or hl_update_tick_r)
+            # --- State Classifier Inference / Oracle Replay ---
+            if current_hl_oracle_schedule is not None:
+                (oracle_l, oracle_r), oracle_pair = _oracle_states_at_t(current_hl_oracle_schedule, t)
+                hl_mode_l = oracle_l
+                hl_mode_r = oracle_r
+                last_hl_update_step_l = t
+                last_hl_update_step_r = t
+                if t % 50 == 0:
+                    print(f"[Step {t}] HL oracle pair={oracle_pair}")
             else:
-                should_update_hl = True
+                if args.hl_update_at_home_only:
+                    should_update_hl = (hl_update_tick_l or hl_update_tick_r)
+                else:
+                    should_update_hl = True
 
-            if should_update_hl:
-                raw_img_np = ts.observation['images']['top'] # (H,W,C)
-                raw_pil = Image.fromarray(raw_img_np.astype('uint8'))
-                cls_input = cls_transform(raw_pil).unsqueeze(0).cuda()
+                if should_update_hl:
+                    raw_img_np = ts.observation['images']['top'] # (H,W,C)
+                    raw_pil = Image.fromarray(raw_img_np.astype('uint8'))
+                    cls_input = cls_transform(raw_pil).unsqueeze(0).cuda()
 
-                with torch.no_grad():
-                    out_l, out_r = state_classifier(cls_input)
-                    _, pred_l = torch.max(out_l, 1)
-                    _, pred_r = torch.max(out_r, 1)
-                    pred_l_item = pred_l.item()
-                    pred_r_item = pred_r.item()
+                    with torch.no_grad():
+                        out_l, out_r = state_classifier(cls_input)
+                        _, pred_l = torch.max(out_l, 1)
+                        _, pred_r = torch.max(out_r, 1)
+                        pred_l_item = pred_l.item()
+                        pred_r_item = pred_r.item()
 
-                if (not args.hl_update_at_home_only) or hl_update_tick_l:
-                    hl_mode_l = pred_l_item
-                    last_hl_update_step_l = t
-                if (not args.hl_update_at_home_only) or hl_update_tick_r:
-                    hl_mode_r = pred_r_item
-                    last_hl_update_step_r = t
+                    if (not args.hl_update_at_home_only) or hl_update_tick_l:
+                        hl_mode_l = pred_l_item
+                        last_hl_update_step_l = t
+                    if (not args.hl_update_at_home_only) or hl_update_tick_r:
+                        hl_mode_r = pred_r_item
+                        last_hl_update_step_r = t
 
             s_l = hl_mode_l
             s_r = hl_mode_r
@@ -1313,6 +1551,27 @@ def main(args):
                 elif s_r_smooth == STATE_INDEP: plan_r_state = 'INDEP'
                 else: plan_r_state = 'HOLD'
 
+            # --- Pair interpretation rules (user-defined) ---
+            # 1) H/C or C/H is not allowed -> interpret as C/C.
+            # 2) I/C or C/I is allowed only when transitioning from committed C/C.
+            raw_pair = (plan_l_state, plan_r_state)
+            committed_pair_before_rules = (committed_plan_l_state, committed_plan_r_state)
+
+            if raw_pair in [('HOLD', 'COOP'), ('COOP', 'HOLD')]:
+                plan_l_state, plan_r_state = 'COOP', 'COOP'
+                if t % 20 == 0:
+                    print(f"[Step {t}] Pair rule: {raw_pair[0]}/{raw_pair[1]} -> COOP/COOP")
+
+            mixed_pair = (plan_l_state, plan_r_state)
+            if mixed_pair in [('INDEP', 'COOP'), ('COOP', 'INDEP')] and committed_pair_before_rules != ('COOP', 'COOP'):
+                plan_l_state, plan_r_state = committed_pair_before_rules
+                if t % 20 == 0:
+                    print(
+                        f"[Step {t}] Pair rule: {mixed_pair[0]}/{mixed_pair[1]} blocked "
+                        f"(committed={committed_pair_before_rules[0]}/{committed_pair_before_rules[1]}) "
+                        f"-> {plan_l_state}/{plan_r_state}"
+                    )
+
             # --- Home-conditioned state-pair constraints ---
             # User rule:
             # - Exactly one arm at home: allowed pairs are IC / CI / II
@@ -1346,7 +1605,9 @@ def main(args):
                     ('INDEP', 'HOLD'),
                 }
 
-            if allowed_pairs is not None and current_pair not in allowed_pairs:
+            # In HL-oracle replay mode, trust oracle pair transitions and do not override
+            # them with home-conditioned pair constraints.
+            if current_hl_oracle_schedule is None and allowed_pairs is not None and current_pair not in allowed_pairs:
                 # Prefer maintaining current committed execution state when constraining.
                 # Score candidates by how many sides match committed plans (higher is better),
                 # then how many sides match current proposal as tie-breaker.
@@ -1807,20 +2068,24 @@ def main(args):
                 if need_indep_l and current_action_chunk_left is None: should_query_l = True
                 
                 # Pre-fetch shadow obs if needed
-                obs_i = None
                 need_indep_r = (plan_r_state == 'INDEP') or (is_transitioning_r and proposed_r_state == 'INDEP')
                 should_query_r = (step_in_chunk_right == 0) or (need_indep_r and use_temporal_agg_r) or force_query_r
                 if need_indep_r and current_action_chunk_right is None: should_query_r = True
 
-                if (need_indep_l and should_query_l) or (need_indep_r and should_query_r):
-                     obs_i = env_shadow_i.task.get_observation(env_shadow_i.physics)
-                     ts_i = type('TS', (object,), {'observation': obs_i})()
+                ts_i_left = None
+                ts_i_right = None
+                if need_indep_l and should_query_l:
+                    obs_i_left = env_shadow_i_left.task.get_observation(env_shadow_i_left.physics)
+                    ts_i_left = type('TS', (object,), {'observation': obs_i_left})()
+                if need_indep_r and should_query_r:
+                    obs_i_right = env_shadow_i_right.task.get_observation(env_shadow_i_right.physics)
+                    ts_i_right = type('TS', (object,), {'observation': obs_i_right})()
 
                 if need_indep_l and should_query_l:
                     qpos_left_numpy = qpos_numpy[:7]
                     qpos_left = pre_process_left(qpos_left_numpy)
                     qpos_left = torch.from_numpy(qpos_left).float().cuda().unsqueeze(0)
-                    curr_image_left = get_image_independent(ts_i, camera_names, 'left', mask=False)
+                    curr_image_left = get_image_independent(ts_i_left, camera_names, 'left', mask=False)
                     
                     action_chunk_l = policy_left(qpos_left, curr_image_left)
                     if use_temporal_agg_l:
@@ -1836,7 +2101,7 @@ def main(args):
                     qpos_right_numpy = qpos_numpy[7:14]
                     qpos_right = pre_process_right(qpos_right_numpy)
                     qpos_right = torch.from_numpy(qpos_right).float().cuda().unsqueeze(0)
-                    curr_image_right = get_image_independent(ts_i, camera_names, 'right', mask=False)
+                    curr_image_right = get_image_independent(ts_i_right, camera_names, 'right', mask=False)
                      
                     action_chunk_r = policy_right(qpos_right, curr_image_right)
                     if use_temporal_agg_r:
@@ -1967,6 +2232,18 @@ def main(args):
                 action = np.concatenate([action_l, action_r])
                 
                 target_qpos = action
+
+                # Debug mode: override learned low-level with scripted policy trajectory used in data generation.
+                if args.debug_scripted_low_level and debug_ee_env is not None and debug_scripted_policy is not None and debug_ts_ee is not None:
+                    debug_scripted_policy.process_command_buffer(debug_ts_ee)
+                    ee_action = debug_scripted_policy(debug_ts_ee)
+                    debug_ts_ee = debug_ee_env.step(ee_action)
+                    target_qpos = np.array(debug_ts_ee.observation['qpos']).copy()
+                    # Match replay conversion used in data generation/recording
+                    gripper_ctrl = debug_ts_ee.observation.get('gripper_ctrl', None)
+                    if gripper_ctrl is not None and len(gripper_ctrl) >= 2:
+                        target_qpos[6] = PUPPET_GRIPPER_POSITION_NORMALIZE_FN(gripper_ctrl[0])
+                        target_qpos[13] = PUPPET_GRIPPER_POSITION_NORMALIZE_FN(gripper_ctrl[1])
                 
                 # --- Safety Clamp REMOVED for debugging ---
                 diff = target_qpos - qpos_numpy
@@ -2071,8 +2348,17 @@ def main(args):
             # 3. Remove if NOT protected (touched/grasped/nearby)
             if pending_removal or coop_goal_pair_start_step:
                  grasped = get_grasped_cubes(env.physics)
+                 grasped_now = grasped['left'] | grasped['right']
+                 ever_grasped_objects.update(grasped_now)
                  nearby = get_proximity_cubes(env.physics)
                  currently_touching = get_touched_cubes_per_arm(env.physics)
+
+                 # Strict policy: if a cube has ever been grasped, remove it after release
+                 # even without success labels, so failed objects don't affect later tasks.
+                 released_grasped = {
+                     idx for idx in ever_grasped_objects
+                     if idx not in grasped_now and idx not in removed_objects
+                 }
                  
                  protected_any = (grasped['left'] | grasped['right'] | 
                                   currently_touching['left'] | currently_touching['right'] | 
@@ -2083,6 +2369,7 @@ def main(args):
 
                  # Standard single-object removal (non-coop goal + cushion)
                  to_remove = set(pending_removal - protected_any)
+                 to_remove.update(released_grasped)
 
                  # Cooperative pair delayed joint removal
                  REMOVAL_DELAY_STEPS = int(1.0 / DT)
@@ -2098,6 +2385,8 @@ def main(args):
                  if to_remove:
                      print(f"[Step {t}] Auto-Removing objects: {to_remove}")
                      remove_cubes(env.physics, list(to_remove))
+                     removed_objects.update(to_remove)
+                     ever_grasped_objects -= to_remove
                      pending_removal -= to_remove
 
                      # Drop stale pair timers that include removed cubes
@@ -2174,6 +2463,8 @@ def main(args):
                 acc_touched_left.clear()
                 acc_touched_right.clear()
                 pending_removal.clear()
+                ever_grasped_objects.clear()
+                removed_objects.clear()
                 coop_goal_pair_start_step.clear()
                 coop_display_lock_pair = None
                 active_coop_pair = None
@@ -2306,6 +2597,10 @@ def main(args):
                     break
                 reset_magnet_logic(env.physics, args.color_sequence)
                 ts = reset_with_new_pose()
+                debug_ee_env, debug_scripted_policy, debug_ts_ee = setup_debug_scripted_low_level(ts, getattr(args, 'current_command_sequence', None))
+                current_hl_oracle_schedule = _select_oracle_schedule(episode_count, getattr(args, 'current_sequence_row', None)) if args.hl_oracle_metadata_csv else None
+                if current_hl_oracle_schedule is not None:
+                    print(f"[HL Oracle] Enabled for episode {episode_count} (sequence_row={getattr(args, 'current_sequence_row', None)})")
                 t = 0
                 step_in_chunk = 0
                 step_in_chunk_dual = 0
@@ -2402,6 +2697,9 @@ if __name__ == '__main__':
     parser.add_argument('--mask_images', action='store_true', help="Enable masking of objects based on policy type")
     parser.add_argument('--temporal_agg_k', action='store', type=float, default=0.01, help='Exponential decay factor k for Temporal Aggregation')
     parser.add_argument('--sequence_file', action='store', type=str, help='Path to CSV sequence file (Optional override for color_sequence)', default=None)
+    parser.add_argument('--debug_scripted_low_level', action='store_true', help='Debug mode: override low-level actions with data-generation scripted policy (InteractivePolicy in EE env)')
+    parser.add_argument('--hl_oracle_metadata_csv', action='store', type=str, default=None,
+                        help='Optional metadata CSV (e.g., dryrun_sequence_metadata output) to replay handcrafted high-level mode transitions')
 
     args = parser.parse_args()
     main(args)

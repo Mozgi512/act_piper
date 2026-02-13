@@ -652,6 +652,10 @@ def main(args):
             
                 # Save task segment metadata
                 metadata = root.create_group('metadata')
+                if color_seq is not None:
+                    metadata.create_dataset('color_sequence', data=np.string_(''.join(color_seq)))
+                if command_queue_template is not None:
+                    metadata.create_dataset('command_sequence', data=np.string_(''.join(command_queue_template)))
                 # Convert segment lists to structured array with new fields
                 if left_segments:
                     left_seg_data = np.array([
