@@ -6,7 +6,7 @@ import numpy as np
 import torch
 import torch.nn as nn
 import torch.optim as optim
-from torch.utils.data import Dataset, DataLoader, random_split
+from torch.utils.data import Dataset, DataLoader, Subset
 from torchvision import transforms, models
 from tqdm import tqdm
 from PIL import Image
@@ -218,6 +218,8 @@ def main():
     parser.add_argument('--epochs', type=int, default=10)
     parser.add_argument('--lr', type=float, default=0.001)
     parser.add_argument('--lookahead', type=int, default=50, help='Steps to look ahead for label')
+    parser.add_argument('--val_ratio', type=float, default=0.2, help='Validation split ratio by episode/file')
+    parser.add_argument('--split_seed', type=int, default=0, help='Random seed for episode-level split')
     
     args = parser.parse_args()
 
@@ -240,10 +242,36 @@ def main():
         print("No samples found. Check dataset paths.")
         return
 
-    # Split
-    val_size = int(0.2 * len(dataset))
-    train_size = len(dataset) - val_size
-    train_dataset, val_dataset = random_split(dataset, [train_size, val_size])
+    # Episode-level split (prevent leakage across frames from the same episode file)
+    file_paths = [s[0] for s in dataset.samples]
+    unique_files = sorted(set(file_paths))
+    if len(unique_files) < 2:
+        print("Need at least 2 episode files for train/val split.")
+        return
+
+    rng = np.random.default_rng(args.split_seed)
+    perm = rng.permutation(len(unique_files))
+    val_file_count = max(1, int(round(len(unique_files) * float(args.val_ratio))))
+    val_file_count = min(val_file_count, len(unique_files) - 1)
+
+    val_file_idx = set(perm[:val_file_count].tolist())
+    val_files = {unique_files[i] for i in val_file_idx}
+    train_files = set(unique_files) - val_files
+
+    train_indices = [i for i, fp in enumerate(file_paths) if fp in train_files]
+    val_indices = [i for i, fp in enumerate(file_paths) if fp in val_files]
+
+    if len(train_indices) == 0 or len(val_indices) == 0:
+        print("Episode-level split produced empty train or val set. Adjust --val_ratio.")
+        return
+
+    print(
+        f"Episode split: train_files={len(train_files)} val_files={len(val_files)} | "
+        f"train_samples={len(train_indices)} val_samples={len(val_indices)}"
+    )
+
+    train_dataset = Subset(dataset, train_indices)
+    val_dataset = Subset(dataset, val_indices)
 
     train_loader = DataLoader(train_dataset, batch_size=args.batch_size, shuffle=True, num_workers=4)
     val_loader = DataLoader(val_dataset, batch_size=args.batch_size, shuffle=False, num_workers=4)

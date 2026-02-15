@@ -795,6 +795,14 @@ class HierarchicalRunner:
                 break
         return self._pair_to_states(pair), pair
 
+    def _oracle_shifted_raw_states_at_t(self, schedule, step_t, shift_steps):
+        shift_steps = int(max(0, shift_steps))
+        src_t = step_t - shift_steps
+        if src_t < 0:
+            src_t = shift_steps
+        (oracle_l, oracle_r), oracle_pair = self._oracle_states_at_t(schedule, src_t)
+        return int(oracle_l), int(oracle_r), oracle_pair, int(src_t)
+
     def _select_oracle_schedule(self, ep_idx, sequence_row_idx):
         if sequence_row_idx is not None and sequence_row_idx in self.hl_oracle_by_seqrow:
             rows = self.hl_oracle_by_seqrow[sequence_row_idx]
@@ -865,6 +873,8 @@ class HierarchicalRunner:
         self.hl_mode_r = STATE_INDEP
         self.last_hl_update_step_l = -1
         self.last_hl_update_step_r = -1
+        self.hl_pending_l = collections.deque()
+        self.hl_pending_r = collections.deque()
         self.state_history_l = collections.deque(maxlen=self.args.hl_history_len)
         self.state_history_r = collections.deque(maxlen=self.args.hl_history_len)
         self.committed_plan_l_state = "INDEP"
@@ -901,8 +911,8 @@ class HierarchicalRunner:
         raw_pair = (plan_l, plan_r)
         committed_pair = (self.committed_plan_l_state, self.committed_plan_r_state)
 
-        if raw_pair in [("HOLD", "COOP"), ("COOP", "HOLD")]:
-            plan_l, plan_r = "COOP", "COOP"
+        #if raw_pair in [("HOLD", "COOP"), ("COOP", "HOLD")]:
+        #    plan_l, plan_r = "COOP", "COOP"
 
         mixed_pair = (plan_l, plan_r)
         if mixed_pair in [("INDEP", "COOP"), ("COOP", "INDEP")] and committed_pair != ("COOP", "COOP"):
@@ -954,22 +964,22 @@ class HierarchicalRunner:
 
         self.steps_since_switch_l += 1
         proposed_l_state = plan_l
-        if plan_l != self.committed_plan_l_state:
-            if self.steps_since_switch_l > self.args.hl_min_state_duration_steps:
-                self.committed_plan_l_state = plan_l
-                self.steps_since_switch_l = 0
-            else:
-                plan_l = self.committed_plan_l_state
-
+        #if plan_l != self.committed_plan_l_state:
+        #    if self.steps_since_switch_l > self.args.hl_min_state_duration_steps:
+        #        self.committed_plan_l_state = plan_l
+        #        self.steps_since_switch_l = 0
+        #    else:
+        #        plan_l = self.committed_plan_l_state
+        plan_l = self.committed_plan_l_state
         self.steps_since_switch_r += 1
         proposed_r_state = plan_r
-        if plan_r != self.committed_plan_r_state:
-            if self.steps_since_switch_r > self.args.hl_min_state_duration_steps:
-                self.committed_plan_r_state = plan_r
-                self.steps_since_switch_r = 0
-            else:
-                plan_r = self.committed_plan_r_state
-
+        #if plan_r != self.committed_plan_r_state:
+        #    if self.steps_since_switch_r > self.args.hl_min_state_duration_steps:
+        #        self.committed_plan_r_state = plan_r
+        #        self.steps_since_switch_r = 0
+        #    else:
+        #        plan_r = self.committed_plan_r_state
+        plan_r = self.committed_plan_r_state
         # state_switcher-style home-gated switching
         force_hold_l = False
         force_hold_r = False
@@ -1046,6 +1056,34 @@ class HierarchicalRunner:
         if force_hold_r:
             plan_r = "HOLD"
 
+        # Mixed-mode COOP-exit rule:
+        # If one arm is INDEP and the other is COOP, when the COOP arm reaches home,
+        # transition COOP arm out of COOP (to HOLD, then INDEP commit).
+        left_home_switch = arm_is_home(qpos[:7], home_pose[:7], self.args.switch_home_threshold)
+        right_home_switch = arm_is_home(qpos[7:14], home_pose[7:14], self.args.switch_home_threshold)
+
+        if plan_l == "COOP" and plan_r == "INDEP":
+            if left_home_switch:
+                plan_l = "HOLD"
+                self.committed_plan_l_state = "INDEP"
+                self.steps_since_switch_l = 0
+                self.waiting_home_target_l = None
+                self.switch_candidate_l = None
+                self.switch_candidate_count_l = 0
+                self.home_pause_count_l = 0
+                switch_activated = True
+
+        if plan_l == "INDEP" and plan_r == "COOP":
+            if right_home_switch:
+                plan_r = "HOLD"
+                self.committed_plan_r_state = "INDEP"
+                self.steps_since_switch_r = 0
+                self.waiting_home_target_r = None
+                self.switch_candidate_r = None
+                self.switch_candidate_count_r = 0
+                self.home_pause_count_r = 0
+                switch_activated = True
+
         return plan_l, plan_r, switch_activated
 
     def _clear_inference_state(self):
@@ -1058,6 +1096,30 @@ class HierarchicalRunner:
         self.curr_chunk_dual_t0 = None
         self.curr_chunk_left_t0 = None
         self.curr_chunk_right_t0 = None
+
+    def _bootstrap_initial_hl_mode(self, ts):
+        if self.current_hl_oracle_schedule is not None:
+            (oracle_l, oracle_r), _ = self._oracle_states_at_t(self.current_hl_oracle_schedule, 0)
+            self.hl_mode_l = int(oracle_l)
+            self.hl_mode_r = int(oracle_r)
+        else:
+            img_np = ts.observation["images"]["top"]
+            img = Image.fromarray(img_np.astype("uint8"))
+            inp = self.cls_transform(img).unsqueeze(0).to(self.device)
+            with torch.no_grad():
+                out_l, out_r = self.classifier(inp)
+                self.hl_mode_l = int(torch.argmax(out_l, dim=1).item())
+                self.hl_mode_r = int(torch.argmax(out_r, dim=1).item())
+
+        self.last_hl_update_step_l = 0
+        self.last_hl_update_step_r = 0
+        self.committed_plan_l_state = self._mode_to_plan(self.hl_mode_l)
+        self.committed_plan_r_state = self._mode_to_plan(self.hl_mode_r)
+
+        self.state_history_l.clear()
+        self.state_history_r.clear()
+        self.state_history_l.append(self.hl_mode_l)
+        self.state_history_r.append(self.hl_mode_r)
 
     @staticmethod
     def _interp_toward_home(current_qpos: np.ndarray, home_qpos: np.ndarray, max_delta: float):
@@ -1206,11 +1268,12 @@ class HierarchicalRunner:
 
         # Match state_switcher behavior: independent targets update every step.
         vis_left, vis_right, vis_coop = self._select_shadow_targets()
-        self.shadow_vis_left = list(vis_left)
-        self.shadow_vis_right = list(vis_right)
+        
 
         # Cooperative target refresh remains gated by stage/force flag.
         if refresh_targets or self.force_shadow_refresh:
+            self.shadow_vis_left = list(vis_left)
+            self.shadow_vis_right = list(vis_right)
             self.shadow_vis_coop = list(vis_coop)
             self.force_shadow_refresh = False
 
@@ -1231,6 +1294,15 @@ class HierarchicalRunner:
 
     def _predict_mode(self, ts, t, home_pose):
         qpos = np.array(ts.observation["qpos"])
+        debug_info = {
+            "raw_source": "none",
+            "raw_pred_l": "",
+            "raw_pred_r": "",
+            "maj_count_l": 0,
+            "maj_count_r": 0,
+            "maj_mode_l": STATE_NAME.get(self.hl_mode_l, str(self.hl_mode_l)),
+            "maj_mode_r": STATE_NAME.get(self.hl_mode_r, str(self.hl_mode_r)),
+        }
         hl_update_tick_l = (t == 0)
         hl_update_tick_r = (t == 0)
         if self.args.hl_update_at_home_only and not (hl_update_tick_l or hl_update_tick_r):
@@ -1242,17 +1314,24 @@ class HierarchicalRunner:
             hl_update_tick_l = left_home and left_open and interval_ready
             hl_update_tick_r = right_home and right_open and interval_ready
 
-        if self.current_hl_oracle_schedule is not None:
-            (oracle_l, oracle_r), oracle_pair = self._oracle_states_at_t(self.current_hl_oracle_schedule, t)
-            self.hl_mode_l = oracle_l
-            self.hl_mode_r = oracle_r
-            self.last_hl_update_step_l = t
-            self.last_hl_update_step_r = t
-            if t % 50 == 0:
-                print(f"[Step {t}] HL oracle pair={oracle_pair}")
+        if self.args.hl_dense_inference:
+            should_update_hl = True
         else:
             should_update_hl = (hl_update_tick_l or hl_update_tick_r) if self.args.hl_update_at_home_only else True
-            if should_update_hl:
+
+        if should_update_hl:
+            if self.current_hl_oracle_schedule is not None:
+                pred_l, pred_r, oracle_pair, src_t = self._oracle_shifted_raw_states_at_t(
+                    self.current_hl_oracle_schedule,
+                    t,
+                    self.args.hl_lookahead_steps,
+                )
+                debug_info["raw_source"] = "oracle_shifted"
+                debug_info["raw_pred_l"] = STATE_NAME.get(int(pred_l), str(pred_l))
+                debug_info["raw_pred_r"] = STATE_NAME.get(int(pred_r), str(pred_r))
+                if t % 50 == 0:
+                    print(f"[Step {t}] HL oracle raw(pair={oracle_pair}, src_t={src_t})")
+            else:
                 img_np = ts.observation["images"]["top"]
                 img = Image.fromarray(img_np.astype("uint8"))
                 inp = self.cls_transform(img).unsqueeze(0).to(self.device)
@@ -1260,20 +1339,55 @@ class HierarchicalRunner:
                     out_l, out_r = self.classifier(inp)
                     pred_l = int(torch.argmax(out_l, dim=1).item())
                     pred_r = int(torch.argmax(out_r, dim=1).item())
-                if (not self.args.hl_update_at_home_only) or hl_update_tick_l:
-                    self.hl_mode_l = pred_l
-                    self.last_hl_update_step_l = t
-                if (not self.args.hl_update_at_home_only) or hl_update_tick_r:
-                    self.hl_mode_r = pred_r
-                    self.last_hl_update_step_r = t
+                debug_info["raw_source"] = "classifier"
+                debug_info["raw_pred_l"] = STATE_NAME.get(pred_l, str(pred_l))
+                debug_info["raw_pred_r"] = STATE_NAME.get(pred_r, str(pred_r))
 
-        s_l = self.hl_mode_l
-        s_r = self.hl_mode_r
-        self.state_history_l.append(s_l)
-        self.state_history_r.append(s_r)
-        s_l_smooth = self._majority(self.state_history_l)
-        s_r_smooth = self._majority(self.state_history_r)
+            if t == 0:
+                for i in range(int(self.args.hl_lookahead_steps) + 1):
+                    fill_t = t + i
+                    if self.args.hl_dense_inference or (not self.args.hl_update_at_home_only) or hl_update_tick_l:
+                        self.hl_pending_l.append((fill_t, int(pred_l)))
+                    if self.args.hl_dense_inference or (not self.args.hl_update_at_home_only) or hl_update_tick_r:
+                        self.hl_pending_r.append((fill_t, int(pred_r)))
+            else:
+                target_t = t + int(self.args.hl_lookahead_steps)
+                if self.args.hl_dense_inference or (not self.args.hl_update_at_home_only) or hl_update_tick_l:
+                    self.hl_pending_l.append((target_t, int(pred_l)))
+                if self.args.hl_dense_inference or (not self.args.hl_update_at_home_only) or hl_update_tick_r:
+                    self.hl_pending_r.append((target_t, int(pred_r)))
+                        
+        future_window = int(self.args.hl_future_window_steps)
+        window_end_t = t + future_window
+        prune_before_t = t - int(self.args.hl_lookahead_steps) - future_window
 
+        while self.hl_pending_l and self.hl_pending_l[0][0] < prune_before_t:
+            self.hl_pending_l.popleft()
+        while self.hl_pending_r and self.hl_pending_r[0][0] < prune_before_t:
+            self.hl_pending_r.popleft()
+
+        cand_l = [mode for target_t, mode in self.hl_pending_l if t <= target_t <= window_end_t]
+        cand_r = [mode for target_t, mode in self.hl_pending_r if t <= target_t <= window_end_t]
+        debug_info["maj_count_l"] = len(cand_l)
+        debug_info["maj_count_r"] = len(cand_r)
+
+        if cand_l:
+            self.hl_mode_l = int(self._majority(cand_l))
+            self.last_hl_update_step_l = t
+            debug_info["maj_mode_l"] = STATE_NAME.get(self.hl_mode_l, str(self.hl_mode_l))
+        if cand_r:
+            self.hl_mode_r = int(self._majority(cand_r))
+            self.last_hl_update_step_r = t
+            debug_info["maj_mode_r"] = STATE_NAME.get(self.hl_mode_r, str(self.hl_mode_r))
+
+        #s_l = self.hl_mode_l
+        #s_r = self.hl_mode_r
+        #self.state_history_l.append(s_l)
+        #self.state_history_r.append(s_r)
+        #s_l_smooth = self._majority(self.state_history_l)
+        #s_r_smooth = self._majority(self.state_history_r)
+        s_l_smooth = self.hl_mode_l
+        s_r_smooth = self.hl_mode_r
         if s_l_smooth == STATE_COOP and s_r_smooth == STATE_COOP:
             plan_l_state, plan_r_state = "COOP", "COOP"
         else:
@@ -1291,7 +1405,7 @@ class HierarchicalRunner:
         if switch_activated:
             self._clear_inference_state()
             self.force_shadow_refresh = True
-        return plan_l_state, plan_r_state
+        return plan_l_state, plan_r_state, debug_info
 
     def _query_chunks(self, ts, obs_map, t, l_state, r_state):
         qpos = np.array(ts.observation["qpos"])
@@ -1392,6 +1506,21 @@ class HierarchicalRunner:
         success_count = 0
         rehome_stage = "none"
         post_rehome_lock_steps = 0  # ★追加: ロック用カウンタ
+        hl_debug_writer = None
+        if self.args.save_hl_debug_csv:
+            hl_debug_dir = os.path.dirname(self.args.save_hl_debug_csv)
+            if hl_debug_dir:
+                os.makedirs(hl_debug_dir, exist_ok=True)
+            file_exists = os.path.isfile(self.args.save_hl_debug_csv)
+            hl_debug_f = open(self.args.save_hl_debug_csv, "a", newline="")
+            hl_debug_fields = [
+                "Episode", "Step", "Raw_Source", "Raw_L", "Raw_R",
+                "Maj_Count_L", "Maj_Mode_L", "Maj_Count_R", "Maj_Mode_R",
+                "Plan_L", "Plan_R", "Mode_Changed", "Adopted_L", "Adopted_R", "Rehome_Stage",
+            ]
+            hl_debug_writer = csv.DictWriter(hl_debug_f, fieldnames=hl_debug_fields)
+            if not file_exists:
+                hl_debug_writer.writeheader()
 
         for ep in range(self.args.num_rollouts):
             seq, sequence_row_idx = pick_color_sequence_with_row(self.args, self.seq_rows, self.seq_success_rows, ep)
@@ -1420,6 +1549,7 @@ class HierarchicalRunner:
             self.shadow_vis_coop = []
             self.force_shadow_refresh = True
             self._reset_hl_state()
+            self._bootstrap_initial_hl_mode(ts)
             reset_magnet_logic(self.env.physics)
 
             # Post-success reset flow:
@@ -1435,12 +1565,31 @@ class HierarchicalRunner:
             prev_mode_pair = None
             prev_l_state = None
             prev_r_state = None
+            coop_pair_contact_streak = 0
+            coop_fail_recover_active = False
+            coop_fail_pair = None
+            coop_fail_recover_total_steps = 50
+            coop_fail_recover_step = 0
+            coop_fail_recover_start_qpos = None
+            coop_contact_pair_key = None
+            coop_contact_ready = False
+            coop_pair_release_streak = 0
+            last_hl_debug_info = {
+                "raw_source": "none",
+                "raw_pred_l": "",
+                "raw_pred_r": "",
+                "maj_count_l": 0,
+                "maj_count_r": 0,
+                "maj_mode_l": STATE_NAME.get(self.hl_mode_l, str(self.hl_mode_l)),
+                "maj_mode_r": STATE_NAME.get(self.hl_mode_r, str(self.hl_mode_r)),
+            }
 
             for t in range(self.max_steps):
                 qpos = np.array(ts.observation["qpos"])
                 l_state = "HOLD"
                 r_state = "HOLD"
                 saved_frame_bgr = None
+                mode_changed = False
 
                 if rehome_trigger_pending and rehome_stage == "none":
                     rehome_stage = "wait_near_home"
@@ -1448,8 +1597,27 @@ class HierarchicalRunner:
 
                 refresh_targets = rehome_stage == "none"
                 obs_map = self._build_observation_map(ts, refresh_targets=refresh_targets)
+                pred_l, pred_r, debug_info_step = self._predict_mode(ts, t, home_pose)
+                last_hl_debug_info = debug_info_step
 
-                if rehome_stage == "wait_near_home":
+                if coop_fail_recover_active:
+                    l_state = "HOLD"
+                    r_state = "HOLD"
+                    coop_fail_recover_step += 1
+                    alpha = min(1.0, float(coop_fail_recover_step) / float(coop_fail_recover_total_steps))
+                    action = coop_fail_recover_start_qpos + alpha * (home_pose - coop_fail_recover_start_qpos)
+                    if coop_fail_recover_step >= coop_fail_recover_total_steps:
+                        coop_fail_recover_active = False
+                        if coop_fail_pair is not None:
+                            remove_cubes(self.env.physics, set(coop_fail_pair))
+                            self.removed_cubes.update(set(coop_fail_pair))
+                            g_idx, _ = coop_fail_pair
+                            self.magnetized_pairs.pop(g_idx, None)
+                            self.active_coop_pair = None
+                            self.force_shadow_refresh = True
+                        coop_fail_pair = None
+
+                elif rehome_stage == "wait_near_home":
                     #l_state, r_state = self._predict_mode(ts, t, home_pose)
                     l_state = self.committed_plan_l_state
                     r_state = self.committed_plan_r_state
@@ -1489,9 +1657,9 @@ class HierarchicalRunner:
                         self.switch_candidate_count_r = 0
                         self.home_pause_count_l = 0
                         self.home_pause_count_r = 0
-                        cooldown_steps = int(self.args.post_rehome_hl_cooldown_steps)
-                        self.last_hl_update_step_l = t - self.args.hl_update_interval + cooldown_steps
-                        self.last_hl_update_step_r = t - self.args.hl_update_interval + cooldown_steps
+                        #cooldown_steps = int(self.args.post_rehome_hl_cooldown_steps)
+                        #self.last_hl_update_step_l = t - self.args.hl_update_interval + cooldown_steps
+                        #self.last_hl_update_step_r = t - self.args.hl_update_interval + cooldown_steps
                 else:
                     #l_state, r_state = self._predict_mode(ts, t, home_pose)
                     if post_rehome_lock_steps > 0:
@@ -1500,7 +1668,8 @@ class HierarchicalRunner:
                         r_state = self.committed_plan_r_state
                     else:
                         # ロックが明けたら通常通り予測を開始
-                        l_state, r_state = self._predict_mode(ts, t, home_pose)
+                        l_state = pred_l
+                        r_state = pred_r
                     qpos = self._query_chunks(ts, obs_map, t, l_state, r_state)
                     action = self._decode_action(t, qpos, l_state, r_state)
 
@@ -1526,6 +1695,7 @@ class HierarchicalRunner:
 
                 curr_mode_pair = (l_state, r_state)
                 if curr_mode_pair != prev_mode_pair:
+                    mode_changed = True
                     prev_text = "None" if prev_mode_pair is None else f"{prev_mode_pair[0]}/{prev_mode_pair[1]}"
                     print(
                         f"[Episode {ep+1} Step {t}] Mode changed: {prev_text} -> "
@@ -1533,11 +1703,112 @@ class HierarchicalRunner:
                     )
                     prev_mode_pair = curr_mode_pair
 
+                if hl_debug_writer is not None and (t % int(self.args.hl_debug_interval_steps) == 0):
+                    hl_debug_writer.writerow({
+                        "Episode": ep + 1,
+                        "Step": t,
+                        "Raw_Source": last_hl_debug_info.get("raw_source", "none"),
+                        "Raw_L": last_hl_debug_info.get("raw_pred_l", ""),
+                        "Raw_R": last_hl_debug_info.get("raw_pred_r", ""),
+                        "Maj_Count_L": int(last_hl_debug_info.get("maj_count_l", 0)),
+                        "Maj_Mode_L": last_hl_debug_info.get("maj_mode_l", ""),
+                        "Maj_Count_R": int(last_hl_debug_info.get("maj_count_r", 0)),
+                        "Maj_Mode_R": last_hl_debug_info.get("maj_mode_r", ""),
+                        "Plan_L": l_state,
+                        "Plan_R": r_state,
+                        "Mode_Changed": int(mode_changed),
+                        "Adopted_L": l_state if mode_changed else "",
+                        "Adopted_R": r_state if mode_changed else "",
+                        "Rehome_Stage": rehome_stage,
+                    })
+
                 ts = self.env.step(action)
 
                 # Magnet logic (visual cooperative assembly glue)
                 curr_colors = getattr(self.env._task, "color_sequence", None)
                 apply_magnet_logic(self.env.physics, self.magnetized_pairs, curr_colors)
+
+                # COOP failure detection for active BG pair:
+                # after >20 consecutive gripper-contact steps (same pair), if magnet not activated and
+                # object is low (z<threshold) and non-contact persists, trigger fail recovery.
+                in_coop_mode = (l_state == "COOP") or (r_state == "COOP")
+                if (not coop_fail_recover_active) and in_coop_mode and (self.active_coop_pair is not None):
+                    try:
+                        g_idx, b_idx = self.active_coop_pair
+                        pair_key = (int(g_idx), int(b_idx))
+                        if pair_key != coop_contact_pair_key:
+                            coop_contact_pair_key = pair_key
+                            coop_pair_contact_streak = 0
+                            coop_contact_ready = False
+                            coop_pair_release_streak = 0
+
+                        touched = get_touched_cubes_per_arm(self.env.physics)
+                        grasped = get_grasped_cubes(self.env.physics)
+                        touching_now = (
+                            (g_idx in touched["left"]) or (g_idx in touched["right"]) or
+                            (b_idx in touched["left"]) or (b_idx in touched["right"])
+                        )
+                        grasping_now = (
+                            (g_idx in grasped["left"]) or (g_idx in grasped["right"]) or
+                            (b_idx in grasped["left"]) or (b_idx in grasped["right"])
+                        )
+
+                        # Count prerequisite contact only when the pair is actually grasped,
+                        # not for incidental brush contacts.
+                        if touching_now and grasping_now:
+                            coop_pair_contact_streak += 1
+                            coop_pair_release_streak = 0
+                            if coop_pair_contact_streak > 20:
+                                coop_contact_ready = True
+                        else:
+                            if coop_contact_ready:
+                                coop_pair_release_streak += 1
+                            else:
+                                coop_pair_contact_streak = 0
+                                coop_pair_release_streak = 0
+
+                        magnet_active = (
+                            (g_idx in self.magnetized_pairs) and
+                            (self.magnetized_pairs[g_idx].get("blue_idx", None) == b_idx)
+                        )
+                        if magnet_active:
+                            coop_contact_ready = False
+                            coop_pair_contact_streak = 0
+                            coop_pair_release_streak = 0
+
+                        g_bid = self.env.physics.model.name2id(f"cube_{g_idx}", "body")
+                        b_bid = self.env.physics.model.name2id(f"cube_{b_idx}", "body")
+                        z_g = float(self.env.physics.data.xpos[g_bid][2])
+                        z_b = float(self.env.physics.data.xpos[b_bid][2])
+                        low_z = (z_g < 0.05) or (z_b < 0.05)
+
+                        if coop_contact_ready and (coop_pair_release_streak >= 3) and (not magnet_active) and low_z and (not touching_now) and (not grasping_now):
+                            coop_fail_recover_active = True
+                            coop_fail_pair = (int(g_idx), int(b_idx))
+                            coop_fail_recover_step = 0
+                            coop_fail_recover_start_qpos = np.array(ts.observation["qpos"]).copy()
+                            rehome_stage = "none"
+                            rehome_trigger_pending = False
+                            self._clear_inference_state()
+                            print(
+                                f"[Episode {ep+1} Step {t}] COOP fail detected for pair G{g_idx}+B{b_idx} "
+                                f"(contact_streak={coop_pair_contact_streak}, release_streak={coop_pair_release_streak}, "
+                                f"magnet={magnet_active}, z=({z_g:.3f},{z_b:.3f}))"
+                            )
+                            coop_pair_contact_streak = 0
+                            coop_pair_release_streak = 0
+                            coop_contact_ready = False
+                    except Exception:
+                        pass
+                elif self.active_coop_pair is None:
+                    coop_pair_contact_streak = 0
+                    coop_pair_release_streak = 0
+                    coop_contact_ready = False
+                    coop_contact_pair_key = None
+                elif not in_coop_mode:
+                    coop_pair_contact_streak = 0
+                    coop_pair_release_streak = 0
+                    coop_contact_ready = False
 
                 # Removal logic (goal / cushion / completed-task based)
                 in_goal = get_cubes_in_goal(self.env.physics)
@@ -1555,7 +1826,7 @@ class HierarchicalRunner:
                     self.removed_cubes.update(to_remove)
                     # Ensure shadow target selection is recomputed right away,
                     # even during wait/smooth rehome stages.
-                    self.force_shadow_refresh = True
+                    #self.force_shadow_refresh = True
                     # Trigger post-success clean reset flow on the next control step.
                     rehome_trigger_pending = True
 
@@ -1625,6 +1896,9 @@ class HierarchicalRunner:
                         writer.write(frame[:, :, [2, 1, 0]])
                 writer.release()
 
+        if hl_debug_writer is not None:
+            hl_debug_f.close()
+
         if total_rewards:
             print("=" * 40)
             print(f"Average Reward: {np.mean(total_rewards):.2f}")
@@ -1651,7 +1925,19 @@ def parse_args():
     parser.add_argument("--episode_len", type=int, default=None)
     parser.add_argument("--seed", type=int, default=2)
 
-    parser.add_argument("--hl_update_interval", type=int, default=50)
+    parser.add_argument("--hl_update_interval", type=int, default=1)
+    parser.add_argument(
+        "--hl_lookahead_steps",
+        type=int,
+        default=50,
+        help="Classifier lookahead steps used during training. Predictions are delayed by this amount to align with true mode at time t.",
+    )
+    parser.add_argument(
+        "--hl_future_window_steps",
+        type=int,
+        default=30,
+        help="Use majority vote of predictions whose target_t is in [t, t+window] as the current high-level mode.",
+    )
     parser.add_argument(
         "--hl_update_at_home_only",
         dest="hl_update_at_home_only",
@@ -1665,7 +1951,20 @@ def parse_args():
         action="store_false",
         help="Disable home-only gate and allow high-level updates every step.",
     )
-    parser.add_argument("--hl_home_threshold", type=float, default=0.02)
+    parser.add_argument(
+        "--hl_dense_inference",
+        dest="hl_dense_inference",
+        action="store_true",
+        default=True,
+        help="Run high-level classifier every step and enqueue predictions densely. Default: enabled.",
+    )
+    parser.add_argument(
+        "--no_hl_dense_inference",
+        dest="hl_dense_inference",
+        action="store_false",
+        help="Disable dense high-level inference and use legacy gated inference timing.",
+    )
+    parser.add_argument("--hl_home_threshold", type=float, default=0.1)
     parser.add_argument(
         "--hl_home_gripper_threshold",
         type=float,
@@ -1684,7 +1983,7 @@ def parse_args():
     parser.add_argument(
         "--switch_home_pause_steps",
         type=int,
-        default=8,
+        default=15,
         help="Pause steps at home before activating next policy.",
     )
     parser.add_argument(
@@ -1740,6 +2039,8 @@ def parse_args():
     parser.add_argument("--onscreen_render", action="store_true")
     parser.add_argument("--save_video", nargs="?", const="videos", type=str)
     parser.add_argument("--save_stats_path", type=str, default=None)
+    parser.add_argument("--save_hl_debug_csv", type=str, default=None, help="Save high-level debug rows to CSV.")
+    parser.add_argument("--hl_debug_interval_steps", type=int, default=10, help="Write HL debug row every N steps.")
     return parser.parse_args()
 
 

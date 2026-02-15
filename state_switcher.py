@@ -463,14 +463,14 @@ def get_cubes_in_goal(physics):
 def get_cubes_on_cushion(physics):
     return get_cubes_touching_targets(physics, {'cushion1'})
 
-def is_arm_at_home(current_qpos, home_qpos, threshold=1.0):
+def is_arm_at_home(current_qpos, home_qpos, threshold=0.1):
     """Check if a single arm (7-dim) is close to its home pose."""
     diff = np.abs(current_qpos - home_qpos)
     max_diff = np.max(diff)
     return max_diff < threshold
 
 
-def is_at_home(current_qpos, threshold=0.25, gripper_threshold=0.8, return_details=False):
+def is_at_home(current_qpos, threshold=0.1, gripper_threshold=0.8, return_details=False):
     """Hierarchical-style home check on full 14-dim qpos.
 
     - Arm joints must be close to START_ARM_POSE
@@ -533,7 +533,14 @@ def apply_magnet_logic(physics, magnetized_pairs, color_sequence=None):
         blues = [9]
 
     # 2. Check for new magnetizations
-    threshold = 0.06 # 8cm (Center-to-Center). Cube size is 5cm.
+    # Trigger only when:
+    # - Green is above Blue in Z
+    # - Z distance (G over B) <= 0.6
+    # - XY distance <= 0.4
+    # - both cubes are lifted (z > 0.05)
+    z_gap_max = 0.06
+    xy_dist_max = 0.04
+    min_z_height = 0.05
     
     for g_idx in greens:
         if g_idx in magnetized_pairs: continue
@@ -548,10 +555,18 @@ def apply_magnet_logic(physics, magnetized_pairs, color_sequence=None):
                  b_pos = physics.data.xpos[b_body_id].copy()
                  b_quat = physics.data.xquat[b_body_id].copy() 
                  
-                 dist = np.linalg.norm(g_pos - b_pos)
-                 
-                 if dist < threshold:
-                     print(f"Magnet Triggered: Green {g_idx} -> Blue {b_idx} (Dist: {dist:.4f})")
+                 z_gap = g_pos[2] - b_pos[2]
+                 xy_dist = np.linalg.norm(g_pos[:2] - b_pos[:2])
+                 both_high_enough = (g_pos[2] > min_z_height) and (b_pos[2] > min_z_height)
+                 green_above_blue = z_gap >= 0.0
+                 z_gap_ok = z_gap <= z_gap_max
+                 xy_ok = xy_dist <= xy_dist_max
+
+                 if both_high_enough and green_above_blue and z_gap_ok and xy_ok:
+                     print(
+                         f"Magnet Triggered: Green {g_idx} -> Blue {b_idx} "
+                         f"(z_gap={z_gap:.4f}, xy={xy_dist:.4f}, gz={g_pos[2]:.4f}, bz={b_pos[2]:.4f})"
+                     )
                      
                      # Calculate Relative Transform (Offset)
                      # Rel Pos: Vector from Blue to Green, in Blue's local frame?
@@ -1194,6 +1209,27 @@ def main(args):
     all_time_actions_left = torch.full([max_timesteps, max_timesteps+num_queries, 7], float_nan).cuda()
     all_time_actions_right = torch.full([max_timesteps, max_timesteps+num_queries, 7], float_nan).cuda()
 
+    def clear_temporary_states(reset_transition_windows=False):
+        nonlocal step_in_chunk_dual, step_in_chunk_left, step_in_chunk_right
+        nonlocal current_action_chunk_dual, current_action_chunk_left, current_action_chunk_right
+        nonlocal transition_window_active_l, transition_window_active_r
+
+        all_time_actions_dual.fill_(float_nan)
+        all_time_actions_left.fill_(float_nan)
+        all_time_actions_right.fill_(float_nan)
+
+        step_in_chunk_dual = 0
+        step_in_chunk_left = 0
+        step_in_chunk_right = 0
+
+        current_action_chunk_dual = None
+        current_action_chunk_left = None
+        current_action_chunk_right = None
+
+        if reset_transition_windows:
+            transition_window_active_l = 0
+            transition_window_active_r = 0
+
     # Home Pose
     home_pose = np.zeros(14)
     home_pose[:6] = START_ARM_POSE[:6]
@@ -1235,6 +1271,7 @@ def main(args):
         coop_display_lock_pair = None   # (g_idx, b_idx) locked pair for coop shadow display
         active_coop_pair = None         # (g_idx, b_idx) currently assigned coop pair
         coop_pair_release_streak = {}   # {(g_idx, b_idx): consecutive non-contact steps after grasp}
+        grasp_release_streak = {}       # {idx: consecutive frames released and unprotected}
         
         # Magnet Tracking
         reset_magnet_logic(env.physics, args.color_sequence)
@@ -1282,6 +1319,15 @@ def main(args):
         settle_after_switch_l = 0
         settle_after_switch_r = 0
 
+        # Subtask-level rehome state machine (ported from hierarchical_policy.py)
+        subtask_rehome_stage = 'none'  # none | wait_near_home | smooth_to_home
+        subtask_rehome_trigger_pending = False
+        subtask_rehome_settle_left = 0
+        subtask_rehome_detect_threshold = 0.1
+        subtask_rehome_interp_delta = 0.01
+        subtask_rehome_steps = 50
+        subtask_post_lock_steps = 0
+
         # Conditional Temporal Ensembling: Transition Window Tracking
         transition_window_active_l = 0
         transition_window_active_r = 0
@@ -1297,6 +1343,10 @@ def main(args):
         # Assuming Pre-switch logic is sufficient if MIN_STATE_DURATION >> 20.
         smoothing_l_steps = 0
         smoothing_r_steps = 0
+        left_waiting_indep_target = False
+        left_resume_reinfer_pending = False
+        right_waiting_indep_target = False
+        right_resume_reinfer_pending = False
         
         while True:
             # Check input (for quit)
@@ -1308,6 +1358,18 @@ def main(args):
 
             # Current joint state for this control step
             qpos_numpy = np.array(ts.observation['qpos'])
+
+            # Start subtask rehome flow on next step after object removal trigger
+            if subtask_rehome_trigger_pending and subtask_rehome_stage == 'none':
+                subtask_rehome_stage = 'wait_near_home'
+                subtask_rehome_trigger_pending = False
+
+            if subtask_rehome_stage == 'wait_near_home':
+                left_near = is_arm_at_home(qpos_numpy[:7], home_pose[:7], threshold=subtask_rehome_detect_threshold)
+                right_near = is_arm_at_home(qpos_numpy[7:14], home_pose[7:14], threshold=subtask_rehome_detect_threshold)
+                if left_near and right_near:
+                    subtask_rehome_stage = 'smooth_to_home'
+                    subtask_rehome_settle_left = subtask_rehome_steps
 
             # Arm-wise high-level update ticks
             hl_update_tick_l = (t == 0)
@@ -1372,7 +1434,7 @@ def main(args):
             # - home-only mode: same tick as high-level updates
             # - default mode: original cooldown behavior
             if args.hl_update_at_home_only:
-                should_update_targets = (hl_update_tick_l or hl_update_tick_r)
+                should_update_targets = (hl_update_tick_l or hl_update_tick_r) 
             else:
                 should_update_targets = (t - last_removal_step >= 50)
 
@@ -1460,6 +1522,28 @@ def main(args):
                 final_target_indices_i,
                 exclude=set(final_target_indices_i_left),
             )
+
+            def right_indep_target_ready():
+                if len(final_target_indices_i_right) == 0:
+                    return False, []
+                x_vals = []
+                for idx in final_target_indices_i_right:
+                    x_val = safe_cube_x_local(idx)
+                    if x_val is None:
+                        return False, []
+                    x_vals.append(x_val)
+                return all(x >= 0.0 for x in x_vals), x_vals
+
+            def left_indep_target_ready():
+                if len(final_target_indices_i_left) == 0:
+                    return False, []
+                x_vals = []
+                for idx in final_target_indices_i_left:
+                    x_val = safe_cube_x_local(idx)
+                    if x_val is None:
+                        return False, []
+                    x_vals.append(x_val)
+                return all(x >= -0.35 for x in x_vals), x_vals
 
             # Keep grasped RED cubes visible per arm in independent shadows.
             for idx in held_indices_left:
@@ -1863,28 +1947,15 @@ def main(args):
             
             # ---------------------------------
             
-            # --- Smart HOLD Logic: Return to Home before Holding ---
-            # If classifier says HOLD, but we are not at home, 
-            # force continue previous state (or default to INDEP if None).
+            # --- Smart HOLD Logic: high-level HOLD should smoothly return home ---
+            # Do not keep executing previous active policy when HOLD is predicted.
             
             # Left Arm
             if force_hold_l:
                 plan_l_state = 'HOLD'
             elif plan_l_state == 'HOLD':
-                # Check if at home
-                # qpos_numpy is 14 dim. Left is [:7]
-                if is_arm_at_home(qpos_numpy[:7], home_pose[:7]):
-                    consecutive_at_home_l += 1
-                    if consecutive_at_home_l < 50:
-                        # Delay stop for 50 steps
-                        if last_active_l_state:
-                            plan_l_state = last_active_l_state
-                else:
-                    # Not at home yet
-                    consecutive_at_home_l = 0
-                    if t % 20 == 0: print(f"DEBUG: Left NOT at home. Keep {last_active_l_state}")
-                    if last_active_l_state:
-                        plan_l_state = last_active_l_state
+                # Keep HOLD; action stage performs smooth interpolation to home.
+                consecutive_at_home_l = 0
             else:
                 consecutive_at_home_l = 0
             
@@ -1892,18 +1963,106 @@ def main(args):
             if force_hold_r:
                 plan_r_state = 'HOLD'
             elif plan_r_state == 'HOLD':
-                if is_arm_at_home(qpos_numpy[7:14], home_pose[7:14]):
-                    consecutive_at_home_r += 1
-                    if consecutive_at_home_r < 50:
-                        if last_active_r_state:
-                            plan_r_state = last_active_r_state
-                else:
-                    consecutive_at_home_r = 0
-                    # print(f"DEBUG: Right NOT at home. Keep {last_active_r_state}")
-                    if last_active_r_state:
-                        plan_r_state = last_active_r_state
+                # Keep HOLD; action stage performs smooth interpolation to home.
+                consecutive_at_home_r = 0
             else:
                 consecutive_at_home_r = 0
+
+            # During rehome wait stage, keep current committed policies (same as hierarchical behavior)
+            if subtask_rehome_stage == 'wait_near_home':
+                plan_l_state = committed_plan_l_state
+                plan_r_state = committed_plan_r_state
+                proposed_l_state = committed_plan_l_state
+                proposed_r_state = committed_plan_r_state
+
+            # After smooth rehome completion, briefly freeze to committed plans.
+            if subtask_post_lock_steps > 0:
+                plan_l_state = committed_plan_l_state
+                plan_r_state = committed_plan_r_state
+                proposed_l_state = committed_plan_l_state
+                proposed_r_state = committed_plan_r_state
+
+            left_home_gate_threshold = max(args.switch_home_threshold, args.hl_home_threshold)
+            left_home_now = np.max(np.abs(qpos_numpy[:6] - home_pose[:6])) < left_home_gate_threshold
+            left_indep_intent = (
+                (waiting_home_target_l == 'INDEP')
+                or (proposed_l_state == 'INDEP')
+            )
+
+            if left_waiting_indep_target:
+                ready_l, target_x_vals_l = left_indep_target_ready()
+                if ready_l:
+                    print(f"[Step {t}] Left INDEP resume: left-shadow target arrived (x={target_x_vals_l})")
+                    left_waiting_indep_target = False
+                    force_hold_l = False
+                    plan_l_state = 'INDEP'
+                    proposed_l_state = 'INDEP'
+                    committed_plan_l_state = 'INDEP'
+                    steps_since_switch_l = 0
+                    all_time_actions_left.fill_(float_nan)
+                    all_time_actions_dual[:, :, :7].fill_(float_nan)
+                    current_action_chunk_left = None
+                    step_in_chunk_left = 0
+                    transition_window_active_l = 0
+                    left_resume_reinfer_pending = True
+                elif left_indep_intent:
+                    force_hold_l = True
+                    plan_l_state = 'HOLD'
+                    proposed_l_state = 'HOLD'
+                else:
+                    left_waiting_indep_target = False
+            elif waiting_home_target_l is None and left_indep_intent and left_home_now:
+                ready_l, target_x_vals_l = left_indep_target_ready()
+                if not ready_l:
+                    force_hold_l = True
+                    plan_l_state = 'HOLD'
+                    proposed_l_state = 'HOLD'
+                    if len(target_x_vals_l) == 0:
+                        print(f"[Step {t}] Left INDEP wait at home: no left-shadow target -> HOLD")
+                    else:
+                        print(f"[Step {t}] Left INDEP wait at home: shadow target x={target_x_vals_l} -> HOLD")
+                    left_waiting_indep_target = True
+
+            right_home_gate_threshold = max(args.switch_home_threshold, args.hl_home_threshold)
+            right_home_now = np.max(np.abs(qpos_numpy[7:13] - home_pose[7:13])) < right_home_gate_threshold
+            right_indep_intent = (
+                (waiting_home_target_r == 'INDEP')
+                or (proposed_r_state == 'INDEP')
+            )
+
+            if right_waiting_indep_target:
+                ready_r, target_x_vals_r = right_indep_target_ready()
+                if ready_r:
+                    print(f"[Step {t}] Right INDEP resume: right-shadow target arrived (x={target_x_vals_r})")
+                    right_waiting_indep_target = False
+                    force_hold_r = False
+                    plan_r_state = 'INDEP'
+                    proposed_r_state = 'INDEP'
+                    committed_plan_r_state = 'INDEP'
+                    steps_since_switch_r = 0
+                    all_time_actions_right.fill_(float_nan)
+                    all_time_actions_dual[:, :, 7:].fill_(float_nan)
+                    current_action_chunk_right = None
+                    step_in_chunk_right = 0
+                    transition_window_active_r = 0
+                    right_resume_reinfer_pending = True
+                elif right_indep_intent:
+                    force_hold_r = True
+                    plan_r_state = 'HOLD'
+                    proposed_r_state = 'HOLD'
+                else:
+                    right_waiting_indep_target = False
+            elif waiting_home_target_r is None and right_indep_intent and right_home_now:
+                ready_r, target_x_vals_r = right_indep_target_ready()
+                if not ready_r:
+                    force_hold_r = True
+                    plan_r_state = 'HOLD'
+                    proposed_r_state = 'HOLD'
+                    if len(target_x_vals_r) == 0:
+                        print(f"[Step {t}] Right INDEP wait at home: no right-shadow target -> HOLD")
+                    else:
+                        print(f"[Step {t}] Right INDEP wait at home: shadow target x={target_x_vals_r} -> HOLD")
+                    right_waiting_indep_target = True
 
             # Logging
             if t % 50 == 0:
@@ -2049,8 +2208,12 @@ def main(args):
             use_temporal_agg_l = temporal_agg
             use_temporal_agg_r = temporal_agg
             force_query_dual = False
-            force_query_l = False
-            force_query_r = False
+            force_query_l = left_resume_reinfer_pending
+            force_query_r = right_resume_reinfer_pending
+            if left_resume_reinfer_pending:
+                left_resume_reinfer_pending = False
+            if right_resume_reinfer_pending:
+                right_resume_reinfer_pending = False
             
             if args.temporal_agg_transition_only:
                 use_temporal_agg_l = (transition_window_active_l > 0)
@@ -2328,7 +2491,10 @@ def main(args):
                     max_step = float(args.switch_home_interp_max_delta)
                     delta = home_qpos_slice - curr_qpos_slice
                     step = np.clip(delta, -max_step, max_step)
-                    return curr_qpos_slice + step
+                    target = curr_qpos_slice + step
+                    if target.shape[0] >= 7:
+                        target[-1] = curr_qpos_slice[-1]
+                    return target
 
                 # --- 1. Get Left Action ---
                 action_l_committed = get_action_for_state(plan_l_state, 'left', qpos_numpy[:7])
@@ -2339,8 +2505,8 @@ def main(args):
                 else:
                     action_l = action_l_committed
 
-                # Smoothly move toward home during switch hold/settle
-                if force_hold_l or settle_after_switch_l > 0:
+                # Smoothly move toward home during HOLD (including HL HOLD) and switch hold/settle
+                if ((plan_l_state == 'HOLD' and not is_transitioning_l) or force_hold_l or settle_after_switch_l > 0):
                     action_l = interp_toward_home(qpos_numpy[:7], home_pose[:7])
                     if settle_after_switch_l > 0:
                         settle_after_switch_l -= 1
@@ -2353,8 +2519,8 @@ def main(args):
                 else:
                     action_r = action_r_committed
 
-                # Smoothly move toward home during switch hold/settle
-                if force_hold_r or settle_after_switch_r > 0:
+                # Smoothly move toward home during HOLD (including HL HOLD) and switch hold/settle
+                if ((plan_r_state == 'HOLD' and not is_transitioning_r) or force_hold_r or settle_after_switch_r > 0):
                     action_r = interp_toward_home(qpos_numpy[7:14], home_pose[7:14])
                     if settle_after_switch_r > 0:
                         settle_after_switch_r -= 1
@@ -2422,6 +2588,39 @@ def main(args):
                 prev_plan_l_state = plan_l_state
                 prev_plan_r_state = plan_r_state
                 """
+
+                # Subtask smooth-to-home override (same intent as hierarchical_policy.py)
+                if subtask_rehome_stage == 'smooth_to_home':
+                    max_delta = float(subtask_rehome_interp_delta * 0.8)
+                    delta = home_pose - qpos_numpy
+                    step = np.clip(delta, -max_delta, max_delta)
+                    target_qpos = qpos_numpy + step
+                    target_qpos[6] = qpos_numpy[6]
+                    target_qpos[13] = qpos_numpy[13]
+                    subtask_rehome_settle_left -= 1
+                    if subtask_rehome_settle_left <= 0:
+                        subtask_rehome_stage = 'none'
+
+                        # Clear temporal/action buffers before next inference phase
+                        clear_temporary_states(reset_transition_windows=True)
+
+                        # Reset switch/debounce candidates
+                        steps_since_switch_l = 0
+                        steps_since_switch_r = 0
+                        waiting_home_target_l = None
+                        waiting_home_target_r = None
+                        switch_candidate_l = None
+                        switch_candidate_r = None
+                        switch_candidate_count_l = 0
+                        switch_candidate_count_r = 0
+                        home_pause_count_l = 0
+                        home_pause_count_r = 0
+
+                        # Short lock period before normal switching resumes
+                        subtask_post_lock_steps = 30
+
+                if subtask_post_lock_steps > 0:
+                    subtask_post_lock_steps -= 1
 
             ts = env.step(target_qpos)
             current_episode_rewards.append(ts.reward)
@@ -2641,16 +2840,34 @@ def main(args):
                  nearby = get_proximity_cubes(env.physics)
                  currently_touching = get_touched_cubes_per_arm(env.physics)
 
-                 # Strict policy: if a cube has ever been grasped, remove it after release
-                 # even without success labels, so failed objects don't affect later tasks.
-                 released_grasped = {
-                     idx for idx in ever_grasped_objects
-                     if idx not in grasped_now and idx not in removed_objects
-                 }
-                 
                  protected_any = (grasped['left'] | grasped['right'] | 
                                   currently_touching['left'] | currently_touching['right'] | 
                                   nearby)
+
+                 # Strict policy with hysteresis:
+                 # remove previously grasped non-coop cubes only after consecutive
+                 # "released + unprotected" frames, to avoid one-frame grasp flicker.
+                 RELEASE_REMOVE_HYSTERESIS = 8
+                 released_grasped = set()
+                 for idx in ever_grasped_objects:
+                     if idx in removed_objects:
+                         continue
+                     if get_color_for_idx(idx) in ['g', 'b']:
+                         continue
+
+                     released_and_unprotected = (idx not in grasped_now) and (idx not in protected_any)
+                     if released_and_unprotected:
+                         grasp_release_streak[idx] = grasp_release_streak.get(idx, 0) + 1
+                     else:
+                         grasp_release_streak[idx] = 0
+
+                     if grasp_release_streak.get(idx, 0) >= RELEASE_REMOVE_HYSTERESIS:
+                         released_grasped.add(idx)
+
+                 # Keep streak dict compact.
+                 for idx in list(grasp_release_streak.keys()):
+                     if idx in removed_objects or idx not in ever_grasped_objects:
+                         del grasp_release_streak[idx]
 
                  # Hard guard: never single-remove cooperative color cubes.
                  pending_removal = {idx for idx in pending_removal if get_color_for_idx(idx) not in ['g', 'b']}
@@ -2678,6 +2895,8 @@ def main(args):
                      removed_objects.update(to_remove)
                      ever_grasped_objects -= to_remove
                      pending_removal -= to_remove
+                     for idx in to_remove:
+                         grasp_release_streak.pop(idx, None)
 
                      for pair_key in list(coop_pair_release_streak.keys()):
                          if pair_key[0] in to_remove or pair_key[1] in to_remove:
@@ -2699,6 +2918,9 @@ def main(args):
                      # Re-cast to lists to allow modification if they are tuples/etc, though initiated as lists
                      current_target_indices_i = [idx for idx in current_target_indices_i if idx not in to_remove]
                      current_target_indices_c = [idx for idx in current_target_indices_c if idx not in to_remove]
+
+                     # Subtask rehome trigger: after successful removal, return home then resume
+                     subtask_rehome_trigger_pending = True
             
             step_in_chunk += 1
             if current_action_chunk_dual is not None:
@@ -2763,6 +2985,7 @@ def main(args):
                 coop_display_lock_pair = None
                 active_coop_pair = None
                 coop_pair_release_streak.clear()
+                grasp_release_streak.clear()
                 magnetized_pairs.clear() # FIX: Clear magnet state!
                 
                 # Reset State Tracking
@@ -2810,6 +3033,16 @@ def main(args):
                 home_pause_count_r = 0
                 settle_after_switch_l = 0
                 settle_after_switch_r = 0
+                left_waiting_indep_target = False
+                left_resume_reinfer_pending = False
+                right_waiting_indep_target = False
+                right_resume_reinfer_pending = False
+
+                # Reset subtask rehome state machine
+                subtask_rehome_stage = 'none'
+                subtask_rehome_trigger_pending = False
+                subtask_rehome_settle_left = 0
+                subtask_post_lock_steps = 0
 
                 # Save Stats to CSV
                 if args.save_stats_path:
@@ -2907,10 +3140,8 @@ def main(args):
                 current_action_chunk_left = None
                 current_action_chunk_right = None
                 
-                # Reset temp buffers
-                all_time_actions_dual.fill_(float_nan)
-                all_time_actions_left.fill_(float_nan)
-                all_time_actions_right.fill_(float_nan)
+                # Reset temporary states/buffers
+                clear_temporary_states(reset_transition_windows=False)
                 
                 # Reset HITL Buffers
                 hitl_mode_l = 'AUTO'
@@ -2982,7 +3213,7 @@ if __name__ == '__main__':
     parser.add_argument('--hl_home_gripper_threshold', action='store', type=float, default=0.8, help='Gripper-open threshold for hierarchical-style high-level home check')
     parser.add_argument('--hl_update_log_interval', action='store', type=int, default=50, help='Step interval for logging non-fired high-level updates in home-only mode')
     parser.add_argument('--switch_guard_steps', action='store', type=int, default=8, help='Stable high-level prediction steps required before requesting mode switch')
-    parser.add_argument('--switch_home_pause_steps', action='store', type=int, default=8, help='Pause steps at home before activating next policy')
+    parser.add_argument('--switch_home_pause_steps', action='store', type=int, default=15, help='Pause steps at home before activating next policy')
     parser.add_argument('--switch_home_settle_steps', action='store', type=int, default=6, help='Additional steps to keep exact home pose after switch activation')
     parser.add_argument('--switch_home_interp_max_delta', action='store', type=float, default=0.04, help='Max per-step joint delta when interpolating toward home during switch hold/settle')
     parser.add_argument('--switch_home_threshold', action='store', type=float, default=0.12, help='Home detection threshold for gated switching')
