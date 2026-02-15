@@ -536,6 +536,36 @@ def reset_magnet_logic(physics, color_sequence=None):
              physics.model.geom_conaffinity[geom_id] = 1
         except: pass
 
+def apply_coop_only_object_visibility(physics, color_sequence):
+    """In coop_only mode, keep only G/B cubes active and hide/deactivate reds."""
+    if color_sequence is None:
+        return
+
+    for i, c in enumerate(color_sequence):
+        if i >= 10:
+            break
+        if c == 'r':
+            try:
+                geom_id = physics.model.name2id(f'cube_{i}', 'geom')
+                physics.model.geom_rgba[geom_id, 3] = 0.0
+                physics.model.geom_contype[geom_id] = 0
+                physics.model.geom_conaffinity[geom_id] = 0
+            except:
+                pass
+
+            try:
+                joint_id = physics.model.name2id(f'cube_{i}_joint', 'joint')
+                qpos_adr = physics.model.jnt_qposadr[joint_id]
+                physics.data.qpos[qpos_adr + 0] = 10.0 + i
+                physics.data.qpos[qpos_adr + 1] = 10.0 + i
+                physics.data.qpos[qpos_adr + 2] = -10.0
+                dof_adr = physics.model.jnt_dofadr[joint_id]
+                physics.data.qvel[dof_adr : dof_adr+6] = 0.0
+            except:
+                pass
+
+    physics.forward()
+
 def load_policy_and_stats(ckpt_dir, policy_class, args, override_state_dim=None, override_arm=None):
     state_dim = 14
     if override_state_dim:
@@ -641,8 +671,8 @@ def main(args):
         print(f"Loaded {len(available_sequences)} successful sequences from {args.sequence_file}")
     
     # Validation check for non-CSV mode
-    if not args.sequence_file and not args.commands and not args.match_pretrain_coop_env:
-        print("Error: --commands is required unless --sequence_file or --match_pretrain_coop_env is specified.")
+    if not args.sequence_file and not args.commands and not args.match_pretrain_coop_env and not args.coop_only:
+        print("Error: --commands is required unless --sequence_file or --match_pretrain_coop_env or --coop_only is specified.")
         return
 
     from piper_constants import SIM_TASK_CONFIGS
@@ -698,7 +728,7 @@ def main(args):
         policy_right = None
         stats_right = None
         
-        if not args.ckpt_independent_dual:
+        if not args.ckpt_independent_dual and not args.coop_only:
             # Legacy mode: Load Left/Right
             if not args.ckpt_left or not args.ckpt_right:
                  raise ValueError("If --ckpt_independent_dual (or --ckpt_e2e) is not specified, --ckpt_left and --ckpt_right are required.")
@@ -746,17 +776,23 @@ def main(args):
         duration_config['C_place'] = 1000
         duration_config['Single'] = 1000
     
-    scheduler = TaskScheduler(command_queue, duration_config)
-    
-    # Override max steps if user requested
-    if args.max_timesteps:
-        scheduler.max_timesteps = args.max_timesteps
-        print(f"Overriding scheduler max timesteps to {args.max_timesteps}")
+    max_episode_steps = int(args.max_timesteps if args.max_timesteps else (args.episode_len if args.episode_len else task_config['episode_len']))
+    if args.coop_only:
+        scheduler = None
+        print(f"COOP-only mode enabled. Running Dual policy only for {max_episode_steps} steps.")
+    else:
+        scheduler = TaskScheduler(command_queue, duration_config)
 
-    scheduler.print_schedule()
-    
-    # Calculate required time limit from Scheduler
-    time_limit = (scheduler.max_timesteps + 200) * DT 
+        # Override max steps if user requested
+        if args.max_timesteps:
+            scheduler.max_timesteps = args.max_timesteps
+            print(f"Overriding scheduler max timesteps to {args.max_timesteps}")
+
+        scheduler.print_schedule()
+        max_episode_steps = int(scheduler.max_timesteps)
+
+    # Calculate required time limit from schedule/episode cap
+    time_limit = (max_episode_steps + 200) * DT 
     
     # Pass camera_names to avoid rendering default 5 cameras (huge speedup)
     import piper_constants
@@ -815,7 +851,91 @@ def main(args):
     try:
         while episode_count < args.num_rollouts:
             # --- Sequence Selection ---
-            if args.match_pretrain_coop_env:
+            if args.coop_only:
+                x_shift = 1.0 + np.random.uniform(-0.10, 0.10)
+                MANYCUBES_CONFIG['x_shift'] = x_shift
+
+                start_x = 0.0
+                spacing = 0.15
+                xs = [(start_x - i * spacing) + x_shift for i in range(10)]
+
+                # Same bounds as generate_pretrain_dataset.py cooperative mode
+                l_bound_u, l_bound_l = 0.15, -0.60
+                r_bound_l, r_bound_u = -0.35, 0.60
+
+                left_candidates = [i for i, x in enumerate(xs) if x <= l_bound_u and x > l_bound_l]
+                right_candidates = [i for i, x in enumerate(xs) if x >= r_bound_l and x < r_bound_u]
+
+                if not left_candidates or not right_candidates:
+                    print(f"  [Eval] WARNING: Could not find candidates in both regions (X-Shift={x_shift:.3f})! Fallback to random.")
+                    indices = np.random.choice(10, 2, replace=False)
+                    l_idx, r_idx = int(indices[0]), int(indices[1])
+                else:
+                    # Same cooperative pair selection policy as generate_pretrain_dataset.py
+                    max_abs_dx = 0.70
+                    jitter_x_cfg = 0.08
+                    center_dx_limit = max(0.0, max_abs_dx - 2.0 * jitter_x_cfg)
+                    use_proximity = (np.random.rand() < 0.6)
+                    anchor_left = (np.random.rand() < 0.5)
+
+                    if anchor_left:
+                        l_idx = int(np.random.choice(left_candidates))
+                        prox_right = [ri for ri in right_candidates if ri != l_idx and abs(l_idx - ri) <= 3]
+                        valid_right = [ri for ri in right_candidates if ri != l_idx and abs(xs[l_idx] - xs[ri]) <= center_dx_limit]
+                        prox_right_valid = [ri for ri in prox_right if abs(xs[l_idx] - xs[ri]) <= center_dx_limit]
+                        if use_proximity and prox_right:
+                            pick_pool = prox_right_valid if prox_right_valid else prox_right
+                            r_idx = int(np.random.choice(pick_pool))
+                        else:
+                            right_pool = [ri for ri in right_candidates if ri != l_idx] or right_candidates
+                            pick_pool = valid_right if valid_right else right_pool
+                            r_idx = int(np.random.choice(pick_pool))
+                    else:
+                        r_idx = int(np.random.choice(right_candidates))
+                        prox_left = [li for li in left_candidates if li != r_idx and abs(li - r_idx) <= 3]
+                        valid_left = [li for li in left_candidates if li != r_idx and abs(xs[li] - xs[r_idx]) <= center_dx_limit]
+                        prox_left_valid = [li for li in prox_left if abs(xs[li] - xs[r_idx]) <= center_dx_limit]
+                        if use_proximity and prox_left:
+                            pick_pool = prox_left_valid if prox_left_valid else prox_left
+                            l_idx = int(np.random.choice(pick_pool))
+                        else:
+                            left_pool = [li for li in left_candidates if li != r_idx] or left_candidates
+                            pick_pool = valid_left if valid_left else left_pool
+                            l_idx = int(np.random.choice(pick_pool))
+
+                    center_dx = abs(xs[l_idx] - xs[r_idx])
+                    if center_dx > center_dx_limit:
+                        if anchor_left:
+                            valid_right = [ri for ri in right_candidates if ri != l_idx and abs(xs[l_idx] - xs[ri]) <= center_dx_limit]
+                            if valid_right:
+                                r_idx = min(valid_right, key=lambda ri: abs(xs[l_idx] - xs[ri]))
+                        else:
+                            valid_left = [li for li in left_candidates if li != r_idx and abs(xs[li] - xs[r_idx]) <= center_dx_limit]
+                            if valid_left:
+                                l_idx = min(valid_left, key=lambda li: abs(xs[li] - xs[r_idx]))
+
+                command_queue = list('C')
+                indices = np.array([l_idx, r_idx])
+
+                # Same cooperative placement diversity config as generate_pretrain_dataset.py
+                MANYCUBES_CONFIG['target_jitter_x'] = 0.08
+                MANYCUBES_CONFIG['target_y_min'] = 0.32
+                MANYCUBES_CONFIG['target_y_max'] = 0.45
+
+                c_list = ['r'] * 10
+                pair = ['g', 'b']
+                np.random.shuffle(pair)
+                c_list[indices[0]] = pair[0]
+                c_list[indices[1]] = pair[1]
+                color_seq = c_list
+                MANYCUBES_CONFIG['target_indices'] = set(indices.tolist())
+
+                print(
+                    f"Rollout {episode_count} | coop_only(pretrain-coop-like) x_shift={x_shift:.3f} "
+                    f"targets=({l_idx},{r_idx}) colors={''.join(color_seq)} commands=C"
+                )
+
+            elif args.match_pretrain_coop_env:
                 x_shift = 1.0 + np.random.uniform(-0.10, 0.10)
                 MANYCUBES_CONFIG['x_shift'] = x_shift
 
@@ -871,9 +991,12 @@ def main(args):
                 print(f"Rollout {episode_count} | Loaded Sequence: {''.join(color_seq)}, Commands: {''.join(command_queue)}")
             else:
                 # Use CLI values
-                command_queue = list(args.commands)
+                command_queue = list(args.commands) if args.commands else []
                 color_seq = list(args.color_sequence.lower()) if args.color_sequence else COLOR_SEQUENCE
                 MANYCUBES_CONFIG['target_indices'] = None
+
+            if args.coop_only:
+                command_queue = list('C')
             
             # Update Globals for simulation environment
             MANYCUBES_COLORS[0] = color_seq
@@ -892,9 +1015,14 @@ def main(args):
                 duration_config['C_place'] = 1000
                 duration_config['Single'] = 1000
                 
-            scheduler = TaskScheduler(command_queue, duration_config)
-            if args.max_timesteps:
-                scheduler.max_timesteps = args.max_timesteps
+            if args.coop_only:
+                scheduler = None
+                max_episode_steps = int(args.max_timesteps if args.max_timesteps else (args.episode_len if args.episode_len else task_config['episode_len']))
+            else:
+                scheduler = TaskScheduler(command_queue, duration_config)
+                if args.max_timesteps:
+                    scheduler.max_timesteps = args.max_timesteps
+                max_episode_steps = int(scheduler.max_timesteps)
             
             # Reset tracking per episode
             touching_goal_start_step = {} 
@@ -929,10 +1057,12 @@ def main(args):
             
             # Magnet Tracking
             reset_magnet_logic(env.physics, color_seq)
+            if args.coop_only:
+                apply_coop_only_object_visibility(env.physics, color_seq)
             magnetized_pairs = {}
             
-            current_mode = scheduler.get_mode_at_step(0)
-            if args.ckpt_e2e:
+            current_mode = scheduler.get_mode_at_step(0) if scheduler else MODE_COOP
+            if args.ckpt_e2e or args.coop_only:
                 current_mode = MODE_COOP
             
             print(f"\nEpisode {episode_count} Started.")
@@ -989,9 +1119,9 @@ def main(args):
                 # -------------------------------
                 # Auto-Switching Logic via Scheduler
                 # -------------------------------
-                new_mode = scheduler.get_mode_at_step(t)
-                if args.ckpt_e2e:
-                     new_mode = MODE_COOP
+                new_mode = scheduler.get_mode_at_step(t) if scheduler else MODE_COOP
+                if args.ckpt_e2e or args.coop_only:
+                    new_mode = MODE_COOP
                 if new_mode != current_mode:
                     handle_mode_switch(t, current_mode, new_mode)
                 
@@ -1037,9 +1167,9 @@ def main(args):
                          all_time_actions_right.copy_(val_inherit_r)
                 
                 # Check End
-                if t >= scheduler.max_timesteps:
-                     print(f"[Step {t}] Reached End of Schedule.")
-                     break
+                if t >= max_episode_steps:
+                    print(f"[Step {t}] Reached End of Schedule.")
+                    break
 
                 # -------------------------------
                 # Render & Obs
@@ -1322,8 +1452,8 @@ def main(args):
                 action = np.concatenate([action_l, action_r])
                 target_qpos = action
                 # Apply Scheduler Holds
-                hold_l = scheduler.should_hold(t, 'left')
-                hold_r = scheduler.should_hold(t, 'right')
+                hold_l = scheduler.should_hold(t, 'left') if scheduler else False
+                hold_r = scheduler.should_hold(t, 'right') if scheduler else False
                 
                 if args.ckpt_e2e:
                     hold_l = False
@@ -1598,6 +1728,7 @@ if __name__ == '__main__':
     parser.add_argument('--num_rollouts', action='store', type=int, default=1, help='Number of evaluation episodes')
     parser.add_argument('--episode_len', action='store', type=int, default=None, help='Override episode length')
     parser.add_argument('--max_timesteps', action='store', type=int, default=None, help='Hard limit on episode steps')
+    parser.add_argument('--coop_only', action='store_true', help='Run standalone COOP test using Dual policy only (no mode switching)')
     parser.add_argument('--sync_arms', action='store_true', help='Enable Sync Wait logic (Hold) before Cooperative tasks')
     parser.add_argument('--reset_on_subtask', action='store_true', help='Reset independent policy buffers on subtask switch')
     parser.add_argument('--x_shift', action='store', type=float, default=0.0, help='Shift all objects along X-axis')

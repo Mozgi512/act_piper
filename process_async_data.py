@@ -4,6 +4,8 @@ import numpy as np
 import cv2
 import argparse
 import time
+import glob
+import re
 
 
 def apply_rgb_mask_to_strip(image, strip_width=40):
@@ -425,16 +427,40 @@ def main(args):
     with h5py.File(first_ep_path, 'r') as f:
         camera_names = list(f['/observations/images'].keys())
     
+    episode_files = glob.glob(os.path.join(dataset_dir, 'episode_*.hdf5'))
+    episode_indices = []
+    for path in episode_files:
+        name = os.path.basename(path)
+        m = re.match(r'^episode_(\d+)\.hdf5$', name)
+        if m:
+            episode_indices.append(int(m.group(1)))
+    episode_indices = sorted(set(episode_indices))
+
+    if not episode_indices:
+        print(f"No episode_*.hdf5 found in {dataset_dir}")
+        return
+
+    requested = int(num_episodes)
+    selected_indices = episode_indices[:requested]
+    if len(selected_indices) < requested:
+        print(
+            f"Requested {requested} episodes, but found {len(episode_indices)} files. "
+            f"Processing {len(selected_indices)} available episodes."
+        )
+
     total_segments = 0
     t0 = time.time()
-    
-    for i in range(num_episodes):
-        seg_count = process_episode(i, dataset_dir, camera_names, output_dirs, args)
+
+    for processed_count, episode_idx in enumerate(selected_indices, start=1):
+        seg_count = process_episode(episode_idx, dataset_dir, camera_names, output_dirs, args)
         total_segments += seg_count
-        if (i+1) % 10 == 0:
-            print(f"Processed {i+1}/{num_episodes} episodes...")
-    
-    print(f"Finished processing {num_episodes} episodes -> {total_segments} segments in {time.time() - t0:.1f} seconds.")
+        if processed_count % 10 == 0:
+            print(f"Processed {processed_count}/{len(selected_indices)} episodes...")
+
+    print(
+        f"Finished processing {len(selected_indices)} episodes -> {total_segments} segments "
+        f"in {time.time() - t0:.1f} seconds."
+    )
 
 
 if __name__ == '__main__':

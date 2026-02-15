@@ -57,6 +57,7 @@ class InteractivePolicy(VariableCoopPolicy):
         self.current_right_segment = None
         
         self.last_action_end_t = -1
+        self.current_coop_pair = None
 
     def generate_trajectory(self, ts_first):
         self.init_pose(ts_first)
@@ -199,6 +200,9 @@ class InteractivePolicy(VariableCoopPolicy):
                 self.current_right_segment['end'] = self.step_count
                 self.right_segments.append(self.current_right_segment)
                 self.current_right_segment = None
+
+        if self.current_coop_pair is not None and self.current_left_segment is None and self.current_right_segment is None:
+            self.current_coop_pair = None
         
         # 1. Expand/Resolve phase (Head only? or as deep as possible?)
         # We need to resolve pending I/T/B to know which physical arm they use.
@@ -271,6 +275,7 @@ class InteractivePolicy(VariableCoopPolicy):
                         print(f"[Step {self.step_count}] Scheduling Coop Assembly G:{greens[0][0]} + B:{blues[0][0]}")
                         self.picked_objects.add(greens[0][0])
                         self.picked_objects.add(blues[0][0])
+                        self.current_coop_pair = (int(greens[0][0]), int(blues[0][0]))
                         
                         # Start cooperative segments for both arms BEFORE planning
                         # Will be updated with split point during plan_cooperative_assembly

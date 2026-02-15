@@ -8,6 +8,7 @@ import argparse
 import matplotlib.pyplot as plt
 import h5py
 import collections
+import csv
 
 from piper_constants import PUPPET_GRIPPER_POSITION_NORMALIZE_FN, SIM_TASK_CONFIGS, BELT_MOVE_SPEED, PUPPET_GRIPPER_POSITION_OPEN, PUPPET_GRIPPER_POSITION_CLOSE
 from piper_ee_sim_env import make_ee_sim_env
@@ -27,7 +28,55 @@ def main(args):
         print("Note: Run with --onscreen_render to see the visualization.")
     inject_noise = False
     render_cam_name = 'top'
-    
+
+    def append_success_init_positions(csv_path, episode_id, color_sequence, command_queue, env_state_70):
+        os.makedirs(os.path.dirname(csv_path), exist_ok=True)
+        row = {
+            'episode': int(episode_id),
+            'commands': ''.join(command_queue) if command_queue is not None else '',
+            'color_sequence': ''.join(color_sequence) if color_sequence is not None else '',
+        }
+        cube_state = np.array(env_state_70).reshape(10, 7)
+        for i in range(10):
+            row[f'cube{i}_x'] = float(cube_state[i, 0])
+            row[f'cube{i}_y'] = float(cube_state[i, 1])
+            row[f'cube{i}_z'] = float(cube_state[i, 2])
+
+        fieldnames = ['episode', 'commands', 'color_sequence']
+        for i in range(10):
+            fieldnames.extend([f'cube{i}_x', f'cube{i}_y', f'cube{i}_z'])
+
+        file_exists = os.path.isfile(csv_path)
+        with open(csv_path, 'a', newline='') as f:
+            writer = csv.DictWriter(f, fieldnames=fieldnames)
+            if not file_exists:
+                writer.writeheader()
+            writer.writerow(row)
+
+    def is_home_at_episode_end(replay_steps):
+        if replay_steps is None or len(replay_steps) < 2:
+            return False, None, None
+        q_home = np.array(replay_steps[0].observation['qpos']).copy()
+        q_last = np.array(replay_steps[-1].observation['qpos']).copy()
+
+        left_arm_diff = np.max(np.abs(q_last[:6] - q_home[:6]))
+        right_arm_diff = np.max(np.abs(q_last[7:13] - q_home[7:13]))
+        arm_diff = float(max(left_arm_diff, right_arm_diff))
+        grip_diff = float(max(abs(q_last[6] - q_home[6]), abs(q_last[13] - q_home[13])))
+
+        ok = (arm_diff <= float(args.get('end_home_arm_threshold', 0.20))) and \
+             (grip_diff <= float(args.get('end_home_gripper_threshold', 0.35)))
+        return ok, arm_diff, grip_diff
+
+    def set_cube_alpha(physics, alpha_value):
+        for gid in range(physics.model.ngeom):
+            gname = physics.model.id2name(gid, 'geom')
+            if gname is None:
+                continue
+            if gname == 'cube' or gname.startswith('cube_'):
+                physics.model.geom_rgba[gid, 3] = float(alpha_value)
+        physics.forward()
+
     command_sequence_str = args['commands']
     if command_sequence_str:
         command_queue_template = list(command_sequence_str)
@@ -44,8 +93,8 @@ def main(args):
             if c not in ['r', 'g', 'b']:
                 raise ValueError(f"Invalid color '{c}' in sequence. Use only 'r', 'g', 'b'")
 
-    if not args.get('pretrain_mode') and not command_sequence_str:
-        parser.error("--commands is required unless --pretrain_mode is specified.")
+    if not args.get('pretrain_mode') and not args.get('wait_only_mode') and not command_sequence_str:
+        parser.error("--commands is required unless --pretrain_mode or --wait_only_mode is specified.")
 
 
     if not os.path.isdir(dataset_dir):
@@ -64,6 +113,7 @@ def main(args):
         episode_success = False
         
         while retry_count < max_retries_per_episode and not episode_success:
+            independent_right_target_idx = None
             if retry_count > 0:
                 print(f'Episode {episode_idx}: Retry attempt {retry_count}/{max_retries_per_episode}')
             else:
@@ -92,6 +142,10 @@ def main(args):
             
             # Reset target_indices
             MANYCUBES_CONFIG['target_indices'] = None
+            # Reset target placement jitter to legacy defaults (used by piper_ee_sim_env)
+            MANYCUBES_CONFIG['target_jitter_x'] = 0.04
+            MANYCUBES_CONFIG['target_y_min'] = 0.32
+            MANYCUBES_CONFIG['target_y_max'] = 0.45
 
             # Pre-training Mode Logic
             if args.get('pretrain_mode'):
@@ -122,25 +176,58 @@ def main(args):
                     l_idx, r_idx = indices[0], indices[1]
                 else:
                     if args.get('pretrain_mode') == 'cooperative':
-                        # Cooperative Proximity Constraint: Max 2 objects between G and B (idx diff <= 3)
-                        possible_pairs = []
-                        for li in left_candidates:
-                            for ri in right_candidates:
-                                if li != ri:
-                                    possible_pairs.append((li, ri))
-                        
-                        # Filter by proximity
-                        proximate_pairs = [p for p in possible_pairs if abs(p[0] - p[1]) <= 3]
-                        
-                        if proximate_pairs:
-                            pair_idx = np.random.choice(len(proximate_pairs))
-                            l_idx, r_idx = proximate_pairs[pair_idx]
-                            print(f"  [Gen] Cooperative Selection (Proximate). Pairs found: {len(proximate_pairs)}")
+                        # Cooperative selection with reduced index bias:
+                        # sample one anchor arm uniformly, then sample the other arm conditionally.
+                        # Apply proximity preference (idx diff <= 3) probabilistically to avoid sparse regions.
+                        max_abs_dx = float(args.get('pretrain_coop_max_abs_dx', 0.70))
+                        jitter_x_cfg = float(args.get('pretrain_coop_target_jitter_x', 0.08))
+                        # Conservative center-distance limit so sampled jitter still tends to satisfy max |dx|.
+                        center_dx_limit = max(0.0, max_abs_dx - 2.0 * jitter_x_cfg)
+
+                        use_proximity = (np.random.rand() < float(args.get('pretrain_coop_proximate_prob', 0.6)))
+                        anchor_left = bool(np.random.rand() < 0.5)
+                        if anchor_left:
+                            l_idx = int(np.random.choice(left_candidates))
+                            prox_right = [ri for ri in right_candidates if ri != l_idx and abs(l_idx - ri) <= 3]
+                            valid_right = [ri for ri in right_candidates if ri != l_idx and abs(xs[l_idx] - xs[ri]) <= center_dx_limit]
+                            prox_right_valid = [ri for ri in prox_right if abs(xs[l_idx] - xs[ri]) <= center_dx_limit]
+                            if use_proximity and prox_right:
+                                pick_pool = prox_right_valid if prox_right_valid else prox_right
+                                r_idx = int(np.random.choice(pick_pool))
+                            else:
+                                right_pool = [ri for ri in right_candidates if ri != l_idx] or right_candidates
+                                pick_pool = valid_right if valid_right else right_pool
+                                r_idx = int(np.random.choice(pick_pool))
                         else:
-                            # Fallback: Pick the pair with the smallest distance
-                            possible_pairs.sort(key=lambda p: abs(p[0] - p[1]))
-                            l_idx, r_idx = possible_pairs[0]
-                            print(f"  [Gen] WARNING: No proximate pairs found. Falling back to closest pair (diff={abs(l_idx - r_idx)})")
+                            r_idx = int(np.random.choice(right_candidates))
+                            prox_left = [li for li in left_candidates if li != r_idx and abs(li - r_idx) <= 3]
+                            valid_left = [li for li in left_candidates if li != r_idx and abs(xs[li] - xs[r_idx]) <= center_dx_limit]
+                            prox_left_valid = [li for li in prox_left if abs(xs[li] - xs[r_idx]) <= center_dx_limit]
+                            if use_proximity and prox_left:
+                                pick_pool = prox_left_valid if prox_left_valid else prox_left
+                                l_idx = int(np.random.choice(pick_pool))
+                            else:
+                                left_pool = [li for li in left_candidates if li != r_idx] or left_candidates
+                                pick_pool = valid_left if valid_left else left_pool
+                                l_idx = int(np.random.choice(pick_pool))
+
+                        # Final safeguard: if still too far in center-distance, move counterpart to nearest valid.
+                        center_dx = abs(xs[l_idx] - xs[r_idx])
+                        if center_dx > center_dx_limit:
+                            if anchor_left:
+                                valid_right = [ri for ri in right_candidates if ri != l_idx and abs(xs[l_idx] - xs[ri]) <= center_dx_limit]
+                                if valid_right:
+                                    r_idx = min(valid_right, key=lambda ri: abs(xs[l_idx] - xs[ri]))
+                            else:
+                                valid_left = [li for li in left_candidates if li != r_idx and abs(xs[li] - xs[r_idx]) <= center_dx_limit]
+                                if valid_left:
+                                    l_idx = min(valid_left, key=lambda li: abs(xs[li] - xs[r_idx]))
+                            center_dx = abs(xs[l_idx] - xs[r_idx])
+
+                        print(
+                            f"  [Gen] Cooperative Selection (anchor uniform, prox_prob={args.get('pretrain_coop_proximate_prob', 0.6):.2f}). "
+                            f"anchor={'L' if anchor_left else 'R'} use_proximity={use_proximity} center|dx|={center_dx:.3f} limit={center_dx_limit:.3f}"
+                        )
                     else:
                         # Independent mode: Random selection from candidates
                         l_idx = np.random.choice(left_candidates)
@@ -159,6 +246,7 @@ def main(args):
                     # Independent: Commands = I
                     command_sequence_str = "I"
                     command_queue_template = list(command_sequence_str)
+                    independent_right_target_idx = int(r_idx)
                 
                     # Base: random g/b for all
                     c_list = np.random.choice(['g', 'b'], size=10).tolist()
@@ -172,6 +260,11 @@ def main(args):
                     # Cooperative: Only one pair, so use "C"
                     command_sequence_str = "C"
                     command_queue_template = list(command_sequence_str)
+
+                    # Increase cooperative position diversity
+                    MANYCUBES_CONFIG['target_jitter_x'] = float(args.get('pretrain_coop_target_jitter_x', 0.08))
+                    MANYCUBES_CONFIG['target_y_min'] = float(args.get('pretrain_coop_target_y_min', 0.32))
+                    MANYCUBES_CONFIG['target_y_max'] = float(args.get('pretrain_coop_target_y_max', 0.45))
                 
                     # Colors: The rest are 'r'
                     c_list = ['r'] * 10
@@ -206,9 +299,6 @@ def main(args):
             env = make_ee_sim_env(task_name, camera_names=ee_cameras) 
             ts = env.reset()
             episode = [ts]
-        
-            policy = InteractivePolicy(inject_noise=inject_noise, color_sequence=color_seq)
-            policy.init_pose(ts)
 
             if onscreen_render:
                  import cv2
@@ -219,46 +309,66 @@ def main(args):
                  except:
                      pass
 
-        
-        
-            # Schedule all commands upfront (new async system)
-            for cmd in command_queue_template:
-                policy.schedule_command(cmd, ts)
-        
-            # Loop for EE rollout
-            # Use a large max_steps to allow dynamic termination
-            max_steps = 3000 
-            for step in range(max_steps):
-                # Process command buffer (async execution)
-                policy.process_command_buffer(ts)
-            
-                # Dynamic termination: if buffer is empty and both arms are free, done
-                if not policy.command_buffer:
-                    left_free = policy.is_arm_free(True, step)
-                    right_free = policy.is_arm_free(False, step)
-                    if left_free and right_free:
-                        print(f"  [EE] All tasks completed. Terminating at step {step}")
-                        break # Break from loop, then finalize and print
+            if args.get('wait_only_mode'):
+                wait_steps = int(args.get('wait_only_steps', 200))
+                set_cube_alpha(env.physics, 0.0)
+                hold_action = np.concatenate([
+                    ts.observation['mocap_pose_left'],
+                    np.array([1.0]),
+                    ts.observation['mocap_pose_right'],
+                    np.array([1.0]),
+                ])
+                for step in range(wait_steps):
+                    ts = env.step(hold_action)
+                    episode.append(ts)
+                left_segments = [{'start': 0, 'end': wait_steps, 'type': 'independent'}]
+                right_segments = [{'start': 0, 'end': wait_steps, 'type': 'independent'}]
+                print(f"  [EE] Wait-only rollout finished at step {wait_steps}")
+            else:
+                policy = InteractivePolicy(inject_noise=inject_noise, color_sequence=color_seq)
+                policy.init_pose(ts)
 
-                action = policy(ts)
-                ts = env.step(action)
-                episode.append(ts)
-            
-                # Optional: Render
-                if onscreen_render:
-                    # Render every 5 steps (reduced from 2)
-                    if step % 5 == 0:
-                        img_rgb = ts.observation['images']['top']
-                        img_bgr = cv2.cvtColor(img_rgb, cv2.COLOR_RGB2BGR)
-                        # Draw vertical line at center (x=160) to distinguish left/right
-                        cv2.line(img_bgr, (160, 0), (160, 240), (0, 255, 0), 1)
-                        cv2.imshow(window_name, img_bgr)
-                        cv2.waitKey(1)
- 
+                # Schedule all commands upfront (new async system)
+                for cmd in command_queue_template:
+                    policy.schedule_command(cmd, ts)
 
-            # Finalize any open segments in the policy metadata
-            policy.finalize(step)
-            print(f"  [EE] Episode finished at step {step}")
+                # Loop for EE rollout
+                # Use a large max_steps to allow dynamic termination
+                max_steps = 3000 
+                for step in range(max_steps):
+                    # Process command buffer (async execution)
+                    policy.process_command_buffer(ts)
+
+                    # Dynamic termination: if buffer is empty and both arms are free, done
+                    if not policy.command_buffer:
+                        left_free = policy.is_arm_free(True, step)
+                        right_free = policy.is_arm_free(False, step)
+                        if left_free and right_free:
+                            print(f"  [EE] All tasks completed. Terminating at step {step}")
+                            break # Break from loop, then finalize and print
+
+                    action = policy(ts)
+                    ts = env.step(action)
+                    episode.append(ts)
+
+                    # Optional: Render
+                    if onscreen_render:
+                        # Render every 5 steps (reduced from 2)
+                        if step % 5 == 0:
+                            img_rgb = ts.observation['images']['top']
+                            img_bgr = cv2.cvtColor(img_rgb, cv2.COLOR_RGB2BGR)
+                            # Draw vertical line at center (x=160) to distinguish left/right
+                            cv2.line(img_bgr, (160, 0), (160, 240), (0, 255, 0), 1)
+                            cv2.imshow(window_name, img_bgr)
+                            cv2.waitKey(1)
+
+                # Finalize any open segments in the policy metadata
+                policy.finalize(step)
+                print(f"  [EE] Episode finished at step {step}")
+
+                # Save task segment metadata before deleting policy
+                left_segments = policy.left_segments.copy()
+                right_segments = policy.right_segments.copy()
 
             # Capture Env State for Replay
             # env_state includes robot state + object poses
@@ -266,6 +376,26 @@ def main(args):
             # qpos structure: robot(16) + belt(1) + belt_ext(1) + 10 cubes (7*10) = 88
             # get_env_state returns qpos[18:18+70] -> The 10 cubes.
             subtask_info = episode[0].observation['env_state'].copy() 
+
+            if args.get('pretrain_mode') == 'independent' and independent_right_target_idx is not None:
+                right_init_x = float(subtask_info[independent_right_target_idx * 7 + 0])
+                if right_init_x < 0.0:
+                    print(
+                        f"Episode {episode_idx} Failed (Independent right target x<0: "
+                        f"idx={independent_right_target_idx}, x={right_init_x:.4f})"
+                    )
+                    retry_count += 1
+                    total_retries += 1
+                    del env
+                    if not args.get('wait_only_mode'):
+                        del policy
+                    if retry_count >= max_retries_per_episode:
+                        print(f"Episode {episode_idx} FAILED after {max_retries_per_episode} attempts. Skipping.")
+                        episode_idx += 1
+                        break
+                    else:
+                        print(f"Retrying episode {episode_idx}...")
+                        continue
         
             # Extract Joint Trajectory
             joint_traj = [ts.observation['qpos'] for ts in episode]
@@ -323,12 +453,9 @@ def main(args):
             if max_jump > 0.2:
                  print(f"WARNING: Large joint jump detected! Max: {max_jump:.3f} rad/step")
 
-            # Save task segment metadata before deleting policy
-            left_segments = policy.left_segments.copy()
-            right_segments = policy.right_segments.copy()
-
             del env
-            del policy
+            if not args.get('wait_only_mode'):
+                del policy
 
             # ---------------------------------------------------------
             # 2. Joint Space Replay
@@ -336,6 +463,20 @@ def main(args):
             print(f'Episode {episode_idx}: Replaying in Joint space')
             print(f'  EE Episode Length: {len(episode)} steps')
             print(f'  Joint Trajectory Length: {len(joint_traj)} steps')
+
+            data_steps = max(0, len(joint_traj) - 1)
+            max_data_steps = args.get('max_data_steps', 0)
+            if max_data_steps and data_steps > int(max_data_steps):
+                print(f"Episode {episode_idx} Failed (Data steps exceeded: {data_steps}>{int(max_data_steps)})")
+                retry_count += 1
+                total_retries += 1
+                if retry_count >= max_retries_per_episode:
+                    print(f"Episode {episode_idx} FAILED after {max_retries_per_episode} attempts. Skipping.")
+                    episode_idx += 1
+                    break
+                else:
+                    print(f"Retrying episode {episode_idx}...")
+                    continue
         
             if len(episode) != len(joint_traj):
                 print(f'  WARNING: Length mismatch! EE={len(episode)}, Joint={len(joint_traj)}')
@@ -356,6 +497,8 @@ def main(args):
                 replay_cameras = camera_names  # Need cameras for dataset images
             env = make_sim_env(task_name, camera_names=replay_cameras, time_limit=2000)
             ts = env.reset()
+            if args.get('wait_only_mode'):
+                set_cube_alpha(env.physics, 0.0)
             episode_replay = [ts]
         
             # Cache joint IDs for object removal
@@ -448,16 +591,27 @@ def main(args):
             
             print(f"  Max reward achieved: {max_reward_achieved} / {expected_max_reward} expected")
 
+            end_home_ok, end_arm_diff, end_grip_diff = is_home_at_episode_end(episode_replay)
+            print(
+                f"  End-home check: ok={end_home_ok} arm_diff={end_arm_diff:.4f} "
+                f"grip_diff={end_grip_diff:.4f} "
+                f"(th_arm={args.get('end_home_arm_threshold', 0.20):.3f}, "
+                f"th_grip={args.get('end_home_gripper_threshold', 0.35):.3f})"
+            )
+
             # Verify Success based on:
             # 1. Metadata existence (segments)
             # 2. Max reward achieved
             if left_segments or right_segments:
-                if max_reward_achieved >= expected_max_reward:
-                    print(f"Episode {episode_idx} Successful (Metadata generated, Max reward achieved)")
+                if max_reward_achieved >= expected_max_reward and end_home_ok:
+                    print(f"Episode {episode_idx} Successful (Metadata generated, Max reward achieved, End-home satisfied)")
                     episode_success = True
                     success_count += 1
                 else:
-                    print(f"Episode {episode_idx} Failed (Max reward not achieved: {max_reward_achieved}/{expected_max_reward})")
+                    if max_reward_achieved < expected_max_reward:
+                        print(f"Episode {episode_idx} Failed (Max reward not achieved: {max_reward_achieved}/{expected_max_reward})")
+                    else:
+                        print(f"Episode {episode_idx} Failed (End-home not satisfied)")
                     retry_count += 1
                     total_retries += 1
             else:
@@ -479,7 +633,22 @@ def main(args):
         
             # Only save if successful
             if not episode_success:
+                if args.get('fail_fast_on_episode_failure'):
+                    print(f"Fail-fast: episode {episode_idx} failed. Early termination.")
+                    return
                 continue
+
+            # Save successful episode initial object positions to CSV
+            init_pos_csv_path = args.get('save_init_positions_csv')
+            if not init_pos_csv_path:
+                init_pos_csv_path = os.path.join(dataset_dir, 'successful_init_positions.csv')
+            append_success_init_positions(
+                init_pos_csv_path,
+                episode_idx,
+                color_seq if color_seq is not None else COLOR_SEQUENCE,
+                command_queue_template,
+                subtask_info,
+            )
 
             # ---------------------------------------------------------
             # 3. Save to HDF5
@@ -581,9 +750,21 @@ if __name__ == '__main__':
     parser.add_argument('--num_episodes', action='store', type=int, help='num_episodes', required=True)
     parser.add_argument('--commands', action='store', type=str, help='Command sequence (e.g. ICI)', default=None)
     parser.add_argument('--pretrain_mode', action='store', type=str, choices=['independent', 'cooperative'], help='Pre-training mode to auto-generate patterns')
+    parser.add_argument('--wait_only_mode', action='store_true', help='Generate wait-only data: no visible objects and no task execution')
+    parser.add_argument('--wait_only_steps', action='store', type=int, default=200, help='Number of steps for wait-only rollout')
+    parser.add_argument('--pretrain_coop_target_jitter_x', action='store', type=float, default=0.08, help='Per-target X jitter amplitude for cooperative pretrain placement')
+    parser.add_argument('--pretrain_coop_target_y_min', action='store', type=float, default=0.32, help='Min Y for cooperative pretrain target placement')
+    parser.add_argument('--pretrain_coop_target_y_max', action='store', type=float, default=0.45, help='Max Y for cooperative pretrain target placement')
+    parser.add_argument('--pretrain_coop_proximate_prob', action='store', type=float, default=0.6, help='Probability of enforcing cooperative proximity constraint (|idx diff|<=3)')
+    parser.add_argument('--pretrain_coop_max_abs_dx', action='store', type=float, default=0.70, help='Approximate max |Δx| for cooperative pair centers (conservative with jitter margin)')
+    parser.add_argument('--max_data_steps', action='store', type=int, default=0, help='If >0, fail an episode attempt when data step count exceeds this limit')
+    parser.add_argument('--fail_fast_on_episode_failure', action='store_true', help='Terminate immediately when an episode fails instead of continuing')
     parser.add_argument('--color_sequence', action='store', type=str, help='Color sequence (e.g. rrggbb for 10 objects)', default=None)
     parser.add_argument('--onscreen_render', action='store_true')
     parser.add_argument('--no_save_data', action='store_true', help='Do not save HDF5 data')
+    parser.add_argument('--end_home_arm_threshold', action='store', type=float, default=0.20, help='Max allowed arm joint deviation from start pose at episode end')
+    parser.add_argument('--end_home_gripper_threshold', action='store', type=float, default=0.35, help='Max allowed gripper deviation from start pose at episode end')
+    parser.add_argument('--save_init_positions_csv', action='store', type=str, default=None, help='Optional path to save successful episodes initial object positions CSV')
     
     args = parser.parse_args()
     main(vars(args))

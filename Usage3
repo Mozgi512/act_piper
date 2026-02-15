@@ -1,12 +1,25 @@
 #E2E評価のため
-#データ生成
+#データ生成やって
 python3 generate_dataset.py \
    --task_name sim_many_cubes \
    --dataset_dir data4/random \
    --num_episodes 100 \
    --sequence_file sequences.csv
 
-python3 pad_dataset.py --input_dir data4/random --output_dir data4/random_padded
+python3 generate_dataset.py \
+   --task_name sim_many_cubes \
+   --dataset_dir data5/coop \
+   --num_episodes 50 \
+   --sequence_file sequences.csv \
+--coop_shadow_obs
+python3 process_async_data.py --dataset_dir data5/coop  --num_episodes 10
+
+python3 visualize_episodes.py --dataset_dir  data5/coop_merged --episode_idx 10
+
+python3 merge_datasets.py --input_dirs data5/coop/C --output_dir data5/coop_merged
+
+
+python3 pad_dataset.py --input_dir data5/pretrain_c --output_dir data5/overall_c
 
 #学習
 python3 imitate_episodes.py \
@@ -41,47 +54,36 @@ python3 evaluate_policy_switcher.py \
 #事前学習
 python3 generate_dataset.py --pretrain_mode independent --num_episodes 100 --dataset_dir data4/pretrain_i --onscreen_render --no_save_data
 python3 generate_dataset.py --pretrain_mode cooperative --num_episodes 100 --dataset_dir data4/pretrain_c --onscreen_render --no_save_data
+python3 generate_pretrain_dataset.py --pretrain_mode cooperative --num_episodes 200 --dataset_dir data5/pretrain_c --max_data_steps 1000
 
-python3 process_async_data.py --dataset_dir data4/pretrain_i --num_episodes 100
+python3 generate_pretrain_dataset.py --pretrain_mode independent --num_episodes 200 --dataset_dir data5/pretrain_i --max_data_steps 1000 --onscreen_render --no_save_data
 
-python3 pad_dataset.py --input_dir data4/pretrain_i/L/seg_0 --output_dir data4/pretrain_left_padded
-python3 pad_dataset.py --input_dir data4/pretrain_i/R/seg_1 --output_dir data4/pretrain_right_padded
-python3 pad_dataset.py --input_dir data4/pretrain_c --output_dir data4/pretrain_c_padded
+# 別モード: 物体非表示 + ホーム固定の待機データ生成
+python3 generate_dataset.py --num_episodes 20 --dataset_dir data5/wait_only --wait_only_mode --wait_only_steps 200 --max_data_steps 0
+python3 generate_pretrain_dataset.py --num_episodes 100 --dataset_dir data5/wait_only_pretrain --wait_only_mode --wait_only_steps 200 --max_data_steps 0
 
 
-python3 independent_imitate_episodes.py \
-    --task_name sim_dataset_i \
-    --ckpt_dir ckpt4/pretrained_left \
-    --dataset_dir data4/pretrain_left_padded \
-    --policy_class ACT \
-    --kl_weight 10 --chunk_size 100 --hidden_dim 512 --batch_size 32 --dim_feedforward 3200 \
-    --num_epochs 40000 --lr 1e-5 \
-    --seed 0 --arm left --num_episodes 100 --num_workers 4 \
-    --persistent_workers \
-    --prefetch_factor 2 \
-    --use_cache \
-    --use_cuda_graph \
-    --validation_interval 100 --episode_len 370
+# 通常生成でもステップ数上限をかける場合
+python3 generate_dataset.py --sequence_file sequences.csv --num_episodes 100 --dataset_dir data4/random --max_data_steps 800 --save_init_positions_csv data4/random/successful_init_positions.csv
 
-python3 independent_imitate_episodes.py \
-    --task_name sim_dataset_i \
-    --ckpt_dir ckpt4/pretrained_right \
-    --dataset_dir data4/pretrain_right_padded \
-    --policy_class ACT \
-    --kl_weight 10 --chunk_size 100 --hidden_dim 512 --batch_size 32 --dim_feedforward 3200 \
-    --num_epochs 40000 --lr 1e-5 \
-    --seed 0 --arm right --num_episodes 100 --num_workers 4 \
-    --persistent_workers \
-    --prefetch_factor 2 \
-    --use_cache \
-    --use_cuda_graph \
-    --validation_interval 100 --episode_len 370
+
+python3 process_async_data.py --dataset_dir data5/pretrain_i --num_episodes 200
+python3 merge_datasets.py --input_dirs data5/pretrain_i data5/wait_only --output_dir data5/wait_i
+python3 process_async_data.py --dataset_dir data5/wait_only --num_episodes 20
+
+python3 pad_dataset.py --input_dir data5/pretrain_i/L/seg_0 --output_dir data5/pretrain_left_padded
+python3 pad_dataset.py --input_dir data5/pretrain_i/R/seg_1 --output_dir data5/pretrain_right_padded
+python3 pad_dataset.py --input_dir data5/pretrain_c --output_dir data5/pretrain_c_padded
+
+python3 pad_dataset.py --input_dir data5/wait_i/L/seg_0 --output_dir data5/wait_left_padded
+python3 pad_dataset.py --input_dir data5/wait_i/R/seg_1 --output_dir data5/wait_right_padded
+
 
 python3 imitate_episodes.py \
     --task_name sim_dataset_c \
-    --ckpt_dir ckpt4/pretrained_c \
-    --dataset_dir data4/pretrain_c_padded \
-    --policy_class ACT --kl_weight 10 --chunk_size 100 --hidden_dim 512 \
+    --ckpt_dir ckpt5/overall_c \
+    --dataset_dir data5/overall_c\
+    --policy_class ACT --kl_weight 10 --chunk_size 75 --hidden_dim 512 \
     --batch_size 32 \
     --dim_feedforward 3200 \
     --num_epochs 40000 --lr 1e-5 \
@@ -91,19 +93,67 @@ python3 imitate_episodes.py \
     --prefetch_factor 2 \
     --use_cache \
     --use_cuda_graph \
-    --validation_interval 100 --num_episodes 100 --episode_len 570
+    --validation_interval 100 --num_episodes 280 --episode_len 898
+
+python3 imitate_episodes.py \
+    --task_name sim_dataset_c \
+    --ckpt_dir ckpt5/finetuned_c \
+    --dataset_dir data5/coop_padded \
+    --policy_class ACT --kl_weight 10 --chunk_size 75 --hidden_dim 512 \
+    --batch_size 32 \
+    --dim_feedforward 3200 \
+    --num_epochs 20000 --lr 1e-5 \
+    --seed 0 \
+    --num_workers 4 \
+    --persistent_workers \
+    --prefetch_factor 2 \
+    --use_cache \
+    --use_cuda_graph \
+    --load_ckpt ckpt5/pretrained_c/policy_best.ckpt \
+    --validation_interval 100 --num_episodes 147 --episode_len 867
+
+python3 independent_imitate_episodes.py \
+    --task_name sim_dataset_i \
+    --ckpt_dir ckpt5/pretrained_left \
+    --dataset_dir data5/wait_left_padded \
+    --policy_class ACT \
+    --kl_weight 10 --chunk_size 75 --hidden_dim 512 --batch_size 32 --dim_feedforward 3200 \
+    --num_epochs 40000 --lr 1e-5 \
+    --seed 0 --arm left --num_episodes 200 --num_workers 4 \
+    --persistent_workers \
+    --prefetch_factor 2 \
+    --use_cache \
+    --use_cuda_graph \
+    --validation_interval 100 --episode_len 370
+
+python3 independent_imitate_episodes.py \
+    --task_name sim_dataset_i \
+    --ckpt_dir ckpt5/pretrained_right \
+    --dataset_dir data5/wait_right_padded \
+    --policy_class ACT \
+    --kl_weight 10 --chunk_size 75 --hidden_dim 512 --batch_size 32 --dim_feedforward 3200 \
+    --num_epochs 40000 --lr 1e-5 \
+    --seed 0 --arm right --num_episodes 200 --num_workers 4 \
+    --persistent_workers \
+    --prefetch_factor 2 \
+    --use_cache \
+    --use_cuda_graph \
+    --validation_interval 100 --episode_len 370
+
+
 
 
 python3 evaluate_policy_switcher.py \
     --task_name sim_many_cubes \
-    --ckpt_dual ckpt4/pretrained_c \
-    --ckpt_independent_dual ckpt4/pretrained_c \
+    --ckpt_dual ckpt5/pretrained_c \
+    --ckpt_independent_dual ckpt5/pretrained_c \
     --policy_class ACT \
     --chunk_size 100 \
     --num_rollouts 10 \
     --max_timesteps 700 \
     --match_pretrain_coop_env \
     --onscreen_render
+
 --------------------------------------------------------------------------------------------------
 #ハイレベルのため
 # データセット画像ラベリング
@@ -144,16 +194,17 @@ python3 state_switcher.py \
 
 python3 state_switcher.py \
         --task_name sim_many_cubes \
-        --ckpt_dual ckpt4/pretrained_c  \
-        --ckpt_left ckpt4/pretrained_left  \
-        --ckpt_right ckpt4/pretrained_right  \
-        --state_ckpt state_classifier_best.pth \
+        --ckpt_dual ckpt5/overall_c_20000  \
+        --ckpt_left ckpt5/pretrained_left  \
+        --ckpt_right ckpt5/pretrained_right  \
+        --state_ckpt old_state_classifier_best.pth \
         --chunk_size 75 \
         --temporal_agg_k 0.03  \
-        --warmup_steps 50 --num_rollouts 10  --episode_len 3000 --seed 2 \
-        --sequence_file sequences.csv --hl_update_at_home_only --hl_update_interval 50 --no_temporal_agg --onscreen_render --save_stats_path hie_evaluation_results.txt --save_video videos/test_random_hie
+        --num_rollouts 10  --episode_len 3000 --seed 2 \
+        --sequence_file original_sequences.csv --hl_update_at_home_only --hl_update_interval 50 --no_temporal_agg \
+        --onscreen_render --save_stats_path hie_evaluation_results3.txt --save_video videos/test2_random_hie --debug_scripted_coop_low_level_only
 
-
+python3 state_switcher.py         --task_name sim_many_cubes         --ckpt_dual ckpt5/pretrained_c          --ckpt_left ckpt5/pretrained_left          --ckpt_right ckpt5/pretrained_right          --state_ckpt state_classifier_best.pth         --chunk_size 75         --temporal_agg_k 0.03          --num_rollouts 10  --episode_len 3000 --seed 2         --sequence_file sequences.csv --hl_update_at_home_only --hl_update_interval 50 --no_temporal_agg --save_stats_path hie_evaluation_results2.txt --save_video videos/test2_random_hie
 
 python3 state_switcher.py \
         --task_name sim_many_cubes \
@@ -167,14 +218,57 @@ python3 state_switcher.py \
         --sequence_file sequences.csv --no_temporal_agg --onscreen_render --hl_oracle_metadata_csv random_dryrun_metadata.csv
 
 
-python3 event_based_evaluator.py \
---task_name sim_many_cubes \
---cls_ckpt state_classifier_best.pth \
---ckpt_dual ckpt4/pretrained_c \
---ckpt_left ckpt4/pretrained_left \
---ckpt_right ckpt4/pretrained_right \
---chunk_size 75 \
---num_rollouts 10 \
---seed 2 \
---color_sequence rgrbrbrggb \
---onscreen_render
+python3 evaluate_policy_switcher.py\
+ --task_name sim_many_cubes \
+ --ckpt_dual ckpt5/pretrained_c \
+ --policy_class ACT \
+ --chunk_size 75 \
+ --num_rollouts 10 \
+  --episode_len 1000 --seed 2 \
+  --coop_only \
+  --no_temporal_agg \
+  --onscreen_render \
+  --save_stats_path coop_only_results.txt \
+  --save_video videos/coop_only
+
+
+
+
+
+
+
+
+
+
+
+
+python3 hierarchical_policy.py \
+  --task_name sim_many_cubes \
+  --ckpt_dual ckpt5/pretrained_c_60000 \
+  --ckpt_left ckpt5/pretrained_left \
+  --ckpt_right ckpt5/pretrained_right \
+  --state_ckpt old_state_classifier_best.pth \
+  --chunk_size 75 \
+  --num_rollouts 10 \
+  --episode_len 3000 \
+  --seed 2 \
+  --sequence_file original_sequences.csv \
+  --hl_update_at_home_only \
+  --hl_update_interval 50 \
+  --no_temporal_agg \
+  --onscreen_render \
+  --save_stats_path hie_eval_simplified.csv \
+   --save_video videos/hie_simplified
+
+python3 hierarchical_policy.py \
+    --task_name sim_many_cubes \
+    --ckpt_dual ckpt5/pretrained_c_60000 \
+    --ckpt_left ckpt5/pretrained_left \
+    --ckpt_right ckpt5/pretrained_right \
+    --state_ckpt old_state_classifier_best.pth \
+    --sequence_file original_sequences.csv \
+    --num_rollouts 10 \
+    --episode_len 3000 \
+    --seed 2 \
+    --onscreen_render \
+    --sequence_success_n 20 --save_video videos/hie_simplified --hl_oracle_metadata_csv random_dryrun_metadata.csv

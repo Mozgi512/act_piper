@@ -772,7 +772,9 @@ def load_state_classifier(ckpt_path, device='cuda'):
 
 def main(args):
     set_seed(args.seed)
-    scripted_ll_test_mode = bool(getattr(args, 'debug_scripted_low_level', False) or getattr(args, 'unit_test_scripted_low_level', False))
+    scripted_ll_override_all_mode = bool(getattr(args, 'debug_scripted_low_level', False) or getattr(args, 'unit_test_scripted_low_level', False))
+    scripted_ll_coop_only_mode = bool(getattr(args, 'debug_scripted_coop_low_level_only', False))
+    scripted_ll_test_mode = bool(scripted_ll_override_all_mode or scripted_ll_coop_only_mode)
     
     task_name = args.task_name
     ckpt_dual = args.ckpt_dual
@@ -1232,6 +1234,7 @@ def main(args):
         coop_goal_pair_start_step = {}  # {(g_idx, b_idx): step_when_both_on_goal}
         coop_display_lock_pair = None   # (g_idx, b_idx) locked pair for coop shadow display
         active_coop_pair = None         # (g_idx, b_idx) currently assigned coop pair
+        coop_pair_release_streak = {}   # {(g_idx, b_idx): consecutive non-contact steps after grasp}
         
         # Magnet Tracking
         reset_magnet_logic(env.physics, args.color_sequence)
@@ -2361,20 +2364,38 @@ def main(args):
                 
                 target_qpos = action
 
-                # Debug mode: override learned low-level with scripted policy trajectory used in data generation.
+                # Debug mode: run scripted low-level in background and optionally override qpos.
                 if scripted_ll_test_mode and debug_ee_env is not None and debug_scripted_policy is not None and debug_ts_ee is not None:
-                    # Keep EE debug environment object poses aligned with current main env state.
-                    sync_debug_ee_objects_from_main(ts, debug_ee_env)
-                    debug_ts_ee = type('TS', (object,), {'observation': debug_ee_env.task.get_observation(debug_ee_env.physics)})()
-                    debug_scripted_policy.process_command_buffer(debug_ts_ee)
-                    ee_action = debug_scripted_policy(debug_ts_ee)
-                    debug_ts_ee = debug_ee_env.step(ee_action)
-                    target_qpos = np.array(debug_ts_ee.observation['qpos']).copy()
-                    # Match replay conversion used in data generation/recording
-                    gripper_ctrl = debug_ts_ee.observation.get('gripper_ctrl', None)
-                    if gripper_ctrl is not None and len(gripper_ctrl) >= 2:
-                        target_qpos[6] = PUPPET_GRIPPER_POSITION_NORMALIZE_FN(gripper_ctrl[0])
-                        target_qpos[13] = PUPPET_GRIPPER_POSITION_NORMALIZE_FN(gripper_ctrl[1])
+                    try:
+                        # Keep EE debug environment object poses aligned with current main env state.
+                        sync_debug_ee_objects_from_main(ts, debug_ee_env)
+                        debug_ts_ee = type('TS', (object,), {'observation': debug_ee_env.task.get_observation(debug_ee_env.physics)})()
+                        debug_scripted_policy.process_command_buffer(debug_ts_ee)
+                        ee_action = debug_scripted_policy(debug_ts_ee)
+                        debug_ts_ee = debug_ee_env.step(ee_action)
+                        use_scripted_override = scripted_ll_override_all_mode or (
+                            scripted_ll_coop_only_mode and plan_l_state == 'COOP' and plan_r_state == 'COOP'
+                        )
+                        if use_scripted_override:
+                            target_qpos = np.array(debug_ts_ee.observation['qpos']).copy()
+                            # Match replay conversion used in data generation/recording
+                            gripper_ctrl = debug_ts_ee.observation.get('gripper_ctrl', None)
+                            if gripper_ctrl is not None and len(gripper_ctrl) >= 2:
+                                target_qpos[6] = PUPPET_GRIPPER_POSITION_NORMALIZE_FN(gripper_ctrl[0])
+                                target_qpos[13] = PUPPET_GRIPPER_POSITION_NORMALIZE_FN(gripper_ctrl[1])
+                    except Exception as e:
+                        print(f"[Debug Scripted LL] Step failed ({type(e).__name__}): {e}. Falling back to learned action for this step.")
+                        try:
+                            if debug_ee_env is not None:
+                                del debug_ee_env
+                            debug_ee_env, debug_scripted_policy, debug_ts_ee = setup_debug_scripted_low_level(
+                                ts,
+                                getattr(args, 'current_command_sequence', None)
+                            )
+                            print("[Debug Scripted LL] Reinitialized debug EE runner.")
+                        except Exception as reset_e:
+                            print(f"[Debug Scripted LL] Reinit failed ({type(reset_e).__name__}): {reset_e}")
+                            debug_ee_env, debug_scripted_policy, debug_ts_ee = None, None, None
                 
                 # --- Safety Clamp REMOVED for debugging ---
                 diff = target_qpos - qpos_numpy
@@ -2437,6 +2458,27 @@ def main(args):
                 except:
                     return None
 
+            def get_cube_z(idx):
+                try:
+                    body_id = env.physics.model.name2id(f'cube_{idx}', 'body')
+                    return float(env.physics.data.xpos[body_id][2])
+                except Exception:
+                    return 0.0
+
+            def is_cube_removed_runtime(idx):
+                if idx in removed_objects:
+                    return True
+                try:
+                    geom_id = env.physics.model.name2id(f'cube_{idx}', 'geom')
+                    alpha = float(env.physics.model.geom_rgba[geom_id, 3])
+                except Exception:
+                    alpha = 1.0
+                z_pos = get_cube_z(idx)
+                return (alpha <= 0.01) or (z_pos < -1.0)
+
+            def is_pair_completed(g_idx, b_idx, completed_pair_set):
+                return ((g_idx, b_idx) in completed_pair_set) or ((b_idx, g_idx) in completed_pair_set)
+
             goal_non_coop = {
                 idx for idx in in_goal
                 if (get_color_for_idx(idx) not in ['g', 'b']) and (idx not in coop_member_indices)
@@ -2447,6 +2489,121 @@ def main(args):
             }
             pending_removal.update(goal_non_coop)
             pending_removal.update(cushion_non_coop)
+            forced_pair_removal = set()
+
+            grasped_for_bg = get_grasped_cubes(env.physics)
+            touching_for_bg = get_touched_cubes_per_arm(env.physics)
+            grasped_now_for_bg = grasped_for_bg['left'] | grasped_for_bg['right']
+            ever_grasped_objects.update(grasped_now_for_bg)
+
+            # BG failure handling:
+            # If a cooperative G/B pair has been grasped at least once but is not assembled,
+            # force-remove the pair when either cube reaches goal plate, touches cushion,
+            # or falls below z threshold.
+            bg_candidate_pairs = []
+            if active_coop_pair is not None and (
+                is_cube_removed_runtime(active_coop_pair[0]) or is_cube_removed_runtime(active_coop_pair[1])
+            ):
+                active_coop_pair = None
+            if coop_display_lock_pair is not None and (
+                is_cube_removed_runtime(coop_display_lock_pair[0]) or is_cube_removed_runtime(coop_display_lock_pair[1])
+            ):
+                coop_display_lock_pair = None
+            if active_coop_pair is not None:
+                bg_candidate_pairs.append(active_coop_pair)
+            if coop_display_lock_pair is not None and coop_display_lock_pair not in bg_candidate_pairs:
+                bg_candidate_pairs.append(coop_display_lock_pair)
+
+            def add_gb_pair_from_indices(indices):
+                if not indices:
+                    return
+                g_idx_local = None
+                b_idx_local = None
+                for idx_local in indices:
+                    if is_cube_removed_runtime(idx_local):
+                        continue
+                    c_local = get_color_for_idx(idx_local)
+                    if c_local == 'g' and g_idx_local is None:
+                        g_idx_local = idx_local
+                    elif c_local == 'b' and b_idx_local is None:
+                        b_idx_local = idx_local
+                if g_idx_local is not None and b_idx_local is not None:
+                    pair_local = (g_idx_local, b_idx_local)
+                    pair_local_rev = (b_idx_local, g_idx_local)
+                    if pair_local not in bg_candidate_pairs and pair_local_rev not in bg_candidate_pairs:
+                        bg_candidate_pairs.append(pair_local)
+
+            add_gb_pair_from_indices(final_target_indices_c if 'final_target_indices_c' in locals() else [])
+            add_gb_pair_from_indices(current_target_indices_c if 'current_target_indices_c' in locals() else [])
+
+            ever_contacted_objects = set(ever_grasped_objects)
+            ever_contacted_objects.update(acc_touched_left)
+            ever_contacted_objects.update(acc_touched_right)
+
+            active_pair_keys = set()
+
+            for pair in bg_candidate_pairs:
+                try:
+                    g_idx, b_idx = pair
+                except Exception:
+                    continue
+
+                if get_color_for_idx(g_idx) == 'b' and get_color_for_idx(b_idx) == 'g':
+                    g_idx, b_idx = b_idx, g_idx
+
+                if get_color_for_idx(g_idx) != 'g' or get_color_for_idx(b_idx) != 'b':
+                    continue
+
+                if is_cube_removed_runtime(g_idx) or is_cube_removed_runtime(b_idx):
+                    coop_pair_release_streak.pop((g_idx, b_idx), None)
+                    coop_pair_release_streak.pop((b_idx, g_idx), None)
+                    continue
+
+                pair_key = (g_idx, b_idx)
+                active_pair_keys.add(pair_key)
+
+                if is_pair_completed(g_idx, b_idx, completed_pairs):
+                    coop_pair_release_streak.pop(pair_key, None)
+                    continue
+
+                ever_contacted_pair = (g_idx in ever_contacted_objects) or (b_idx in ever_contacted_objects)
+                if not ever_contacted_pair:
+                    coop_pair_release_streak.pop(pair_key, None)
+                    continue
+
+                touching_pair_now = (
+                    (g_idx in touching_for_bg['left']) or (b_idx in touching_for_bg['left']) or
+                    (g_idx in touching_for_bg['right']) or (b_idx in touching_for_bg['right'])
+                )
+                if touching_pair_now:
+                    coop_pair_release_streak[pair_key] = 0
+                else:
+                    coop_pair_release_streak[pair_key] = coop_pair_release_streak.get(pair_key, 0) + 1
+
+                if coop_pair_release_streak.get(pair_key, 0) >= 20:
+                    print(f"[Step {t}] BG fail pair removal scheduled: G{g_idx}+B{b_idx} reason=release20")
+                    forced_pair_removal.update([g_idx, b_idx])
+                    continue
+
+                fail_goal = (g_idx in in_goal) or (b_idx in in_goal)
+                fail_cushion = (g_idx in on_cushion) or (b_idx in on_cushion)
+                fail_fall = (get_cube_z(g_idx) < -0.1) or (get_cube_z(b_idx) < -0.1)
+
+                if fail_goal or fail_cushion or fail_fall:
+                    reason_tokens = []
+                    if fail_goal:
+                        reason_tokens.append('goal')
+                    if fail_cushion:
+                        reason_tokens.append('cushion')
+                    if fail_fall:
+                        reason_tokens.append('fall')
+                    reason = '/'.join(reason_tokens)
+                    print(f"[Step {t}] BG fail pair removal scheduled: G{g_idx}+B{b_idx} reason={reason}")
+                    forced_pair_removal.update([g_idx, b_idx])
+
+            for stale_pair in list(coop_pair_release_streak.keys()):
+                if stale_pair not in active_pair_keys:
+                    del coop_pair_release_streak[stale_pair]
 
             # Cooperative pair delayed removal latch:
             # start timer when ACTIVE pair is marked completed by env reward logic.
@@ -2477,7 +2634,7 @@ def main(args):
                     print(f"[Step {t}] Coop pair completion latched: G{g_idx}+B{b_idx}")
             
             # 3. Remove if NOT protected (touched/grasped/nearby)
-            if pending_removal or coop_goal_pair_start_step:
+            if pending_removal or coop_goal_pair_start_step or forced_pair_removal:
                  grasped = get_grasped_cubes(env.physics)
                  grasped_now = grasped['left'] | grasped['right']
                  ever_grasped_objects.update(grasped_now)
@@ -2501,6 +2658,8 @@ def main(args):
                  # Standard single-object removal (non-coop goal + cushion)
                  to_remove = set(pending_removal - protected_any)
                  to_remove.update(released_grasped)
+                 to_remove.update(forced_pair_removal)
+                 to_remove = {idx for idx in to_remove if not is_cube_removed_runtime(idx)}
 
                  # Cooperative pair delayed joint removal
                  REMOVAL_DELAY_STEPS = int(1.0 / DT)
@@ -2519,6 +2678,10 @@ def main(args):
                      removed_objects.update(to_remove)
                      ever_grasped_objects -= to_remove
                      pending_removal -= to_remove
+
+                     for pair_key in list(coop_pair_release_streak.keys()):
+                         if pair_key[0] in to_remove or pair_key[1] in to_remove:
+                             del coop_pair_release_streak[pair_key]
 
                      # Drop stale pair timers that include removed cubes
                      for pair_key in list(coop_goal_pair_start_step.keys()):
@@ -2599,6 +2762,7 @@ def main(args):
                 coop_goal_pair_start_step.clear()
                 coop_display_lock_pair = None
                 active_coop_pair = None
+                coop_pair_release_streak.clear()
                 magnetized_pairs.clear() # FIX: Clear magnet state!
                 
                 # Reset State Tracking
@@ -2834,6 +2998,7 @@ if __name__ == '__main__':
     parser.add_argument('--sequence_file', action='store', type=str, help='Path to CSV sequence file (Optional override for color_sequence)', default=None)
     parser.add_argument('--debug_scripted_low_level', action='store_true', help='Debug mode: override low-level actions with data-generation scripted policy (InteractivePolicy in EE env)')
     parser.add_argument('--unit_test_scripted_low_level', action='store_true', help='Unit-test mode: run low-level using the data-generation scripted policy (alias of --debug_scripted_low_level)')
+    parser.add_argument('--debug_scripted_coop_low_level_only', action='store_true', help='Debug mode: override only COOP/COOP low-level steps with scripted policy; keep independent low-level learned')
     parser.add_argument('--hl_oracle_metadata_csv', action='store', type=str, default=None,
                         help='Optional metadata CSV (e.g., dryrun_sequence_metadata output) to replay handcrafted high-level mode transitions')
 

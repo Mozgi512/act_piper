@@ -8,6 +8,7 @@ import argparse
 import matplotlib.pyplot as plt
 import h5py
 import collections
+import csv
 
 from piper_constants import PUPPET_GRIPPER_POSITION_NORMALIZE_FN, SIM_TASK_CONFIGS, BELT_MOVE_SPEED, PUPPET_GRIPPER_POSITION_OPEN, PUPPET_GRIPPER_POSITION_CLOSE
 from piper_ee_sim_env import make_ee_sim_env
@@ -27,7 +28,171 @@ def main(args):
         print("Note: Run with --onscreen_render to see the visualization.")
     inject_noise = False
     render_cam_name = 'top'
-    
+    use_coop_shadow_obs = bool(args.get('coop_shadow_obs', False))
+
+    def append_success_init_positions(csv_path, episode_id, color_sequence, command_queue, env_state_70):
+        os.makedirs(os.path.dirname(csv_path), exist_ok=True)
+        row = {
+            'episode': int(episode_id),
+            'commands': ''.join(command_queue) if command_queue is not None else '',
+            'color_sequence': ''.join(color_sequence) if color_sequence is not None else '',
+        }
+        cube_state = np.array(env_state_70).reshape(10, 7)
+        for i in range(10):
+            row[f'cube{i}_x'] = float(cube_state[i, 0])
+            row[f'cube{i}_y'] = float(cube_state[i, 1])
+            row[f'cube{i}_z'] = float(cube_state[i, 2])
+
+        fieldnames = ['episode', 'commands', 'color_sequence']
+        for i in range(10):
+            fieldnames.extend([f'cube{i}_x', f'cube{i}_y', f'cube{i}_z'])
+
+        file_exists = os.path.isfile(csv_path)
+        with open(csv_path, 'a', newline='') as f:
+            writer = csv.DictWriter(f, fieldnames=fieldnames)
+            if not file_exists:
+                writer.writeheader()
+            writer.writerow(row)
+
+    def is_home_at_episode_end(replay_steps):
+        if replay_steps is None or len(replay_steps) < 2:
+            return False, None, None
+        q_home = np.array(replay_steps[0].observation['qpos']).copy()
+        q_last = np.array(replay_steps[-1].observation['qpos']).copy()
+
+        left_arm_diff = np.max(np.abs(q_last[:6] - q_home[:6]))
+        right_arm_diff = np.max(np.abs(q_last[7:13] - q_home[7:13]))
+        arm_diff = float(max(left_arm_diff, right_arm_diff))
+        grip_diff = float(max(abs(q_last[6] - q_home[6]), abs(q_last[13] - q_home[13])))
+
+        ok = (arm_diff <= float(args.get('end_home_arm_threshold', 0.20))) and \
+             (grip_diff <= float(args.get('end_home_gripper_threshold', 0.35)))
+        return ok, arm_diff, grip_diff
+
+    def set_cube_alpha(physics, alpha_value):
+        for gid in range(physics.model.ngeom):
+            gname = physics.model.id2name(gid, 'geom')
+            if gname is None:
+                continue
+            if gname == 'cube' or gname.startswith('cube_'):
+                physics.model.geom_rgba[gid, 3] = float(alpha_value)
+        physics.forward()
+
+    def sync_shadow_env(main_physics, shadow_physics):
+        shadow_physics.data.qpos[:] = main_physics.data.qpos[:]
+        shadow_physics.data.qvel[:] = main_physics.data.qvel[:]
+        shadow_physics.forward()
+
+    def set_shadow_visible_bg_pair(physics, pair_indices):
+        visible = set(pair_indices) if pair_indices else set()
+        for i in range(10):
+            try:
+                gid = physics.model.name2id(f'cube_{i}', 'geom')
+                physics.model.geom_rgba[gid, 3] = 1.0 if i in visible else 0.0
+            except Exception:
+                continue
+        physics.forward()
+
+    def should_hold_right_for_pending_r(policy, ts_for_policy):
+        """Return (hold, target_idx, target_x) for right independent pick when target red is left of x=0."""
+        if policy is None or ts_for_policy is None:
+            return False, None, None
+        if not hasattr(policy, 'command_buffer') or not hasattr(policy, 'scan_conveyor'):
+            return False, None, None
+
+        env_state = np.array(ts_for_policy.observation.get('env_state', []))
+
+        def cube_x_from_env_state(cube_idx):
+            if cube_idx is None or env_state.shape[0] < 70:
+                return None
+            try:
+                return float(env_state[int(cube_idx) * 7 + 0])
+            except Exception:
+                return None
+
+        def right_track_idx_from_policy():
+            # Current interpolated waypoint first
+            curr_wp = getattr(policy, 'curr_right_waypoint', None)
+            if isinstance(curr_wp, dict) and 'track_idx' in curr_wp:
+                return int(curr_wp['track_idx'])
+            # Then upcoming trajectory waypoints
+            traj_r = getattr(policy, 'right_trajectory', None)
+            if isinstance(traj_r, list):
+                for wp in traj_r:
+                    if isinstance(wp, dict) and 'track_idx' in wp:
+                        return int(wp['track_idx'])
+            return None
+
+        # Cooperative is active now -> do not force independent right hold
+        if getattr(policy, 'current_coop_pair', None) is not None:
+            return False, None, None
+
+        # If right arm is already executing independent pick, keep enforcing hold until target crosses x>=0
+        right_seg = getattr(policy, 'current_right_segment', None)
+        if isinstance(right_seg, dict) and right_seg.get('type') == 'independent':
+            active_idx = right_track_idx_from_policy()
+            active_x = cube_x_from_env_state(active_idx)
+            if active_idx is not None and active_x is not None:
+                return active_x < 0.0, int(active_idx), float(active_x)
+
+        # If next command is cooperative, it has priority over any future independent right pick
+        if policy.command_buffer:
+            head_cmd = str(policy.command_buffer[0]).upper()
+            if head_cmd == 'C':
+                return False, None, None
+        else:
+            return False, None, None
+
+        top_arm = getattr(policy, 'top_arm', 'left')
+        base_arm = getattr(policy, 'base_arm', 'right')
+        pending_right_pick = False
+        for cmd in policy.command_buffer:
+            cmd_u = str(cmd).upper()
+            if cmd_u == 'C':
+                break
+            if cmd_u == 'R':
+                pending_right_pick = True
+                break
+            if cmd_u == 'I':
+                pending_right_pick = True
+                break
+            if cmd_u == 'T' and top_arm == 'right':
+                pending_right_pick = True
+                break
+            if cmd_u == 'B' and base_arm == 'right':
+                pending_right_pick = True
+                break
+        if not pending_right_pick:
+            return False, None, None
+
+        reds = policy.scan_conveyor(ts_for_policy, 'r')
+        if not reds:
+            return False, None, None
+        target_idx, target_x, _ = reds[0]
+        target_x = float(target_x)
+        return target_x < 0.0, int(target_idx), target_x
+
+    def delay_right_plan_timeline(policy, delta_t=1):
+        """Delay right-arm internal plan clock to prevent catch-up warp after HOLD override."""
+        if policy is None:
+            return
+        dt = int(delta_t)
+        if dt <= 0:
+            return
+
+        curr_wp = getattr(policy, 'curr_right_waypoint', None)
+        if isinstance(curr_wp, dict) and 't' in curr_wp:
+            curr_wp['t'] += dt
+
+        traj_r = getattr(policy, 'right_trajectory', None)
+        if isinstance(traj_r, list):
+            for wp in traj_r:
+                if isinstance(wp, dict) and 't' in wp:
+                    wp['t'] += dt
+
+        if hasattr(policy, 'last_action_end_t') and policy.last_action_end_t is not None:
+            policy.last_action_end_t += dt
+
     command_sequence_str = args['commands']
     if command_sequence_str:
         command_queue_template = list(command_sequence_str)
@@ -44,8 +209,8 @@ def main(args):
             if c not in ['r', 'g', 'b']:
                 raise ValueError(f"Invalid color '{c}' in sequence. Use only 'r', 'g', 'b'")
 
-    if not args.get('pretrain_mode') and not args.get('sequence_file') and not command_sequence_str:
-        parser.error("--commands is required unless --pretrain_mode or --sequence_file is specified.")
+    if not args.get('pretrain_mode') and not args.get('wait_only_mode') and not args.get('sequence_file') and not command_sequence_str:
+        parser.error("--commands is required unless --pretrain_mode or --sequence_file or --wait_only_mode is specified.")
 
 
     if not os.path.isdir(dataset_dir):
@@ -86,6 +251,7 @@ def main(args):
         episode_success = False
         
         while retry_count < max_retries_per_episode and not episode_success:
+            independent_right_target_idx = None
             if retry_count > 0:
                 print(f'Episode {episode_idx}: Retry attempt {retry_count}/{max_retries_per_episode}')
             else:
@@ -111,7 +277,6 @@ def main(args):
 
             # Sequence File Logic
             if args.get('sequence_file'):
-                import csv
                 seq_file = args['sequence_file']
                 
                 # 1. Read all sequences
@@ -231,6 +396,7 @@ def main(args):
                     # Independent: Commands = I
                     command_sequence_str = "I"
                     command_queue_template = list(command_sequence_str)
+                    independent_right_target_idx = int(r_idx)
                 
                     # Base: random g/b for all
                     c_list = np.random.choice(['g', 'b'], size=10).tolist()
@@ -277,9 +443,6 @@ def main(args):
             env = make_ee_sim_env(task_name, camera_names=ee_cameras) 
             ts = env.reset()
             episode = [ts]
-        
-            policy = InteractivePolicy(inject_noise=inject_noise, color_sequence=color_seq)
-            policy.init_pose(ts)
 
             if onscreen_render:
                  import cv2
@@ -290,46 +453,99 @@ def main(args):
                  except:
                      pass
 
-        
-        
-            # Schedule all commands upfront (new async system)
-            for cmd in command_queue_template:
-                policy.schedule_command(cmd, ts)
-        
-            # Loop for EE rollout
-            # Use a large max_steps to allow dynamic termination
-            max_steps = 3000 
-            for step in range(max_steps):
-                # Process command buffer (async execution)
-                policy.process_command_buffer(ts)
-            
-                # Dynamic termination: if buffer is empty and both arms are free, done
-                if not policy.command_buffer:
-                    left_free = policy.is_arm_free(True, step)
-                    right_free = policy.is_arm_free(False, step)
-                    if left_free and right_free:
-                        print(f"  [EE] All tasks completed. Terminating at step {step}")
-                        break # Break from loop, then finalize and print
+            if args.get('wait_only_mode'):
+                wait_steps = int(args.get('wait_only_steps', 200))
+                set_cube_alpha(env.physics, 0.0)
+                ee_coop_pair_history = [None]
+                hold_action = np.concatenate([
+                    ts.observation['mocap_pose_left'],
+                    np.array([1.0]),
+                    ts.observation['mocap_pose_right'],
+                    np.array([1.0]),
+                ])
+                for step in range(wait_steps):
+                    ts = env.step(hold_action)
+                    episode.append(ts)
+                    ee_coop_pair_history.append(None)
+                left_segments = [{'start': 0, 'end': wait_steps, 'type': 'independent'}]
+                right_segments = [{'start': 0, 'end': wait_steps, 'type': 'independent'}]
+                print(f"  [EE] Wait-only rollout finished at step {wait_steps}")
+            else:
+                policy = InteractivePolicy(inject_noise=inject_noise, color_sequence=color_seq)
+                policy.init_pose(ts)
+                ee_coop_pair_history = [tuple(policy.current_coop_pair) if getattr(policy, 'current_coop_pair', None) is not None else None]
+                env_shadow_coop = None
+                if use_coop_shadow_obs:
+                    shadow_cameras = camera_names if onscreen_render else []
+                    env_shadow_coop = make_ee_sim_env(task_name, camera_names=shadow_cameras)
+                    _ = env_shadow_coop.reset()
 
-                action = policy(ts)
-                ts = env.step(action)
-                episode.append(ts)
-            
-                # Optional: Render
-                if onscreen_render:
-                    # Render every 5 steps (reduced from 2)
-                    if step % 5 == 0:
-                        img_rgb = ts.observation['images']['top']
-                        img_bgr = cv2.cvtColor(img_rgb, cv2.COLOR_RGB2BGR)
-                        # Draw vertical line at center (x=160) to distinguish left/right
-                        cv2.line(img_bgr, (160, 0), (160, 240), (0, 255, 0), 1)
-                        cv2.imshow(window_name, img_bgr)
-                        cv2.waitKey(1)
- 
+                def get_policy_ts(main_ts):
+                    if env_shadow_coop is None:
+                        return main_ts
+                    sync_shadow_env(env.physics, env_shadow_coop.physics)
+                    pair = policy.current_coop_pair if hasattr(policy, 'current_coop_pair') else None
+                    set_shadow_visible_bg_pair(env_shadow_coop.physics, pair)
+                    obs_shadow = env_shadow_coop.task.get_observation(env_shadow_coop.physics)
+                    return type('TS', (object,), {'observation': obs_shadow})()
 
-            # Finalize any open segments in the policy metadata
-            policy.finalize(step)
-            print(f"  [EE] Episode finished at step {step}")
+                # Schedule all commands upfront (new async system)
+                for cmd in command_queue_template:
+                    policy.schedule_command(cmd, ts)
+
+                # Loop for EE rollout
+                # Use a large max_steps to allow dynamic termination
+                max_steps = 3000 
+                for step in range(max_steps):
+                    ts_policy = get_policy_ts(ts)
+                    # Process command buffer (async execution)
+                    policy.process_command_buffer(ts_policy)
+                    hold_right, hold_idx, hold_x = should_hold_right_for_pending_r(policy, ts_policy)
+
+                    # Dynamic termination: if buffer is empty and both arms are free, done
+                    if not policy.command_buffer:
+                        left_free = policy.is_arm_free(True, step)
+                        right_free = policy.is_arm_free(False, step)
+                        if left_free and right_free:
+                            print(f"  [EE] All tasks completed. Terminating at step {step}")
+                            break # Break from loop, then finalize and print
+
+                    action = policy(ts_policy)
+                    if hold_right:
+                        right_home = np.concatenate([
+                            np.array(policy.init_right_pose['xyz']).copy(),
+                            np.array(policy.init_right_pose['quat']).copy(),
+                            np.array([1.0], dtype=np.float64),
+                        ])
+                        action[8:16] = right_home
+                        delay_right_plan_timeline(policy, delta_t=1)
+                        if step % 50 == 0:
+                            print(f"  [EE] HOLD right at home (pending R target idx={hold_idx}, x={hold_x:.4f} < 0)")
+                    ts = env.step(action)
+                    episode.append(ts)
+                    curr_pair = policy.current_coop_pair if hasattr(policy, 'current_coop_pair') else None
+                    ee_coop_pair_history.append(tuple(curr_pair) if curr_pair is not None else None)
+
+                    # Optional: Render
+                    if onscreen_render:
+                        # Render every 5 steps (reduced from 2)
+                        if step % 5 == 0:
+                            img_rgb = ts.observation['images']['top']
+                            img_bgr = cv2.cvtColor(img_rgb, cv2.COLOR_RGB2BGR)
+                            # Draw vertical line at center (x=160) to distinguish left/right
+                            cv2.line(img_bgr, (160, 0), (160, 240), (0, 255, 0), 1)
+                            cv2.imshow(window_name, img_bgr)
+                            cv2.waitKey(1)
+
+                # Finalize any open segments in the policy metadata
+                policy.finalize(step)
+                print(f"  [EE] Episode finished at step {step}")
+
+                # Save task segment metadata before deleting policy
+                left_segments = policy.left_segments.copy()
+                right_segments = policy.right_segments.copy()
+                if env_shadow_coop is not None:
+                    del env_shadow_coop
 
             # Capture Env State for Replay
             # env_state includes robot state + object poses
@@ -337,6 +553,29 @@ def main(args):
             # qpos structure: robot(16) + belt(1) + belt_ext(1) + 10 cubes (7*10) = 88
             # get_env_state returns qpos[18:18+70] -> The 10 cubes.
             subtask_info = episode[0].observation['env_state'].copy() 
+
+            if args.get('pretrain_mode') == 'independent' and independent_right_target_idx is not None:
+                right_init_x = float(subtask_info[independent_right_target_idx * 7 + 0])
+                if right_init_x < 0.0:
+                    print(
+                        f"Episode {episode_idx} Failed (Independent right target x<0: "
+                        f"idx={independent_right_target_idx}, x={right_init_x:.4f})"
+                    )
+                    retry_count += 1
+                    total_retries += 1
+                    del env
+                    if not args.get('wait_only_mode'):
+                        if 'env_shadow_coop' in locals() and env_shadow_coop is not None:
+                            del env_shadow_coop
+                        del policy
+                    if retry_count >= max_retries_per_episode:
+                        print(f"Episode {episode_idx} FAILED after {max_retries_per_episode} attempts. Skipping.")
+                        failed_sequences_count += 1
+                        episode_idx += 1
+                        break
+                    else:
+                        print(f"Retrying episode {episode_idx}...")
+                        continue
         
             # Extract Joint Trajectory
             joint_traj = [ts.observation['qpos'] for ts in episode]
@@ -394,12 +633,9 @@ def main(args):
             if max_jump > 0.2:
                  print(f"WARNING: Large joint jump detected! Max: {max_jump:.3f} rad/step")
 
-            # Save task segment metadata before deleting policy
-            left_segments = policy.left_segments.copy()
-            right_segments = policy.right_segments.copy()
-
             del env
-            del policy
+            if not args.get('wait_only_mode'):
+                del policy
 
             # ---------------------------------------------------------
             # 2. Joint Space Replay
@@ -407,6 +643,21 @@ def main(args):
             print(f'Episode {episode_idx}: Replaying in Joint space')
             print(f'  EE Episode Length: {len(episode)} steps')
             print(f'  Joint Trajectory Length: {len(joint_traj)} steps')
+
+            data_steps = max(0, len(joint_traj) - 1)
+            max_data_steps = args.get('max_data_steps', 0)
+            if max_data_steps and data_steps > int(max_data_steps):
+                print(f"Episode {episode_idx} Failed (Data steps exceeded: {data_steps}>{int(max_data_steps)})")
+                retry_count += 1
+                total_retries += 1
+                if retry_count >= max_retries_per_episode:
+                    print(f"Episode {episode_idx} FAILED after {max_retries_per_episode} attempts. Skipping.")
+                    failed_sequences_count += 1
+                    episode_idx += 1
+                    break
+                else:
+                    print(f"Retrying episode {episode_idx}...")
+                    continue
         
             if len(episode) != len(joint_traj):
                 print(f'  WARNING: Length mismatch! EE={len(episode)}, Joint={len(joint_traj)}')
@@ -427,7 +678,20 @@ def main(args):
                 replay_cameras = camera_names  # Need cameras for dataset images
             env = make_sim_env(task_name, camera_names=replay_cameras, time_limit=2000) # 2000s is plenty
             ts = env.reset()
+            if args.get('wait_only_mode'):
+                set_cube_alpha(env.physics, 0.0)
             episode_replay = [ts]
+            env_replay_shadow = None
+            episode_replay_shadow_images = None
+            if use_coop_shadow_obs:
+                shadow_replay_cameras = replay_cameras
+                env_replay_shadow = make_sim_env(task_name, camera_names=shadow_replay_cameras, time_limit=2000)
+                _ = env_replay_shadow.reset()
+                sync_shadow_env(env.physics, env_replay_shadow.physics)
+                init_pair = ee_coop_pair_history[0] if 'ee_coop_pair_history' in locals() and len(ee_coop_pair_history) > 0 else None
+                set_shadow_visible_bg_pair(env_replay_shadow.physics, init_pair)
+                obs_shadow0 = env_replay_shadow.task.get_observation(env_replay_shadow.physics)
+                episode_replay_shadow_images = [obs_shadow0['images']]
         
             # Cache joint IDs for object removal
             cube_joint_ids = {}
@@ -501,6 +765,14 @@ def main(args):
                                  del removal_timers[i]
                     except:
                         pass
+
+                if env_replay_shadow is not None:
+                    sync_shadow_env(env.physics, env_replay_shadow.physics)
+                    pair_idx = min(t + 1, len(ee_coop_pair_history) - 1) if 'ee_coop_pair_history' in locals() and len(ee_coop_pair_history) > 0 else 0
+                    pair_now = ee_coop_pair_history[pair_idx] if 'ee_coop_pair_history' in locals() and len(ee_coop_pair_history) > 0 else None
+                    set_shadow_visible_bg_pair(env_replay_shadow.physics, pair_now)
+                    obs_shadow = env_replay_shadow.task.get_observation(env_replay_shadow.physics)
+                    episode_replay_shadow_images.append(obs_shadow['images'])
         
             replay_time = time_module.time() - replay_start
             avg_step_time = np.mean(step_times) * 1000
@@ -519,16 +791,27 @@ def main(args):
             
             print(f"  Max reward achieved: {max_reward_achieved} / {expected_max_reward} expected")
 
+            end_home_ok, end_arm_diff, end_grip_diff = is_home_at_episode_end(episode_replay)
+            print(
+                f"  End-home check: ok={end_home_ok} arm_diff={end_arm_diff:.4f} "
+                f"grip_diff={end_grip_diff:.4f} "
+                f"(th_arm={args.get('end_home_arm_threshold', 0.20):.3f}, "
+                f"th_grip={args.get('end_home_gripper_threshold', 0.35):.3f})"
+            )
+
             # Verify Success based on:
             # 1. Metadata existence (segments)
             # 2. Max reward achieved
             if left_segments or right_segments:
-                if max_reward_achieved >= expected_max_reward:
-                    print(f"Episode {episode_idx} Successful (Metadata generated, Max reward achieved)")
+                if max_reward_achieved >= expected_max_reward and end_home_ok:
+                    print(f"Episode {episode_idx} Successful (Metadata generated, Max reward achieved, End-home satisfied)")
                     episode_success = True
                     success_count += 1
                 else:
-                    print(f"Episode {episode_idx} Failed (Max reward not achieved: {max_reward_achieved}/{expected_max_reward})")
+                    if max_reward_achieved < expected_max_reward:
+                        print(f"Episode {episode_idx} Failed (Max reward not achieved: {max_reward_achieved}/{expected_max_reward})")
+                    else:
+                        print(f"Episode {episode_idx} Failed (End-home not satisfied)")
                     retry_count += 1
                     total_retries += 1
             else:
@@ -547,12 +830,13 @@ def main(args):
                     print(f"Retrying episode {episode_idx}...")
                     # Clean up before retry
                     del env
+                    if env_replay_shadow is not None:
+                        del env_replay_shadow
                     del episode_replay
                     continue  # Retry the episode
         
         # Sequence File Status Update
         if args.get('sequence_file'):
-            import csv
             seq_file = args['sequence_file']
             
             # Update the row status
@@ -585,6 +869,18 @@ def main(args):
         if not episode_success:
             print(f"Episode {episode_idx} (Sequence {seq_idx if args.get('sequence_file') else '?'}) FAILED. Skipping save.")
             continue
+
+        # Save successful episode initial object positions to CSV
+        init_pos_csv_path = args.get('save_init_positions_csv')
+        if not init_pos_csv_path:
+            init_pos_csv_path = os.path.join(dataset_dir, 'successful_init_positions.csv')
+        append_success_init_positions(
+            init_pos_csv_path,
+            episode_idx,
+            color_seq,
+            command_queue_template,
+            subtask_info
+        )
 
             # ---------------------------------------------------------
             # 3. Save to HDF5
@@ -632,8 +928,12 @@ def main(args):
             data_dict['/observations/qvel'].append(ts.observation['qvel'])
             data_dict['/action'].append(action)
             for cam_name in camera_names:
-                if cam_name in ts.observation['images']:
-                    data_dict[f'/observations/images/{cam_name}'].append(ts.observation['images'][cam_name])
+                if use_coop_shadow_obs and episode_replay_shadow_images is not None:
+                    if cam_name in episode_replay_shadow_images[k]:
+                        data_dict[f'/observations/images/{cam_name}'].append(episode_replay_shadow_images[k][cam_name])
+                else:
+                    if cam_name in ts.observation['images']:
+                        data_dict[f'/observations/images/{cam_name}'].append(ts.observation['images'][cam_name])
             
         # Save
         if not args['no_save_data']:
@@ -679,6 +979,8 @@ def main(args):
             print(f'Saving: {time.time() - t0:.1f} secs\n')
 
         del env
+        if env_replay_shadow is not None:
+            del env_replay_shadow
         del episode_replay
     
         print(f"DEBUG: Incrementing episode_idx from {episode_idx} to {episode_idx+1}")
@@ -696,11 +998,18 @@ if __name__ == '__main__':
     parser.add_argument('--num_episodes', action='store', type=int, help='num_episodes', required=True)
     parser.add_argument('--commands', action='store', type=str, help='Command sequence (e.g. ICI)', default=None)
     parser.add_argument('--pretrain_mode', action='store', type=str, choices=['independent', 'cooperative'], help='Pre-training mode to auto-generate patterns')
+    parser.add_argument('--wait_only_mode', action='store_true', help='Generate wait-only data: no visible objects and no task execution')
+    parser.add_argument('--wait_only_steps', action='store', type=int, default=200, help='Number of steps for wait-only rollout')
     parser.add_argument('--sequence_file', action='store', type=str, help='CSV file with sequences and commands', default=None)
     parser.add_argument('--color_sequence', action='store', type=str, help='Color sequence (e.g. rrggbb for 10 objects)', default=None)
     parser.add_argument('--onscreen_render', action='store_true')
     parser.add_argument('--no_save_data', action='store_true', help='Do not save HDF5 data')
     parser.add_argument('--test', action='store_true', help='Use unused sequences and mark as test')
+    parser.add_argument('--max_data_steps', action='store', type=int, default=0, help='If >0, fail an episode attempt when data step count exceeds this limit')
+    parser.add_argument('--end_home_arm_threshold', action='store', type=float, default=0.20, help='Max allowed arm joint deviation from start pose at episode end')
+    parser.add_argument('--end_home_gripper_threshold', action='store', type=float, default=0.35, help='Max allowed gripper deviation from start pose at episode end')
+    parser.add_argument('--save_init_positions_csv', action='store', type=str, default=None, help='Optional path to save successful episodes initial object positions CSV')
+    parser.add_argument('--coop_shadow_obs', action='store_true', help='Create coop shadow EE env, show only current BG pair, and use shadow observation for policy input')
     
     args = parser.parse_args()
     main(vars(args))

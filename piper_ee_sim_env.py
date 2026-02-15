@@ -593,24 +593,30 @@ class ManyCubesEETask(BimanualPiperEETask):
             # Interactive Mode Override: Linear Queue 0..9 (Same logic as piper_sim_env)
             # Interactive Mode Override: Linear Queue 0..9 (Same logic as piper_sim_env)
             if MANYCUBES_COLORS[0] is not None:
-                 start_x = 0.0
-                 spacing = 0.15
-                 
-                 # Apply global shift
-                 shift_val = MANYCUBES_CONFIG.get('x_shift', 0.0)
-                 
-                 px = (start_x - i * spacing) + shift_val + np.random.uniform(-0.04, 0.04)
-                 py = np.random.uniform(0.32, 0.45)
+                start_x = 0.0
+                spacing = 0.15
 
-                 # Check for target_indices filter
-                 target_indices = MANYCUBES_CONFIG.get('target_indices')
-                 if target_indices is not None and i not in target_indices:
-                     # Hide non-target object
-                     np.copyto(physics.data.qpos[qpos_adr : qpos_adr + 7], [10.0 + i, -10.0, -1.0, 1, 0, 0, 0])
-                 else:
-                     np.copyto(physics.data.qpos[qpos_adr : qpos_adr + 7], [px, py, 0.005, 1, 0, 0, 0])
+                # Apply global shift
+                shift_val = MANYCUBES_CONFIG.get('x_shift', 0.0)
+                jitter_x = float(MANYCUBES_CONFIG.get('target_jitter_x', 0.04))
+                target_y_min = float(MANYCUBES_CONFIG.get('target_y_min', 0.32))
+                target_y_max = float(MANYCUBES_CONFIG.get('target_y_max', 0.45))
+                if target_y_min > target_y_max:
+                    target_y_min, target_y_max = target_y_max, target_y_min
+
+                px = (start_x - i * spacing) + shift_val + np.random.uniform(-jitter_x, jitter_x)
+                py = float(np.random.uniform(target_y_min, target_y_max))
+                py = min(max(py, target_y_min), target_y_max)
+
+                # Check for target_indices filter
+                target_indices = MANYCUBES_CONFIG.get('target_indices')
+                if target_indices is not None and i not in target_indices:
+                    # Hide non-target object
+                    np.copyto(physics.data.qpos[qpos_adr : qpos_adr + 7], [10.0 + i, -10.0, -1.0, 1, 0, 0, 0])
+                else:
+                    np.copyto(physics.data.qpos[qpos_adr : qpos_adr + 7], [px, py, 0.005, 1, 0, 0, 0])
             else:
-                 np.copyto(physics.data.qpos[qpos_adr : qpos_adr + 7], cube_pose)
+                np.copyto(physics.data.qpos[qpos_adr : qpos_adr + 7], cube_pose)
             
             # Color logic
             if self.randomize_cube_colors:

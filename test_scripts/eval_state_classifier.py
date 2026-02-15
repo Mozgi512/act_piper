@@ -124,6 +124,7 @@ def main():
         visualize_predictions(model, dataset, device, num_samples=args.num_samples)
     
     # Full Evaluation
+    torch.manual_seed(0)
     train_size = int(0.8 * len(dataset))
     val_size = len(dataset) - train_size
     _, val_dataset = random_split(dataset, [train_size, val_size])
