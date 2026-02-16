@@ -457,7 +457,7 @@ def apply_magnet_logic(physics, magnetized_pairs, color_sequence=None):
         blues = [9]
 
     # 2. Check for new magnetizations
-    threshold = 0.08 # 8cm
+    threshold = 0.04 # 8cm
     
     for g_idx in greens:
         if g_idx in magnetized_pairs: continue
@@ -639,6 +639,7 @@ def main(args):
     ckpt_right = args.ckpt_right
     policy_class = args.policy_class
     onscreen_render = args.onscreen_render
+    video_camera = args.video_camera
 
     # Import Globals from Sim Env (Moved up to fix UnboundLocalError)
     from piper_sim_env import MANYCUBES_COLORS, MANYCUBES_TASK_COUNT, MANYCUBES_CONFIG
@@ -650,7 +651,6 @@ def main(args):
     # --- Sequence Loading Logic ---
     available_sequences = []
     if args.sequence_file:
-        import csv
         if not os.path.isfile(args.sequence_file):
             print(f"Error: Sequence file {args.sequence_file} not found.")
             return
@@ -670,9 +670,13 @@ def main(args):
             return
         print(f"Loaded {len(available_sequences)} successful sequences from {args.sequence_file}")
     
+    if args.coop_only and args.indep_only:
+        print("Error: --coop_only and --indep_only cannot be used together.")
+        return
+
     # Validation check for non-CSV mode
-    if not args.sequence_file and not args.commands and not args.match_pretrain_coop_env and not args.coop_only:
-        print("Error: --commands is required unless --sequence_file or --match_pretrain_coop_env or --coop_only is specified.")
+    if not args.sequence_file and not args.commands and not args.match_pretrain_coop_env and not args.coop_only and not args.indep_only:
+        print("Error: --commands is required unless --sequence_file or --match_pretrain_coop_env or --coop_only or --indep_only is specified.")
         return
 
     from piper_constants import SIM_TASK_CONFIGS
@@ -712,8 +716,15 @@ def main(args):
         
     else:
         # Standard Switching Mode
-        print("Loading Dual Policy...")
-        policy_dual, stats_dual = load_policy_and_stats(ckpt_dual, policy_class, args, override_state_dim=14)
+        policy_dual = None
+        stats_dual = None
+        if not args.indep_only:
+            print("Loading Dual Policy...")
+            if not ckpt_dual:
+                raise ValueError("--ckpt_dual is required unless --indep_only is specified.")
+            policy_dual, stats_dual = load_policy_and_stats(ckpt_dual, policy_class, args, override_state_dim=14)
+        else:
+            print("INDEP-only mode: skipping Dual policy load.")
         
         # Optional: Load Independent Dual Policy matches stats of Dual (Coop) usually? 
         # Or does it have its own stats? Likely its own.
@@ -728,7 +739,14 @@ def main(args):
         policy_right = None
         stats_right = None
         
-        if not args.ckpt_independent_dual and not args.coop_only:
+        if args.indep_only and not args.ckpt_independent_dual:
+            if not args.ckpt_left or not args.ckpt_right:
+                 raise ValueError("For --indep_only, provide either --ckpt_independent_dual or both --ckpt_left and --ckpt_right.")
+            print("Loading Left Policy...")
+            policy_left, stats_left = load_policy_and_stats(ckpt_left, policy_class, args, override_state_dim=7, override_arm='left')
+            print("Loading Right Policy...")
+            policy_right, stats_right = load_policy_and_stats(ckpt_right, policy_class, args, override_state_dim=7, override_arm='right')
+        elif not args.ckpt_independent_dual and not args.coop_only:
             # Legacy mode: Load Left/Right
             if not args.ckpt_left or not args.ckpt_right:
                  raise ValueError("If --ckpt_independent_dual (or --ckpt_e2e) is not specified, --ckpt_left and --ckpt_right are required.")
@@ -737,8 +755,11 @@ def main(args):
             print("Loading Right Policy...")
             policy_right, stats_right = load_policy_and_stats(ckpt_right, policy_class, args, override_state_dim=7, override_arm='right')
 
-    pre_process_dual = lambda s_qpos: (s_qpos - stats_dual['qpos_mean']) / stats_dual['qpos_std']
-    post_process_dual = lambda a: a * stats_dual['action_std'] + stats_dual['action_mean']
+    pre_process_dual = None
+    post_process_dual = None
+    if stats_dual is not None:
+        pre_process_dual = lambda s_qpos: (s_qpos - stats_dual['qpos_mean']) / stats_dual['qpos_std']
+        post_process_dual = lambda a: a * stats_dual['action_std'] + stats_dual['action_mean']
     
     if policy_independent_dual:
          pre_process_independent_dual = lambda s_qpos: (s_qpos - stats_independent_dual['qpos_mean']) / stats_independent_dual['qpos_std']
@@ -753,7 +774,7 @@ def main(args):
 
     # Convert stats to torch for buffer conversion
     def to_torch(x): return torch.from_numpy(x).float().cuda()
-    stats_dual_torch = {k: to_torch(v) for k, v in stats_dual.items()}
+    stats_dual_torch = {k: to_torch(v) for k, v in stats_dual.items()} if stats_dual is not None else None
     if stats_left:
         stats_left_torch = {k: to_torch(v) for k, v in stats_left.items()}
         stats_right_torch = {k: to_torch(v) for k, v in stats_right.items()}
@@ -780,6 +801,9 @@ def main(args):
     if args.coop_only:
         scheduler = None
         print(f"COOP-only mode enabled. Running Dual policy only for {max_episode_steps} steps.")
+    elif args.indep_only:
+        scheduler = None
+        print(f"INDEP-only mode enabled. Running independent policies only for {max_episode_steps} steps.")
     else:
         scheduler = TaskScheduler(command_queue, duration_config)
 
@@ -935,6 +959,47 @@ def main(args):
                     f"targets=({l_idx},{r_idx}) colors={''.join(color_seq)} commands=C"
                 )
 
+            elif args.indep_only:
+                x_shift = 1.0 + np.random.uniform(-0.10, 0.10)
+                MANYCUBES_CONFIG['x_shift'] = x_shift
+
+                start_x = 0.0
+                spacing = 0.15
+                xs = [(start_x - i * spacing) + x_shift for i in range(10)]
+
+                # Match generate_dataset.py --pretrain_mode independent bounds
+                l_bound_u, l_bound_l = -0.10, -0.40
+                r_bound_l, r_bound_u = 0.00, 0.30
+
+                left_candidates = [i for i, x in enumerate(xs) if x <= l_bound_u and x > l_bound_l]
+                right_candidates = [i for i, x in enumerate(xs) if x >= r_bound_l and x < r_bound_u]
+
+                if not left_candidates or not right_candidates:
+                    print(f"  [Eval] WARNING: Could not find candidates in both regions (X-Shift={x_shift:.3f})! Fallback to random.")
+                    indices = np.random.choice(10, 2, replace=False)
+                    l_idx, r_idx = int(indices[0]), int(indices[1])
+                else:
+                    l_idx = int(np.random.choice(left_candidates))
+                    right_filtered = [ri for ri in right_candidates if ri != l_idx]
+                    if right_filtered:
+                        r_idx = int(np.random.choice(right_filtered))
+                    else:
+                        r_idx = int(np.random.choice(right_candidates))
+
+                command_queue = list('I')
+                indices = np.array([l_idx, r_idx])
+
+                c_list = np.random.choice(['g', 'b'], size=10).tolist()
+                c_list[indices[0]] = 'r'
+                c_list[indices[1]] = 'r'
+                color_seq = c_list
+                MANYCUBES_CONFIG['target_indices'] = set(indices.tolist())
+
+                print(
+                    f"Rollout {episode_count} | indep_only(pretrain-indep-like) x_shift={x_shift:.3f} "
+                    f"targets=({l_idx},{r_idx}) colors={''.join(color_seq)} commands=I"
+                )
+
             elif args.match_pretrain_coop_env:
                 x_shift = 1.0 + np.random.uniform(-0.10, 0.10)
                 MANYCUBES_CONFIG['x_shift'] = x_shift
@@ -997,6 +1062,8 @@ def main(args):
 
             if args.coop_only:
                 command_queue = list('C')
+            elif args.indep_only:
+                command_queue = list('I')
             
             # Update Globals for simulation environment
             MANYCUBES_COLORS[0] = color_seq
@@ -1018,6 +1085,9 @@ def main(args):
             if args.coop_only:
                 scheduler = None
                 max_episode_steps = int(args.max_timesteps if args.max_timesteps else (args.episode_len if args.episode_len else task_config['episode_len']))
+            elif args.indep_only:
+                scheduler = None
+                max_episode_steps = int(args.max_timesteps if args.max_timesteps else (args.episode_len if args.episode_len else task_config['episode_len']))
             else:
                 scheduler = TaskScheduler(command_queue, duration_config)
                 if args.max_timesteps:
@@ -1030,7 +1100,10 @@ def main(args):
             ts = env.reset()
             t = 0
             # Get max reward for this episode configuration
-            max_possible_reward = env._task.max_reward
+            if args.coop_only or args.indep_only:
+                max_possible_reward = 2
+            else:
+                max_possible_reward = env._task.max_reward
             current_reward = 0
             
             # Reset buffers
@@ -1064,6 +1137,8 @@ def main(args):
             current_mode = scheduler.get_mode_at_step(0) if scheduler else MODE_COOP
             if args.ckpt_e2e or args.coop_only:
                 current_mode = MODE_COOP
+            elif args.indep_only:
+                current_mode = MODE_INDEPENDENT
             
             print(f"\nEpisode {episode_count} Started.")
             while True:
@@ -1119,9 +1194,11 @@ def main(args):
                 # -------------------------------
                 # Auto-Switching Logic via Scheduler
                 # -------------------------------
-                new_mode = scheduler.get_mode_at_step(t) if scheduler else MODE_COOP
+                new_mode = scheduler.get_mode_at_step(t) if scheduler else current_mode
                 if args.ckpt_e2e or args.coop_only:
                     new_mode = MODE_COOP
+                elif args.indep_only:
+                    new_mode = MODE_INDEPENDENT
                 if new_mode != current_mode:
                     handle_mode_switch(t, current_mode, new_mode)
                 
@@ -1184,8 +1261,14 @@ def main(args):
 
                 if args.save_video:
                      # Render at 720p (1280x720) for video saving
-                     onscreen_cam = 'top'
-                     video_frame_highres = env._physics.render(height=720, width=1280, camera_id=onscreen_cam)
+                     try:
+                         video_frame_highres = env._physics.render(height=720, width=1280, camera_id=video_camera)
+                     except Exception:
+                         try:
+                             cam_id = env._physics.model.name2id(video_camera, 'camera')
+                             video_frame_highres = env._physics.render(height=720, width=1280, camera_id=cam_id)
+                         except Exception as e:
+                             raise ValueError(f"--video_camera '{video_camera}' is invalid or unavailable in this model") from e
                      video_frames.append(video_frame_highres) 
                 
                 obs = ts.observation
@@ -1252,6 +1335,8 @@ def main(args):
                         # 1. Query Dual (Coop)
                         # NOTE: In eval, we assume 'policy_dual' handles COOP tasks.
                         if plan_l_state == 'COOP' or plan_r_state == 'COOP':
+                            if policy_dual is None or pre_process_dual is None:
+                                raise ValueError("COOP execution requires --ckpt_dual (or --ckpt_e2e).")
                             qpos = pre_process_dual(qpos_numpy)
                             qpos = torch.from_numpy(qpos).float().cuda().unsqueeze(0)
                             curr_image = get_image_dual(ts, camera_names)
@@ -1724,11 +1809,13 @@ if __name__ == '__main__':
     parser.add_argument('--inherit_temporal_buffer', action='store_true', help='Inherit temporal aggregation buffer on switch')
     parser.add_argument('--interleave_objects', action='store_true', help='Interleave last 4 objects among first 5 (High Difficulty)')
     parser.add_argument('--save_video', nargs='?', const='videos', type=str, help='Save execution video (optional path, default "videos")')
+    parser.add_argument('--video_camera', action='store', type=str, default='top', help='Camera name used for saved video rendering')
     parser.add_argument('--save_stats_path', action='store', type=str, help='Path to save episode statistics CSV')
     parser.add_argument('--num_rollouts', action='store', type=int, default=1, help='Number of evaluation episodes')
     parser.add_argument('--episode_len', action='store', type=int, default=None, help='Override episode length')
     parser.add_argument('--max_timesteps', action='store', type=int, default=None, help='Hard limit on episode steps')
     parser.add_argument('--coop_only', action='store_true', help='Run standalone COOP test using Dual policy only (no mode switching)')
+    parser.add_argument('--indep_only', action='store_true', help='Run standalone INDEP test using pretrain-independent-like object generation')
     parser.add_argument('--sync_arms', action='store_true', help='Enable Sync Wait logic (Hold) before Cooperative tasks')
     parser.add_argument('--reset_on_subtask', action='store_true', help='Reset independent policy buffers on subtask switch')
     parser.add_argument('--x_shift', action='store', type=float, default=0.0, help='Shift all objects along X-axis')

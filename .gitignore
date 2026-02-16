@@ -15,3 +15,4 @@ piper_scripted_ckpt
 *.png
 *.pkl
 logs
+*.zip

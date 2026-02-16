@@ -44,15 +44,15 @@ python3 imitate_episodes.py \
 #E2E評価
 python3 evaluate_policy_switcher.py \
     --task_name sim_many_cubes \
-    --ckpt_e2e ckpt4/random \
-    --policy_class ACT --kl_weight 10 --chunk_size 100 --hidden_dim 512 --dim_feedforward 3200 \
+    --ckpt_e2e ckpt/end2end \
+    --policy_class ACT --kl_weight 10 --chunk_size 75 --hidden_dim 512 --dim_feedforward 3200 \
     --num_rollouts 10 \
     --sequence_file sequences.csv \
-    --max_timesteps 2500 --onscreen_render --save_video videos/result_random_e2e
+    --max_timesteps 2700 --onscreen_render --save_video videos/e2e
 
 ----------------------------------------------------------------------------------------------------
 #事前学習
-python3 generate_dataset.py --pretrain_mode independent --num_episodes 100 --dataset_dir data4/pretrain_i --onscreen_render --no_save_data
+python3 generate_dataset.py --pretrain_mode independent --num_episodes 2 --dataset_dir data4/pretrain_i --onscreen_render --no_save_data --save_video material --video_camera top
 python3 generate_dataset.py --pretrain_mode cooperative --num_episodes 100 --dataset_dir data4/pretrain_c --onscreen_render --no_save_data
 python3 generate_pretrain_dataset.py --pretrain_mode cooperative --num_episodes 200 --dataset_dir data5/pretrain_c --max_data_steps 1000
 
@@ -170,9 +170,9 @@ python3 extract_transitions.py \
 
 
 python3 train_state_classifier.py \
-    --dataset_dirs data4/random \
+    --dataset_dirs /media/act/Mozgi_1T/data4/random \
     --lookahead 50 \
-    --epochs 20 \
+    --epochs 50 \
     --batch_size 32
 
 python3 state_switcher.py \
@@ -194,7 +194,7 @@ python3 state_switcher.py \
 
 python3 state_switcher.py \
         --task_name sim_many_cubes \
-        --ckpt_dual ckpt5/overall_c_20000  \
+        --ckpt_dual ckpt5/pretrained_c_60000  \
         --ckpt_left ckpt5/pretrained_left  \
         --ckpt_right ckpt5/pretrained_right  \
         --state_ckpt old_state_classifier_best.pth \
@@ -202,20 +202,21 @@ python3 state_switcher.py \
         --temporal_agg_k 0.03  \
         --num_rollouts 10  --episode_len 3000 --seed 2 \
         --sequence_file original_sequences.csv --hl_update_at_home_only --hl_update_interval 50 --no_temporal_agg \
-        --onscreen_render --save_stats_path hie_evaluation_results3.txt --save_video videos/test2_random_hie --debug_scripted_coop_low_level_only
+        --save_stats_path hie_scripted_highlevel.txt --hl_oracle_metadata_csv dryrun100.csv
+        --save_video videos/test2_random_hie --onscreen_render
 
 python3 state_switcher.py         --task_name sim_many_cubes         --ckpt_dual ckpt5/pretrained_c          --ckpt_left ckpt5/pretrained_left          --ckpt_right ckpt5/pretrained_right          --state_ckpt state_classifier_best.pth         --chunk_size 75         --temporal_agg_k 0.03          --num_rollouts 10  --episode_len 3000 --seed 2         --sequence_file sequences.csv --hl_update_at_home_only --hl_update_interval 50 --no_temporal_agg --save_stats_path hie_evaluation_results2.txt --save_video videos/test2_random_hie
 
 python3 state_switcher.py \
         --task_name sim_many_cubes \
-        --ckpt_dual ckpt4/pretrained_c  \
-        --ckpt_left ckpt4/pretrained_left  \
-        --ckpt_right ckpt4/pretrained_right  \
-        --state_ckpt state_classifier_best.pth \
+        --ckpt_dual ckpts/coordinated  \
+        --ckpt_left ckpts/independent_left  \
+        --ckpt_right ckpts/independent_right  \
+        --state_ckpt old_state_classifier_best.pth \
         --chunk_size 75 \
         --inherit_temporal_buffer --temporal_agg_k 0.03  \
-        --warmup_steps 50 --num_rollouts 10  --episode_len 2700 --seed 2 \
-        --sequence_file sequences.csv --no_temporal_agg --onscreen_render --hl_oracle_metadata_csv random_dryrun_metadata.csv
+        --warmup_steps 50 --num_rollouts 50  --episode_len 3000 --seed 2 \
+        --sequence_file original_sequences.csv --no_temporal_agg --onscreen_render --hl_oracle_metadata_csv oracle.csv --save_stats_path hie_scripted_highlevel.txt
 
 
 python3 evaluate_policy_switcher.py\
@@ -223,17 +224,28 @@ python3 evaluate_policy_switcher.py\
  --ckpt_dual ckpt5/pretrained_c \
  --policy_class ACT \
  --chunk_size 75 \
- --num_rollouts 10 \
+ --num_rollouts 2 \
   --episode_len 1000 --seed 2 \
   --coop_only \
   --no_temporal_agg \
   --onscreen_render \
   --save_stats_path coop_only_results.txt \
-  --save_video videos/coop_only
+  --save_video material/testcoop \
+  --video_camera angle
 
-
-
-
+python3 evaluate_policy_switcher.py \
+    --task_name sim_many_cubes \
+    --ckpt_left ckpt5/pretrained_left \
+    --ckpt_right ckpt5/pretrained_right \
+    --policy_class ACT\
+    --chunk_size 75 \
+    --num_rollouts 2\
+    --episode_len 1000 \
+    --indep_only \
+    --no_temporal_agg \
+    --onscreen_render \
+    --save_video material/testindep \
+     --video_camera angle
 
 
 
@@ -272,3 +284,27 @@ python3 hierarchical_policy.py \
     --seed 2 \
     --onscreen_render \
     --sequence_success_n 20 --save_video videos/hie_simplified --hl_oracle_metadata_csv random_dryrun_metadata.csv
+
+python3 state_switcher.py         --task_name sim_many_cubes         --ckpt_dual ckpt5/pretrained_c_60000          --ckpt_left ckpt5/pretrained_left          --ckpt_right ckpt5/pretrained_right          --state_ckpt old_state_classifier_best.pth         --chunk_size 75         --temporal_agg_k 0.03          --num_rollouts 50  --episode_len 3000 --seed 0         --sequence_file original_sequences.csv --hl_update_at_home_only --hl_update_interval 50 --no_temporal_agg  --unit_test_scripted_low_level  --save_stats_path hie_scripted_lowlevel.txt
+
+
+    python3 analyze_hie_evaluation.py --input hie_evaluation_results9.txt --out_dir hie_result
+
+python3 dryrun_sequence_metadata.py --sequence_file original_sequences.csv --output_csv dryrun100.csv --num_episodes 100 --no_shuffle
+
+
+
+python3 state_switcher.py \
+        --task_name sim_many_cubes \
+        --ckpt_dual ckpts/coordenated  \
+        --ckpt_left ckpts/independent_left  \
+        --ckpt_right ckpts/independent_right  \
+        --state_ckpt state_classifier.pth \
+        --chunk_size 75 \
+        --temporal_agg_k 0.03  \
+        --num_rollouts 10  --episode_len 3000 --seed 2 \
+        --sequence_file original_sequences.csv --hl_update_at_home_only --hl_update_interval 50 --no_temporal_agg \
+        --save_stats_path result.txt --save_video videos/ --onscreen_render
+
+
+python3 eval_state_classifier_dataset.py --dataset_dir data5/whole_task_raw --ckpt old_state_classifier_best.pth --lookahead 50 --out_dir results/old_state_classifier_eval_whole_task_raw

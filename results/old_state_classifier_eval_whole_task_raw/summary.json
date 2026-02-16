@@ -1,0 +1,14 @@
+{
+  "checkpoint": "old_state_classifier_best.pth",
+  "dataset_dir": "data5/whole_task_raw",
+  "lookahead": 50,
+  "samples": 54448,
+  "accuracy_left": 0.8384513664413753,
+  "accuracy_right": 0.9214479870702321,
+  "accuracy_avg": 0.8799496767558037,
+  "class_order": [
+    "HOLD",
+    "INDEP",
+    "COOP"
+  ]
+}

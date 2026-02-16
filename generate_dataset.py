@@ -24,8 +24,13 @@ def main(args):
     dataset_dir = args['dataset_dir']
     num_episodes = args['num_episodes']
     onscreen_render = args['onscreen_render']
+    save_video_dir_arg = args.get('save_video', None)
+    save_video = save_video_dir_arg is not None
+    video_camera = args.get('video_camera', 'top')
     if not onscreen_render:
         print("Note: Run with --onscreen_render to see the visualization.")
+    if save_video:
+        print(f"Video saving enabled: out_dir={save_video_dir_arg if save_video_dir_arg else os.path.join(dataset_dir, 'videos')}, camera={video_camera}, resolution=1280x720")
     inject_noise = False
     render_cam_name = 'top'
     use_coop_shadow_obs = bool(args.get('coop_shadow_obs', False))
@@ -218,6 +223,8 @@ def main(args):
 
     episode_len = SIM_TASK_CONFIGS[task_name]['episode_len']
     camera_names = SIM_TASK_CONFIGS[task_name]['camera_names']
+    if save_video and video_camera not in camera_names:
+        print(f"[Video] '{video_camera}' is not in dataset cameras {camera_names}; trying MuJoCo camera render directly.")
 
     success_count = 0
     episode_idx = 0
@@ -227,7 +234,6 @@ def main(args):
     
     # Sequence File Reset Logic
     if args.get('sequence_file'):
-        import csv
         seq_file = args['sequence_file']
         print(f"Resetting marks in {seq_file}...")
         rows = []
@@ -676,11 +682,29 @@ def main(args):
                 replay_cameras = ['top'] if onscreen_render else []
             else:
                 replay_cameras = camera_names  # Need cameras for dataset images
+            if save_video and video_camera in camera_names and video_camera not in replay_cameras:
+                replay_cameras = list(replay_cameras) + [video_camera]
             env = make_sim_env(task_name, camera_names=replay_cameras, time_limit=2000) # 2000s is plenty
             ts = env.reset()
             if args.get('wait_only_mode'):
                 set_cube_alpha(env.physics, 0.0)
             episode_replay = [ts]
+
+            video_writer = None
+            video_path = None
+            if save_video:
+                import cv2
+                if save_video_dir_arg == '':
+                    video_dir = os.path.join(dataset_dir, 'videos')
+                else:
+                    video_dir = save_video_dir_arg
+                os.makedirs(video_dir, exist_ok=True)
+                video_path = os.path.join(video_dir, f'episode_{episode_idx}.mp4')
+                fourcc = cv2.VideoWriter_fourcc(*'mp4v')
+                video_writer = cv2.VideoWriter(video_path, fourcc, 50.0, (1280, 720))
+                if not video_writer.isOpened():
+                    raise RuntimeError(f"Failed to open video writer: {video_path}")
+
             env_replay_shadow = None
             episode_replay_shadow_images = None
             if use_coop_shadow_obs:
@@ -710,6 +734,20 @@ def main(args):
             replay_start = time_module.time()
             step_times = []
             max_reward_achieved = 0  # Track maximum reward during replay
+
+            def render_video_frame_bgr(physics, cam_name):
+                frame_rgb = None
+                try:
+                    frame_rgb = physics.render(height=720, width=1280, camera_id=cam_name)
+                except Exception:
+                    try:
+                        cam_id = physics.model.name2id(cam_name, 'camera')
+                        frame_rgb = physics.render(height=720, width=1280, camera_id=cam_id)
+                    except Exception:
+                        frame_rgb = None
+                if frame_rgb is None:
+                    return None
+                return cv2.cvtColor(frame_rgb, cv2.COLOR_RGB2BGR)
         
             for t in range(len(joint_traj)):
                 t_start = time_module.time()
@@ -730,6 +768,16 @@ def main(args):
                         cv2.line(img_bgr, (160, 0), (160, 240), (0, 255, 0), 1)
                         cv2.imshow(window_name, img_bgr)
                         cv2.waitKey(1)
+
+                if save_video and video_writer is not None:
+                    video_frame = render_video_frame_bgr(env.physics, video_camera)
+                    if video_frame is None:
+                        video_img_rgb = ts.observation['images'].get(video_camera)
+                        if video_img_rgb is not None:
+                            video_img_bgr = cv2.cvtColor(video_img_rgb, cv2.COLOR_RGB2BGR)
+                            video_frame = cv2.resize(video_img_bgr, (1280, 720), interpolation=cv2.INTER_LINEAR)
+                    if video_frame is not None:
+                        video_writer.write(video_frame)
 
                 # Object Removal Logic (Mirroring piper_ee_sim_env.py after_step)
                 current_time = t * DT
@@ -777,6 +825,9 @@ def main(args):
             replay_time = time_module.time() - replay_start
             avg_step_time = np.mean(step_times) * 1000
             print(f"  Replay completed in {replay_time:.1f}s ({avg_step_time:.1f}ms/step)")
+            if video_writer is not None:
+                video_writer.release()
+                print(f"  Video saved: {video_path}")
 
             # Calculate expected max reward from command sequence
             # I (Independent): 2 points (2 red cubes)
@@ -820,6 +871,11 @@ def main(args):
                 total_retries += 1
             
             if not episode_success:
+                if save_video and video_path is not None and os.path.exists(video_path):
+                    try:
+                        os.remove(video_path)
+                    except Exception:
+                        pass
                 if retry_count >= max_retries_per_episode:
                     print(f"Episode {episode_idx} FAILED after {max_retries_per_episode} attempts. Skipping.")
                     failed_sequences_count += 1
@@ -1010,6 +1066,8 @@ if __name__ == '__main__':
     parser.add_argument('--end_home_gripper_threshold', action='store', type=float, default=0.35, help='Max allowed gripper deviation from start pose at episode end')
     parser.add_argument('--save_init_positions_csv', action='store', type=str, default=None, help='Optional path to save successful episodes initial object positions CSV')
     parser.add_argument('--coop_shadow_obs', action='store_true', help='Create coop shadow EE env, show only current BG pair, and use shadow observation for policy input')
+    parser.add_argument('--save_video', nargs='?', const='', default=None, help='Save replay observation video as 1280x720 MP4. Optionally specify output directory; default is <dataset_dir>/videos when passed without value.')
+    parser.add_argument('--video_camera', action='store', type=str, default='top', help='Camera name used for saved video')
     
     args = parser.parse_args()
     main(vars(args))

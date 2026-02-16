@@ -43,12 +43,7 @@ from interactive_policy import InteractivePolicy
 from piper_sim_env import REDBOX_POSE, GREENBOX_POSE, BLUEBOX_POSE, MANYCUBES_COLORS, MANYCUBES_POSES
 from piper_sim_env import make_sim_env
 from piper_ee_sim_env import make_ee_sim_env
-from piper_ee_sim_env import make_ee_sim_env
 from utils import apply_rgb_mask_to_strip, apply_rgb_mask_to_right_strip, apply_policy_mask
-
-# Constants
-MODE_INDEPENDENT = '1'
-MODE_COOP = '2'
 
 
 def make_policy(policy_class, policy_config):
@@ -189,7 +184,8 @@ def get_spatial_object_map(physics):
             bid = physics.model.name2id(name, 'body')
             x = physics.data.xpos[bid][0]
             cubes.append({'id': i, 'x': x})
-        except: pass
+        except Exception:
+            pass
     
     # Sort symmetrically (Matches extract_transitions.py)
     # L0 is closest to center (highest X), L1 is further left.
@@ -239,18 +235,19 @@ def get_heuristic_targets(physics, spatial_map, color_sequence):
     
     def safe_get_color(idx):
         try: return color_sequence[idx]
-        except: return None
+        except Exception:
+            return None
 
     def is_removed_cube(idx):
         try:
             geom_id = physics.model.name2id(f'cube_{idx}', 'geom')
             alpha = float(physics.model.geom_rgba[geom_id, 3])
-        except:
+        except Exception:
             alpha = 1.0
         try:
             body_id = physics.model.name2id(f'cube_{idx}', 'body')
             z_pos = float(physics.data.xpos[body_id][2])
-        except:
+        except Exception:
             z_pos = 0.0
         return (alpha <= 0.01) or (z_pos < -1.0)
 
@@ -267,7 +264,8 @@ def get_heuristic_targets(physics, spatial_map, color_sequence):
             if x_pos < 0.3:
                 if color in ['g', 'b']:
                     coop_candidates.append((x_pos, c_idx, color))
-        except: pass
+        except Exception:
+            pass
     
     if coop_candidates:
         rightmost_g = max([c for c in coop_candidates if c[2] == 'g'], key=lambda x: x[0], default=None)
@@ -308,7 +306,8 @@ def hide_objects(physics, target_indices, env_name="?"):
                 physics.model.geom_rgba[geom_id, 3] = 1.0 # Show
             else:
                 physics.model.geom_rgba[geom_id, 3] = 0.0 # Hide
-        except: pass
+        except Exception:
+            pass
         
         # 2. Move qpos if hiding (independent of geom success)
         if i not in target_set:
@@ -317,7 +316,8 @@ def hide_objects(physics, target_indices, env_name="?"):
                 addr = physics.model.name2id(joint_name, 'joint')
                 qpos_adr = physics.model.jnt_qposadr[addr]
                 physics.data.qpos[qpos_adr + 2] = -5.0 # Well below table
-            except: pass
+            except Exception:
+                pass
             
     physics.forward()
 
@@ -343,7 +343,8 @@ def get_touched_cubes_per_arm(physics):
                     try:
                         c_idx = int(o_name.split('_')[1])
                         touched[arm].add(c_idx)
-                    except: pass
+                    except Exception:
+                        pass
     return touched
 
 def get_grasped_cubes(physics):
@@ -372,7 +373,8 @@ def get_grasped_cubes(physics):
                         c_idx = int(o_name.split('_')[1])
                         finger_hits[arm][c_idx].add(side)
                         # print(f"DEBUG: Contact {arm} side {side} with cube_{c_idx}")
-                    except: pass
+                    except Exception:
+                        pass
                 
     for arm in ['left', 'right']:
         for c_idx, sides in finger_hits[arm].items():
@@ -390,7 +392,8 @@ def get_proximity_cubes(physics, threshold=0.06):
         try:
             bid = physics.model.name2id(bn, 'body')
             gripper_xpos.append(physics.data.xpos[bid])
-        except: pass
+        except Exception:
+            pass
     
     if not gripper_xpos: return nearby
     
@@ -406,7 +409,8 @@ def get_proximity_cubes(physics, threshold=0.06):
                 if dist < threshold:
                     nearby.add(i)
                     break 
-        except: pass
+        except Exception:
+            pass
     return nearby
 
 def get_cubes_touching_targets(physics, target_geoms):
@@ -428,7 +432,8 @@ def get_cubes_touching_targets(physics, target_geoms):
                 try:
                     c_idx = int(b.split('_')[1])
                     touching_targets.add(c_idx)
-                except: pass
+                except Exception:
+                    pass
 
     # 3. Propagate (Transitive Closure) for stacked objects
     changed = True
@@ -440,11 +445,13 @@ def get_cubes_touching_targets(physics, target_geoms):
             
             if n1.startswith('cube_'):
                 try: c1_idx = int(n1.split('_')[1])
-                except: pass
+                except Exception:
+                    pass
             
             if n2.startswith('cube_'):
                 try: c2_idx = int(n2.split('_')[1])
-                except: pass
+                except Exception:
+                    pass
                 
             if c1_idx != -1 and c2_idx != -1:
                 # If one is touching, the other is too
@@ -643,7 +650,8 @@ def reset_magnet_logic(physics, color_sequence=None):
              geom_id = physics.model.name2id(f'cube_{i}', 'geom')
              physics.model.geom_contype[geom_id] = 1
              physics.model.geom_conaffinity[geom_id] = 1
-        except: pass
+        except Exception:
+            pass
 
 
 def get_image_dual(ts, camera_names, mask=False):
@@ -810,7 +818,8 @@ def main(args):
     hl_oracle_by_seqrow = defaultdict(list)
     hl_oracle_by_episode = {}
     hl_oracle_cursor_by_seqrow = defaultdict(int)
-    hl_oracle_loaded_count = 0
+    hl_oracle_rows = []
+    hl_oracle_episode_order = None
 
     def _parse_int_safe(v, default=-1):
         try:
@@ -846,6 +855,10 @@ def main(args):
         return _pair_to_states(pair), pair
 
     def _select_oracle_schedule(ep_idx, sequence_row_idx):
+        if hl_oracle_episode_order is not None and 0 <= ep_idx < len(hl_oracle_episode_order):
+            row_idx = hl_oracle_episode_order[ep_idx]
+            if 0 <= row_idx < len(hl_oracle_rows):
+                return hl_oracle_rows[row_idx]
         if sequence_row_idx is not None and sequence_row_idx in hl_oracle_by_seqrow:
             rows = hl_oracle_by_seqrow[sequence_row_idx]
             if rows:
@@ -898,12 +911,20 @@ def main(args):
                     hl_oracle_by_seqrow[seq_row].append(entry)
                 if ep >= 0:
                     hl_oracle_by_episode[ep] = entry
+                hl_oracle_rows.append(entry)
                 loaded_oracle_rows += 1
-        hl_oracle_loaded_count = loaded_oracle_rows
         print(f"Loaded HL oracle rows: {loaded_oracle_rows}")
-        if len(hl_oracle_by_episode) > 0 and args.num_rollouts > len(hl_oracle_by_episode):
-            print(f"Warning: num_rollouts ({args.num_rollouts}) > oracle episodes ({len(hl_oracle_by_episode)}). Clamping to {len(hl_oracle_by_episode)}.")
-            args.num_rollouts = len(hl_oracle_by_episode)
+        if len(hl_oracle_rows) == 0:
+            print("Error: No valid rows found in hl_oracle_metadata_csv.")
+            return
+
+        # Always randomize episode execution order when oracle CSV is used.
+        hl_oracle_episode_order = np.random.permutation(len(hl_oracle_rows)).tolist()
+        print("[Switcher] ORACLE row order randomized for this run.")
+
+        if args.num_rollouts > len(hl_oracle_rows):
+            print(f"Warning: num_rollouts ({args.num_rollouts}) > oracle rows ({len(hl_oracle_rows)}). Clamping to {len(hl_oracle_rows)}.")
+            args.num_rollouts = len(hl_oracle_rows)
     
     # Handle Sequence Loading
     sequences = []
@@ -984,13 +1005,10 @@ def main(args):
     print(f"Stats Right Action Std Mean: {stats_right['action_std'].mean()}")
 
     pre_process_dual = lambda s_qpos: (s_qpos - stats_dual['qpos_mean']) / stats_dual['qpos_std']
-    post_process_dual = lambda a: a * stats_dual['action_std'] + stats_dual['action_mean']
     
     pre_process_left = lambda s_qpos: (s_qpos - stats_left['qpos_mean']) / stats_left['qpos_std']
-    post_process_left = lambda a: a * stats_left['action_std'] + stats_left['action_mean']
     
     pre_process_right = lambda s_qpos: (s_qpos - stats_right['qpos_mean']) / stats_right['qpos_std']
-    post_process_right = lambda a: a * stats_right['action_std'] + stats_right['action_mean']
 
     # Convert stats to torch for buffer conversion
     def to_torch(x): return torch.from_numpy(x).float().cuda()
@@ -1183,9 +1201,6 @@ def main(args):
     else:
         print("Not a TTY, manual control disabled")
     
-    # Init Mode
-    current_mode = MODE_COOP
-    
     print("\n\nReady!")
     print("Press 'q' to quit")
     
@@ -1291,14 +1306,14 @@ def main(args):
         
         # Delayed Stop Counters
         consecutive_at_home_l = 0
-        consecutive_at_home_l = 0
         consecutive_at_home_r = 0
         
         # Debounce State Tracking
         committed_plan_l_state = 'INDEP' # Start assumption
         committed_plan_r_state = 'INDEP' 
         if current_hl_oracle_schedule is not None:
-            (oracle_l0, oracle_r0), _ = _oracle_states_at_t(current_hl_oracle_schedule, 0)
+            oracle_init_t = max(0, int(args.hl_oracle_future_steps))
+            (oracle_l0, oracle_r0), _ = _oracle_states_at_t(current_hl_oracle_schedule, oracle_init_t)
             committed_plan_l_state = 'COOP' if oracle_l0 == STATE_COOP else ('HOLD' if oracle_l0 == STATE_HOLD else 'INDEP')
             committed_plan_r_state = 'COOP' if oracle_r0 == STATE_COOP else ('HOLD' if oracle_r0 == STATE_HOLD else 'INDEP')
         video_mode_l_char = mode_to_char(committed_plan_l_state)
@@ -1337,12 +1352,6 @@ def main(args):
         current_target_indices_i = []
         current_target_indices_c = []
         
-        # Smoothing logic for non-temporal agg transitions (Post-Switch)
-        # NOTE: Pre-switch smoothing attempts to handle this, but if TE is off, 
-        # we might still need standard smoothing or just rely on pre-switch.
-        # Assuming Pre-switch logic is sufficient if MIN_STATE_DURATION >> 20.
-        smoothing_l_steps = 0
-        smoothing_r_steps = 0
         left_waiting_indep_target = False
         left_resume_reinfer_pending = False
         right_waiting_indep_target = False
@@ -1447,15 +1456,10 @@ def main(args):
 
             # --- FIX: Keep grasped objects visible ---
             # Ensure held objects don't disappear when moved out of heuristic zones
-            if t % 5 == 0 or True: # Check every step to be safe
-                grasped_dict = get_grasped_cubes(env.physics)
-                held_indices_left = set(grasped_dict['left'])
-                held_indices_right = set(grasped_dict['right'])
-                held_indices = held_indices_left.union(held_indices_right)
-            else:
-                held_indices_left = set()
-                held_indices_right = set()
-                held_indices = set()
+            grasped_dict = get_grasped_cubes(env.physics)
+            held_indices_left = set(grasped_dict['left'])
+            held_indices_right = set(grasped_dict['right'])
+            held_indices = held_indices_left.union(held_indices_right)
             
             def safe_get_color_local(idx):
                 try: return color_seq[idx]
@@ -1466,19 +1470,19 @@ def main(args):
                 try:
                     bid = env.physics.model.name2id(f'cube_{idx}', 'body')
                     return float(env.physics.data.xpos[bid][0])
-                except:
+                except Exception:
                     return None
 
             def is_removed_cube_local(idx):
                 try:
                     geom_id = env.physics.model.name2id(f'cube_{idx}', 'geom')
                     alpha = float(env.physics.model.geom_rgba[geom_id, 3])
-                except:
+                except Exception:
                     alpha = 1.0
                 try:
                     body_id = env.physics.model.name2id(f'cube_{idx}', 'body')
                     z_pos = float(env.physics.data.xpos[body_id][2])
-                except:
+                except Exception:
                     z_pos = 0.0
                 return (alpha <= 0.01) or (z_pos < -1.0)
 
@@ -1591,7 +1595,7 @@ def main(args):
                         try:
                             bid = env.physics.model.name2id(f'cube_{c_idx}', 'body')
                             x_pos = env.physics.data.xpos[bid][0]
-                        except:
+                        except Exception:
                             x_pos = -1e9
                         if color == 'g':
                             g_candidates.append((x_pos, c_idx))
@@ -1643,13 +1647,18 @@ def main(args):
 
             # --- State Classifier Inference / Oracle Replay ---
             if current_hl_oracle_schedule is not None:
-                (oracle_l, oracle_r), oracle_pair = _oracle_states_at_t(current_hl_oracle_schedule, t)
+                future_steps = max(0, int(args.hl_oracle_future_steps))
+                if t < future_steps:
+                    oracle_query_t = future_steps
+                else:
+                    oracle_query_t = t + future_steps
+                (oracle_l, oracle_r), oracle_pair = _oracle_states_at_t(current_hl_oracle_schedule, oracle_query_t)
                 hl_mode_l = oracle_l
                 hl_mode_r = oracle_r
                 last_hl_update_step_l = t
                 last_hl_update_step_r = t
                 if t % 50 == 0:
-                    print(f"[Step {t}] HL oracle pair={oracle_pair}")
+                    print(f"[Step {t}] HL oracle pair={oracle_pair} (query_t={oracle_query_t})")
             else:
                 if args.hl_update_at_home_only:
                     should_update_hl = (hl_update_tick_l or hl_update_tick_r)
@@ -2137,8 +2146,6 @@ def main(args):
                             val_inherit = renorm_r.clone()
                             val_inherit[~mask_val] = float('nan')
                             all_time_actions_right.copy_(val_inherit)
-                        
-                        # Activate transition window for conditional temporal ensembling
                         
                         # Activate transition window for conditional temporal ensembling
                         if args.temporal_agg_transition_only:
@@ -2655,7 +2662,7 @@ def main(args):
             def get_color_for_idx(idx):
                 try:
                     return color_seq[idx]
-                except:
+                except Exception:
                     return None
 
             def get_cube_z(idx):
@@ -3048,10 +3055,6 @@ def main(args):
                 current_target_indices_i = []
                 current_target_indices_c = []
 
-                # Reset smoothing counters
-                smoothing_l_steps = 0
-                smoothing_r_steps = 0
-
                 switch_candidate_l = None
                 switch_candidate_r = None
                 switch_candidate_count_l = 0
@@ -3262,6 +3265,8 @@ if __name__ == '__main__':
     parser.add_argument('--debug_scripted_coop_low_level_only', action='store_true', help='Debug mode: override only COOP/COOP low-level steps with scripted policy; keep independent low-level learned')
     parser.add_argument('--hl_oracle_metadata_csv', action='store', type=str, default=None,
                         help='Optional metadata CSV (e.g., dryrun_sequence_metadata output) to replay handcrafted high-level mode transitions')
+    parser.add_argument('--hl_oracle_future_steps', action='store', type=int, default=50,
+                        help='When using hl_oracle_metadata_csv, query oracle mode at t+N (default: 50) to match future-predicting high-level timing')
     parser.add_argument('--debug_bg_removal_logs', action='store_true', help='Enable debug logs for BG pair candidate/removal conditions')
     parser.add_argument('--debug_bg_log_interval', action='store', type=int, default=50, help='Step interval for periodic BG debug logs')
 

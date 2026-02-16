@@ -122,6 +122,10 @@ def save_parsed_csv(records, columns, out_path):
 def make_plots(records, out_dir):
     os.makedirs(out_dir, exist_ok=True)
 
+    def is_obj_success(status_text):
+        status_text = str(status_text).strip()
+        return status_text in {"Indep_Success", "Coop_Success"}
+
     episodes = [r["Episode"] for r in records]
     total_rewards = [r["Total_Reward"] for r in records]
 
@@ -206,6 +210,35 @@ def make_plots(records, out_dir):
     plt.legend()
     plt.tight_layout()
     plt.savefig(os.path.join(out_dir, "per_object_status_stacked.png"), dpi=160)
+    plt.close()
+
+    # Prefix success-rate curve:
+    # for each x, ratio of episodes where Obj0..Objx are all successful.
+    prefix_success_rates = []
+    num_episodes = len(records)
+    for x in range(10):
+        success_count = 0
+        for row in records:
+            all_ok = True
+            for i in range(x + 1):
+                if not is_obj_success(row.get(f"Obj{i}_Status", "")):
+                    all_ok = False
+                    break
+            if all_ok:
+                success_count += 1
+        rate = (success_count / num_episodes) if num_episodes > 0 else 0.0
+        prefix_success_rates.append(rate)
+
+    plt.figure(figsize=(9, 4.5))
+    plt.plot(xs, [r * 100.0 for r in prefix_success_rates], marker="o", linewidth=2)
+    plt.xticks(xs, [f"Obj{i}" for i in xs])
+    plt.ylim(0, 100)
+    plt.ylabel("Success Rate (%)")
+    plt.xlabel("Prefix End Object")
+    plt.title("Prefix Success Rate (Obj0..Objx all success)")
+    plt.grid(alpha=0.3)
+    plt.tight_layout()
+    plt.savefig(os.path.join(out_dir, "prefix_success_rate.png"), dpi=160)
     plt.close()
 
 

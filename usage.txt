@@ -1,0 +1,11 @@
+python3 state_switcher.py \
+        --task_name sim_many_cubes \
+        --ckpt_dual ckpts/coordenated  \
+        --ckpt_left ckpts/independent_left  \
+        --ckpt_right ckpts/independent_right  \
+        --state_ckpt state_classifier.pth \
+        --chunk_size 75 \
+        --temporal_agg_k 0.03  \
+        --num_rollouts 10  --episode_len 3000 --seed 2 \
+        --sequence_file original_sequences.csv --hl_update_at_home_only --hl_update_interval 50 --no_temporal_agg \
+        --save_stats_path result.txt --save_video videos/ --onscreen_render

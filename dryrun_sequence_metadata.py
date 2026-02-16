@@ -16,7 +16,11 @@ def is_valid_color_seq(s):
     return len(s) == 10 and all(c in ['r', 'g', 'b'] for c in s)
 
 
-def load_sequence_rows(sequence_file):
+def is_success_label(s):
+    return str(s).strip().lower() in {'success', 's', 'ok', '1', 'true'}
+
+
+def load_sequence_rows(sequence_file, success_only=False):
     rows = []
     with open(sequence_file, 'r') as f:
         reader = csv.reader(f)
@@ -25,7 +29,10 @@ def load_sequence_rows(sequence_file):
                 continue
             c0 = row[0].strip() if len(row) >= 1 else ''
             c1 = row[1].strip().upper() if len(row) >= 2 else ''
+            c2 = row[2].strip() if len(row) >= 3 else ''
             if is_valid_color_seq(c0) and c1:
+                if success_only and not is_success_label(c2):
+                    continue
                 rows.append({'row': i, 'color': c0.lower(), 'cmd': c1})
     return rows
 
@@ -71,8 +78,10 @@ def segments_to_pairs(left_segments, right_segments, num_steps):
 def main(args):
     set_seed(args.seed)
 
-    rows = load_sequence_rows(args.sequence_file)
+    rows = load_sequence_rows(args.sequence_file, success_only=args.success_only)
     if not rows:
+        if args.success_only:
+            raise RuntimeError(f'No valid success rows (color, command, status=success) in {args.sequence_file}')
         raise RuntimeError(f'No valid (color, command) rows in {args.sequence_file}')
 
     if args.shuffle:
@@ -164,6 +173,8 @@ if __name__ == '__main__':
                         help='Randomize processing order (default: enabled)')
     parser.add_argument('--no_shuffle', action='store_false', dest='shuffle',
                         help='Disable randomization and keep CSV top-down order')
+    parser.add_argument('--success_only', action='store_true',
+                        help='Use only rows whose 3rd CSV column indicates success (success/s/ok/1/true)')
     parser.add_argument('--random_x_shift', action='store_true', help='Match generate_dataset random x-shift behavior')
     parser.add_argument('--x_shift', type=float, default=0.0)
     main(parser.parse_args())
