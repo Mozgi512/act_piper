@@ -461,7 +461,7 @@ def get_cubes_in_goal(physics):
     return get_cubes_touching_targets(physics, {'goal_plate'})
 
 def get_cubes_on_cushion(physics):
-    return get_cubes_touching_targets(physics, {'cushion1'})
+    return get_cubes_touching_targets(physics, {'cushion', 'cushion1', 'cushion2'})
 
 def is_arm_at_home(current_qpos, home_qpos, threshold=0.1):
     """Check if a single arm (7-dim) is close to its home pose."""
@@ -1396,7 +1396,7 @@ def main(args):
                 hl_update_reason = "home+interval"
 
                 # Periodic diagnostics for non-fired updates
-                if (not hl_update_tick_l and not hl_update_tick_r) and (t % args.hl_update_log_interval == 0):
+                if args.debug_hl_logs and (not hl_update_tick_l and not hl_update_tick_r) and (t % args.hl_update_log_interval == 0):
                     print(
                         f"[Step {t}] HL not fired | left_home={left_home} right_home={right_home} "
                         f"left_open={left_open} right_open={right_open} "
@@ -1405,7 +1405,7 @@ def main(args):
                         f"since_last_r={t - max(last_hl_update_step_r, 0)}"
                     )
 
-            if args.hl_update_at_home_only and (hl_update_tick_l or hl_update_tick_r):
+            if args.debug_hl_logs and args.hl_update_at_home_only and (hl_update_tick_l or hl_update_tick_r):
                 if left_home is None or right_home is None:
                     home_ok, diff_l, diff_r, left_open, right_open = is_at_home(
                         qpos_numpy,
@@ -1557,6 +1557,14 @@ def main(args):
                     continue
                 if safe_get_color_local(idx) == 'r' and idx not in final_target_indices_i_right:
                     final_target_indices_i_right.append(idx)
+
+            # Drop stale coop pairs before display selection.
+            if coop_display_lock_pair is not None:
+                if is_removed_cube_local(coop_display_lock_pair[0]) or is_removed_cube_local(coop_display_lock_pair[1]):
+                    coop_display_lock_pair = None
+            if active_coop_pair is not None:
+                if is_removed_cube_local(active_coop_pair[0]) or is_removed_cube_local(active_coop_pair[1]):
+                    active_coop_pair = None
                 
             # Cooperative view must be atomic: exactly one G + one B (or empty).
             # If a pair is latched for delayed removal, keep showing that pair until removed.
@@ -2065,7 +2073,7 @@ def main(args):
                     right_waiting_indep_target = True
 
             # Logging
-            if t % 50 == 0:
+            if args.debug_hl_logs and t % 50 == 0:
                 print(f"[Step {t}] Classifier: L={STATE_NAMES[s_l]} R={STATE_NAMES[s_r]} -> Plan: L={plan_l_state} R={plan_r_state} (Agg: {temporal_agg})")
                 if onscreen_render:
                     plt.title(f"Plan: L={plan_l_state} R={plan_r_state} (State: {STATE_NAMES[s_l]}/{STATE_NAMES[s_r]})")
@@ -2243,21 +2251,24 @@ def main(args):
                     step_in_chunk_left = 0
                     all_time_actions_left.fill_(float_nan)
                     force_query_l = True
-                    print(f"[Step {t}] Home refresh: LEFT INDEP chunk dropped -> force re-infer")
+                    if args.debug_hl_logs:
+                        print(f"[Step {t}] Home refresh: LEFT INDEP chunk dropped -> force re-infer")
 
                 if refresh_right_indep:
                     current_action_chunk_right = None
                     step_in_chunk_right = 0
                     all_time_actions_right.fill_(float_nan)
                     force_query_r = True
-                    print(f"[Step {t}] Home refresh: RIGHT INDEP chunk dropped -> force re-infer")
+                    if args.debug_hl_logs:
+                        print(f"[Step {t}] Home refresh: RIGHT INDEP chunk dropped -> force re-infer")
 
                 if refresh_dual_coop:
                     current_action_chunk_dual = None
                     step_in_chunk_dual = 0
                     all_time_actions_dual.fill_(float_nan)
                     force_query_dual = True
-                    print(f"[Step {t}] Home refresh: COOP chunk dropped (both home) -> force re-infer")
+                    if args.debug_hl_logs:
+                        print(f"[Step {t}] Home refresh: COOP chunk dropped (both home) -> force re-infer")
             with torch.inference_mode():
                 if step_in_chunk_dual >= chunk_size and not (use_temporal_agg_l or use_temporal_agg_r):
                     step_in_chunk_dual = 0
@@ -2291,17 +2302,7 @@ def main(args):
                 need_dual_r = (plan_r_state == 'COOP') or (is_transitioning_r and proposed_r_state == 'COOP')
                 
                 should_query_dual = (step_in_chunk_dual == 0) or (need_dual_l and use_temporal_agg_l) or (need_dual_r and use_temporal_agg_r) or force_query_dual
-                # Force query if we are transitioning (need fresh frames for blending) even if TE is off?
-                # If TE is off, we usually query every chunk start (every 100 steps). 
-                # If we transition mid-chunk, we simply use the chunk relevant to that policy.
-                # BUT if we assume chunk alignment, we might need to force query.
-                # However, forcing query every step is expensive.
-                # Let's rely on standard logic: If transition is active, we behave "as if" that mode is active?
-                # Simpler: If transitioning, we might need to query if we haven't already.
-                
-                # If TE is OFF, we rely on chunks. 
-                # If plan='INDEP' but proposed='COOP', we need COOP chunk.
-                # If current_action_chunk_dual is None, we MUST query.
+
                 if (need_dual_l or need_dual_r) and (current_action_chunk_dual is None):
                     should_query_dual = True
 
@@ -2696,44 +2697,68 @@ def main(args):
             ever_grasped_objects.update(grasped_now_for_bg)
 
             # BG failure handling:
-            # If a cooperative G/B pair has been grasped at least once but is not assembled,
-            # force-remove the pair when either cube reaches goal plate, touches cushion,
-            # or falls below z threshold.
+            # Use authoritative cooperative pair sources only (magnetized pairs / locked completed pair)
+            # to avoid mixing unrelated G/B cubes from heuristic display targets.
             bg_candidate_pairs = []
-            if active_coop_pair is not None and (
-                is_cube_removed_runtime(active_coop_pair[0]) or is_cube_removed_runtime(active_coop_pair[1])
-            ):
-                active_coop_pair = None
-            if coop_display_lock_pair is not None and (
-                is_cube_removed_runtime(coop_display_lock_pair[0]) or is_cube_removed_runtime(coop_display_lock_pair[1])
-            ):
-                coop_display_lock_pair = None
-            if active_coop_pair is not None:
-                bg_candidate_pairs.append(active_coop_pair)
-            if coop_display_lock_pair is not None and coop_display_lock_pair not in bg_candidate_pairs:
-                bg_candidate_pairs.append(coop_display_lock_pair)
 
-            def add_gb_pair_from_indices(indices):
-                if not indices:
+            def add_bg_pair(g_idx_local, b_idx_local):
+                if g_idx_local is None or b_idx_local is None:
                     return
-                g_idx_local = None
-                b_idx_local = None
-                for idx_local in indices:
-                    if is_cube_removed_runtime(idx_local):
-                        continue
-                    c_local = get_color_for_idx(idx_local)
-                    if c_local == 'g' and g_idx_local is None:
-                        g_idx_local = idx_local
-                    elif c_local == 'b' and b_idx_local is None:
-                        b_idx_local = idx_local
-                if g_idx_local is not None and b_idx_local is not None:
-                    pair_local = (g_idx_local, b_idx_local)
-                    pair_local_rev = (b_idx_local, g_idx_local)
-                    if pair_local not in bg_candidate_pairs and pair_local_rev not in bg_candidate_pairs:
-                        bg_candidate_pairs.append(pair_local)
+                if is_cube_removed_runtime(g_idx_local) or is_cube_removed_runtime(b_idx_local):
+                    return
+                if get_color_for_idx(g_idx_local) != 'g' or get_color_for_idx(b_idx_local) != 'b':
+                    return
+                pair_local = (g_idx_local, b_idx_local)
+                pair_local_rev = (b_idx_local, g_idx_local)
+                if pair_local not in bg_candidate_pairs and pair_local_rev not in bg_candidate_pairs:
+                    bg_candidate_pairs.append(pair_local)
 
-            add_gb_pair_from_indices(final_target_indices_c if 'final_target_indices_c' in locals() else [])
-            add_gb_pair_from_indices(current_target_indices_c if 'current_target_indices_c' in locals() else [])
+            # 1) Completed/locked cooperative pair (if any)
+            if coop_display_lock_pair is not None:
+                g_lock, b_lock = coop_display_lock_pair
+                if get_color_for_idx(g_lock) == 'b' and get_color_for_idx(b_lock) == 'g':
+                    g_lock, b_lock = b_lock, g_lock
+                add_bg_pair(g_lock, b_lock)
+
+            # 2) Magnetized pairs are the ground truth for current G-B coupling.
+            for g_idx_mag, data_mag in magnetized_pairs.items():
+                b_idx_mag = data_mag.get('blue_idx', None)
+                add_bg_pair(g_idx_mag, b_idx_mag)
+
+            # 2.5) Safe fallback: if coop shadow currently shows exactly one G/B pair,
+            # use that exact pair (no heuristic mixing across different indices).
+            if 'final_target_indices_c' in locals() and len(final_target_indices_c) == 2:
+                p0, p1 = final_target_indices_c[0], final_target_indices_c[1]
+                c0 = get_color_for_idx(p0)
+                c1 = get_color_for_idx(p1)
+                if c0 == 'g' and c1 == 'b':
+                    add_bg_pair(p0, p1)
+                elif c0 == 'b' and c1 == 'g':
+                    add_bg_pair(p1, p0)
+
+            # 3) Keep active_coop_pair only when it matches an actual magnetized pair.
+            if active_coop_pair is not None:
+                g_act, b_act = active_coop_pair
+                if get_color_for_idx(g_act) == 'b' and get_color_for_idx(b_act) == 'g':
+                    g_act, b_act = b_act, g_act
+                if g_act in magnetized_pairs and magnetized_pairs[g_act].get('blue_idx', None) == b_act:
+                    add_bg_pair(g_act, b_act)
+
+            if args.debug_bg_removal_logs:
+                should_log_bg = (
+                    (t % args.debug_bg_log_interval == 0)
+                    or bool(on_cushion)
+                    or bool(in_goal)
+                    or bool(bg_candidate_pairs)
+                    or bool(forced_pair_removal)
+                )
+                if should_log_bg:
+                    print(
+                        f"[Step {t}] BG debug | on_cushion={sorted(list(on_cushion))} "
+                        f"in_goal={sorted(list(in_goal))} bg_pairs={bg_candidate_pairs} "
+                        f"magnet_pairs={[(g, d.get('blue_idx', None)) for g, d in magnetized_pairs.items()]} "
+                        f"active_pair={active_coop_pair} lock_pair={coop_display_lock_pair}"
+                    )
 
             ever_contacted_objects = set(ever_grasped_objects)
             ever_contacted_objects.update(acc_touched_left)
@@ -2765,6 +2790,25 @@ def main(args):
                     coop_pair_release_streak.pop(pair_key, None)
                     continue
 
+                fail_goal = (g_idx in in_goal) or (b_idx in in_goal)
+                fail_cushion = (g_idx in on_cushion) or (b_idx in on_cushion)
+                fail_fall = (get_cube_z(g_idx) < -0.1) or (get_cube_z(b_idx) < -0.1)
+
+                # Immediate BG-fail conditions should not depend on grasp/touch history.
+                if fail_goal or fail_cushion or fail_fall:
+                    reason_tokens = []
+                    if fail_goal:
+                        reason_tokens.append('goal')
+                    if fail_cushion:
+                        reason_tokens.append('cushion')
+                    if fail_fall:
+                        reason_tokens.append('fall')
+                    reason = '/'.join(reason_tokens)
+                    print(f"[Step {t}] BG fail pair removal scheduled: G{g_idx}+B{b_idx} reason={reason}")
+                    forced_pair_removal.update([g_idx, b_idx])
+                    coop_pair_release_streak.pop(pair_key, None)
+                    continue
+
                 ever_contacted_pair = (g_idx in ever_contacted_objects) or (b_idx in ever_contacted_objects)
                 if not ever_contacted_pair:
                     coop_pair_release_streak.pop(pair_key, None)
@@ -2783,22 +2827,6 @@ def main(args):
                     print(f"[Step {t}] BG fail pair removal scheduled: G{g_idx}+B{b_idx} reason=release20")
                     forced_pair_removal.update([g_idx, b_idx])
                     continue
-
-                fail_goal = (g_idx in in_goal) or (b_idx in in_goal)
-                fail_cushion = (g_idx in on_cushion) or (b_idx in on_cushion)
-                fail_fall = (get_cube_z(g_idx) < -0.1) or (get_cube_z(b_idx) < -0.1)
-
-                if fail_goal or fail_cushion or fail_fall:
-                    reason_tokens = []
-                    if fail_goal:
-                        reason_tokens.append('goal')
-                    if fail_cushion:
-                        reason_tokens.append('cushion')
-                    if fail_fall:
-                        reason_tokens.append('fall')
-                    reason = '/'.join(reason_tokens)
-                    print(f"[Step {t}] BG fail pair removal scheduled: G{g_idx}+B{b_idx} reason={reason}")
-                    forced_pair_removal.update([g_idx, b_idx])
 
             for stale_pair in list(coop_pair_release_streak.keys()):
                 if stale_pair not in active_pair_keys:
@@ -2840,9 +2868,9 @@ def main(args):
                  nearby = get_proximity_cubes(env.physics)
                  currently_touching = get_touched_cubes_per_arm(env.physics)
 
-                 protected_any = (grasped['left'] | grasped['right'] | 
-                                  currently_touching['left'] | currently_touching['right'] | 
-                                  nearby)
+                 protected_strict = (grasped['left'] | grasped['right'] |
+                                     currently_touching['left'] | currently_touching['right'])
+                 protected_any = (protected_strict | nearby)
 
                  # Strict policy with hysteresis:
                  # remove previously grasped non-coop cubes only after consecutive
@@ -2873,7 +2901,8 @@ def main(args):
                  pending_removal = {idx for idx in pending_removal if get_color_for_idx(idx) not in ['g', 'b']}
 
                  # Standard single-object removal (non-coop goal + cushion)
-                 to_remove = set(pending_removal - protected_any)
+                 # Do not block by mere proximity; only active grasp/touch should protect.
+                 to_remove = set(pending_removal - protected_strict)
                  to_remove.update(released_grasped)
                  to_remove.update(forced_pair_removal)
                  to_remove = {idx for idx in to_remove if not is_cube_removed_runtime(idx)}
@@ -3212,6 +3241,7 @@ if __name__ == '__main__':
     parser.add_argument('--hl_home_threshold', action='store', type=float, default=0.25, help='Arm joint threshold for hierarchical-style high-level home check')
     parser.add_argument('--hl_home_gripper_threshold', action='store', type=float, default=0.8, help='Gripper-open threshold for hierarchical-style high-level home check')
     parser.add_argument('--hl_update_log_interval', action='store', type=int, default=50, help='Step interval for logging non-fired high-level updates in home-only mode')
+    parser.add_argument('--debug_hl_logs', action='store_true', help='Enable verbose high-level/update/home-refresh debug logs')
     parser.add_argument('--switch_guard_steps', action='store', type=int, default=8, help='Stable high-level prediction steps required before requesting mode switch')
     parser.add_argument('--switch_home_pause_steps', action='store', type=int, default=15, help='Pause steps at home before activating next policy')
     parser.add_argument('--switch_home_settle_steps', action='store', type=int, default=6, help='Additional steps to keep exact home pose after switch activation')
@@ -3232,6 +3262,8 @@ if __name__ == '__main__':
     parser.add_argument('--debug_scripted_coop_low_level_only', action='store_true', help='Debug mode: override only COOP/COOP low-level steps with scripted policy; keep independent low-level learned')
     parser.add_argument('--hl_oracle_metadata_csv', action='store', type=str, default=None,
                         help='Optional metadata CSV (e.g., dryrun_sequence_metadata output) to replay handcrafted high-level mode transitions')
+    parser.add_argument('--debug_bg_removal_logs', action='store_true', help='Enable debug logs for BG pair candidate/removal conditions')
+    parser.add_argument('--debug_bg_log_interval', action='store', type=int, default=50, help='Step interval for periodic BG debug logs')
 
     args = parser.parse_args()
     main(args)
