@@ -170,10 +170,11 @@ python3 extract_transitions.py \
 
 
 python3 train_state_classifier.py \
-    --dataset_dirs /media/act/Mozgi_1T/data4/random \
+    --dataset_dirs /data5/whole_task_raw \
     --lookahead 50 \
-    --epochs 50 \
-    --batch_size 32
+    --epochs 20 \
+    --batch_size 32  --save_ckpt_path binary_state_classifier.pth \
+   
 
 python3 state_switcher.py \
     --task_name sim_many_cubes \
@@ -212,11 +213,12 @@ python3 state_switcher.py \
         --ckpt_dual ckpts/coordinated  \
         --ckpt_left ckpts/independent_left  \
         --ckpt_right ckpts/independent_right  \
-        --state_ckpt old_state_classifier_best.pth \
+        --state_ckpt binary_state_classifier.pth \
         --chunk_size 75 \
         --inherit_temporal_buffer --temporal_agg_k 0.03  \
         --warmup_steps 50 --num_rollouts 50  --episode_len 3000 --seed 2 \
-        --sequence_file original_sequences.csv --no_temporal_agg --onscreen_render --hl_oracle_metadata_csv oracle.csv --save_stats_path hie_scripted_highlevel.txt
+        --sequence_file original_sequences.csv --no_temporal_agg  \
+        --save_stats_path results/hie_binary_classifier.txt --save_video videos/hie_binary_classifier --unit_test_scripted_low_level
 
 
 python3 evaluate_policy_switcher.py\
@@ -288,8 +290,8 @@ python3 hierarchical_policy.py \
 python3 state_switcher.py         --task_name sim_many_cubes         --ckpt_dual ckpt5/pretrained_c_60000          --ckpt_left ckpt5/pretrained_left          --ckpt_right ckpt5/pretrained_right          --state_ckpt old_state_classifier_best.pth         --chunk_size 75         --temporal_agg_k 0.03          --num_rollouts 50  --episode_len 3000 --seed 0         --sequence_file original_sequences.csv --hl_update_at_home_only --hl_update_interval 50 --no_temporal_agg  --unit_test_scripted_low_level  --save_stats_path hie_scripted_lowlevel.txt
 
 
-    python3 analyze_hie_evaluation.py --input hie_evaluation_results9.txt --out_dir hie_result
-
+    python3 analyze_hie_evaluation.py --input results/test_binary_classifier.txt --out_dir results/binary_classifier_analysis
+    
 python3 dryrun_sequence_metadata.py --sequence_file original_sequences.csv --output_csv dryrun100.csv --num_episodes 100 --no_shuffle
 
 
@@ -307,4 +309,4 @@ python3 state_switcher.py \
         --save_stats_path result.txt --save_video videos/ --onscreen_render
 
 
-python3 eval_state_classifier_dataset.py --dataset_dir data5/whole_task_raw --ckpt old_state_classifier_best.pth --lookahead 50 --out_dir results/old_state_classifier_eval_whole_task_raw
+python3 eval_state_classifier_dataset.py --dataset_dir data5/whole_task_raw --ckpt binary_state_classifier.pth --lookahead 50 --out_dir results/old_state_classifier_eval_whole_task_raw
