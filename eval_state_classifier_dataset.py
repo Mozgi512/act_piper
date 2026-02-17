@@ -9,7 +9,7 @@ from sklearn.metrics import classification_report, confusion_matrix
 from torch.utils.data import DataLoader
 from torchvision import transforms
 
-from train_state_classifier import DualStateClassifier, STATE_NAMES, StateDataset
+from train_state_classifier import BINARY_STATE_NAMES, DualStateClassifier, StateDataset
 
 
 def main():
@@ -46,7 +46,7 @@ def main():
         pin_memory=(device == "cuda"),
     )
 
-    model = DualStateClassifier(num_classes=3)
+    model = DualStateClassifier(num_classes=2)
     state = torch.load(args.ckpt, map_location=device)
     model.load_state_dict(state)
     model.to(device)
@@ -79,8 +79,8 @@ def main():
     acc_r = float((all_true_r == all_pred_r).mean())
     acc_avg = float((acc_l + acc_r) / 2.0)
 
-    labels = [0, 1, 2]
-    class_names = [STATE_NAMES[i] for i in labels]
+    labels = [0, 1]
+    class_names = [BINARY_STATE_NAMES[i] for i in labels]
 
     cm_l = confusion_matrix(all_true_l, all_pred_l, labels=labels)
     cm_r = confusion_matrix(all_true_r, all_pred_r, labels=labels)

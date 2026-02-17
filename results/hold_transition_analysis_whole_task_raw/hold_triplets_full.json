@@ -1,0 +1,17 @@
+{
+  "left": {
+    "INDEP->HOLD->COOP": 45,
+    "COOP->HOLD->COOP": 104,
+    "COOP->HOLD->END": 22,
+    "START->HOLD->COOP": 20,
+    "INDEP->HOLD->END": 18
+  },
+  "right": {
+    "COOP->HOLD->INDEP": 54,
+    "INDEP->HOLD->INDEP": 35,
+    "COOP->HOLD->COOP": 52,
+    "INDEP->HOLD->COOP": 15,
+    "COOP->HOLD->END": 2,
+    "INDEP->HOLD->END": 7
+  }
+}

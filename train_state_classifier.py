@@ -11,12 +11,17 @@ from torchvision import transforms, models
 from tqdm import tqdm
 from PIL import Image
 
-# Constants for States
+# Legacy state IDs (kept for compatibility with other scripts importing this file)
 STATE_HOLD = 0
 STATE_INDEP = 1
 STATE_COOP = 2
-
 STATE_NAMES = {0: 'HOLD', 1: 'INDEP', 2: 'COOP'}
+
+# Binary training IDs used in this script:
+# INDEP vs COOP, with HOLD merged into COOP
+BINARY_INDEP = 0
+BINARY_COOP = 1
+BINARY_STATE_NAMES = {0: 'INDEP', 1: 'COOP'}
 
 class DualStateClassifier(nn.Module):
     def __init__(self, num_classes=3):
@@ -41,6 +46,15 @@ class StateDataset(Dataset):
         self.samples = [] # (file_path, frame_idx, label_l, label_r)
         self.transform = transform
         self.lookahead = lookahead
+
+        def to_binary_label(label):
+            try:
+                label = int(label)
+            except Exception:
+                return BINARY_COOP
+            if label == STATE_INDEP:
+                return BINARY_INDEP
+            return BINARY_COOP
 
         for d in dataset_dirs:
             files = sorted(glob.glob(os.path.join(d, 'episode_*.hdf5')))
@@ -67,8 +81,8 @@ class StateDataset(Dataset):
                             # No lookahead needed, use all frames
                             stride = 5
                             for t in range(0, num_frames, stride):
-                                lbl_l = labels_l[t]
-                                lbl_r = labels_r[t]
+                                lbl_l = to_binary_label(labels_l[t])
+                                lbl_r = to_binary_label(labels_r[t])
                                 self.samples.append((file_path, t, lbl_l, lbl_r))
                             continue
                         
@@ -76,9 +90,9 @@ class StateDataset(Dataset):
                         if num_frames <= lookahead:
                             continue
 
-                        # Construct frame-wise labels (0 = HOLD default)
-                        labels_l = np.zeros(num_frames, dtype=int)
-                        labels_r = np.zeros(num_frames, dtype=int)
+                        # Construct frame-wise binary labels (default COOP, HOLD merged into COOP)
+                        labels_l = np.full(num_frames, BINARY_COOP, dtype=int)
+                        labels_r = np.full(num_frames, BINARY_COOP, dtype=int)
                         
                         l_segs = f['metadata/left_segments'][()]
                         r_segs = f['metadata/right_segments'][()]
@@ -92,9 +106,11 @@ class StateDataset(Dataset):
                             start = max(0, int(seg['start']))
                             end = min(num_frames, int(seg['end']))
                             
-                            val = STATE_HOLD
-                            if stype == 'independent': val = STATE_INDEP
-                            elif stype == 'cooperative': val = STATE_COOP
+                            val = BINARY_COOP
+                            if stype == 'independent':
+                                val = BINARY_INDEP
+                            elif stype == 'cooperative':
+                                val = BINARY_COOP
                             
                             if start < end:
                                 labels_l[start:end] = val
@@ -105,9 +121,11 @@ class StateDataset(Dataset):
                             start = max(0, int(seg['start']))
                             end = min(num_frames, int(seg['end']))
                             
-                            val = STATE_HOLD
-                            if stype == 'independent': val = STATE_INDEP
-                            elif stype == 'cooperative': val = STATE_COOP
+                            val = BINARY_COOP
+                            if stype == 'independent':
+                                val = BINARY_INDEP
+                            elif stype == 'cooperative':
+                                val = BINARY_COOP
                             
                             if start < end:
                                 labels_r[start:end] = val
@@ -149,7 +167,7 @@ class StateDataset(Dataset):
             print(f"Error loading {file_path} at {t}: {e}")
             return self.__getitem__(np.random.randint(0, len(self.samples)))
 
-def train_model(model, train_loader, val_loader, criterion, optimizer, num_epochs=10, device='cuda'):
+def train_model(model, train_loader, val_loader, criterion, optimizer, num_epochs=10, device='cuda', save_ckpt_path='state_classifier_best.pth'):
     best_acc_avg = 0.0
     best_model_wts = model.state_dict()
 
@@ -203,7 +221,10 @@ def train_model(model, train_loader, val_loader, criterion, optimizer, num_epoch
             if phase == 'val' and epoch_acc_avg > best_acc_avg:
                 best_acc_avg = epoch_acc_avg
                 best_model_wts = model.state_dict()
-                torch.save(model.state_dict(), 'state_classifier_best.pth')
+                save_dir = os.path.dirname(save_ckpt_path)
+                if save_dir:
+                    os.makedirs(save_dir, exist_ok=True)
+                torch.save(model.state_dict(), save_ckpt_path)
 
         print()
 
@@ -220,6 +241,7 @@ def main():
     parser.add_argument('--lookahead', type=int, default=50, help='Steps to look ahead for label')
     parser.add_argument('--val_ratio', type=float, default=0.2, help='Validation split ratio by episode/file')
     parser.add_argument('--split_seed', type=int, default=0, help='Random seed for episode-level split')
+    parser.add_argument('--save_ckpt_path', type=str, default='state_classifier_best.pth', help='Path to save best model checkpoint')
     
     args = parser.parse_args()
 
@@ -280,13 +302,22 @@ def main():
     device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
     print(f"Using device: {device}")
 
-    model = DualStateClassifier(num_classes=3)
+    model = DualStateClassifier(num_classes=2)
     model = model.to(device)
 
     criterion = nn.CrossEntropyLoss()
     optimizer = optim.SGD(model.parameters(), lr=args.lr, momentum=0.9)
 
-    train_model(model, train_loader, val_loader, criterion, optimizer, num_epochs=args.epochs, device=device)
+    train_model(
+        model,
+        train_loader,
+        val_loader,
+        criterion,
+        optimizer,
+        num_epochs=args.epochs,
+        device=device,
+        save_ckpt_path=args.save_ckpt_path,
+    )
 
 if __name__ == '__main__':
     main()

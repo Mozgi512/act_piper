@@ -1,32 +1,0 @@
-/home/act/miniconda3/envs/aloha/lib/python3.10/site-packages/torchvision/models/_utils.py:208: UserWarning: The parameter 'pretrained' is deprecated since 0.13 and may be removed in the future, please use 'weights' instead.
-  warnings.warn(
-/home/act/miniconda3/envs/aloha/lib/python3.10/site-packages/torchvision/models/_utils.py:223: UserWarning: Arguments other than a weight enum or `None` for 'weights' are deprecated since 0.13 and may be removed in the future. The current behavior is equivalent to passing `weights=None`.
-  warnings.warn(msg)
-Dataset loaded with 124 samples.
-Evaluating model: multihead_classifier_ckpt/best_multihead_classifier.pth
-Evaluating:   0%|          | 0/4 [00:00<?, ?it/s]Evaluating:  25%|██▌       | 1/4 [00:00<00:01,  2.21it/s]Evaluating: 100%|██████████| 4/4 [00:00<00:00,  8.14it/s]
-
-Sample Predictions (First Batch):
-  Img: start_frame_0970.png
-    Target -> LM:COOP/HOLD, RM:INDEP, LO:NONE, RO:R0
-    Pred   -> LM:COOP/HOLD, RM:INDEP, LO:NONE, RO:R0
-  Img: start_frame_1740.png
-    Target -> LM:COOP/HOLD, RM:INDEP, LO:NONE, RO:R0
-    Pred   -> LM:COOP/HOLD, RM:INDEP, LO:NONE, RO:R0
-  Img: start_frame_970.png
-    Target -> LM:COOP/HOLD, RM:INDEP, LO:NONE, RO:R0
-    Pred   -> LM:COOP/HOLD, RM:INDEP, LO:NONE, RO:R0
-  Img: start_frame_2110.png
-    Target -> LM:COOP/HOLD, RM:COOP/HOLD, LO:L1, RO:L0
-    Pred   -> LM:COOP/HOLD, RM:COOP/HOLD, LO:L1, RO:L0
-  Img: start_frame_570.png
-    Target -> LM:COOP/HOLD, RM:COOP/HOLD, LO:L2, RO:L0
-    Pred   -> LM:COOP/HOLD, RM:COOP/HOLD, LO:L1, RO:L0
-
-==============================
-Accuracy Summary (Total samples: 124)
-  Left Arm Mode:  0.9032
-  Right Arm Mode: 0.9758
-  Left Object ID: 0.6935
-  Right Object ID:0.7903
-==============================

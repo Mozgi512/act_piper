@@ -206,6 +206,12 @@ def mode_to_char(mode_str):
         return 'H'
     return 'I'
 
+def majority_state(queue):
+    if len(queue) == 0:
+        return STATE_INDEP
+    counts = collections.Counter(queue)
+    return counts.most_common(1)[0][0]
+
 def compose_video_frame(main_rgb, coop_rgb, indep_l_rgb, indep_r_rgb, left_mode_char, right_mode_char):
     tile_w, tile_h = 640, 360
     main_tile = cv2.resize(main_rgb, (tile_w, tile_h), interpolation=cv2.INTER_LINEAR)
@@ -787,17 +793,33 @@ def load_policy_and_stats(ckpt_dir, policy_class, args, override_state_dim=None,
 
 def load_state_classifier(ckpt_path, device='cuda'):
     print(f"Loading State Classifier from {ckpt_path}...")
-    model = DualStateClassifier(num_classes=3)
-    model.load_state_dict(torch.load(ckpt_path, map_location=device))
+    loaded_state_dict = torch.load(ckpt_path, map_location=device)
+    if isinstance(loaded_state_dict, dict) and 'model_state_dict' in loaded_state_dict:
+        loaded_state_dict = loaded_state_dict['model_state_dict']
+
+    num_classes = None
+    for key in ['fc_left.weight', 'fc_left.bias', 'module.fc_left.weight', 'module.fc_left.bias']:
+        if key in loaded_state_dict:
+            tensor = loaded_state_dict[key]
+            num_classes = int(tensor.shape[0])
+            break
+    if num_classes is None:
+        num_classes = 3
+
+    model = DualStateClassifier(num_classes=num_classes)
+    model.load_state_dict(loaded_state_dict)
     model.to(device)
     model.eval()
-    return model
+    print(f"State classifier head classes: {num_classes}")
+    return model, num_classes
 
 def main(args):
     set_seed(args.seed)
     scripted_ll_override_all_mode = bool(getattr(args, 'debug_scripted_low_level', False) or getattr(args, 'unit_test_scripted_low_level', False))
     scripted_ll_coop_only_mode = bool(getattr(args, 'debug_scripted_coop_low_level_only', False))
     scripted_ll_test_mode = bool(scripted_ll_override_all_mode or scripted_ll_coop_only_mode)
+    if scripted_ll_test_mode:
+        print("[Debug Scripted LL] Enabled: low-level scripted EE stepping is active and can heavily reduce runtime performance.")
     
     task_name = args.task_name
     ckpt_dual = args.ckpt_dual
@@ -987,7 +1009,15 @@ def main(args):
 
     # --- Mode Classifier ---
     print(f"Loading State Classifier from {args.state_ckpt}...")
-    state_classifier = load_state_classifier(args.state_ckpt)
+    state_classifier, hl_classifier_num_classes = load_state_classifier(args.state_ckpt)
+
+    def map_hl_pred_to_state(pred_item):
+        pred_item = int(pred_item)
+        if hl_classifier_num_classes <= 2:
+            # Binary classifier convention: 0=INDEP, 1=COOP (HOLD merged into COOP)
+            return STATE_INDEP if pred_item == 0 else STATE_COOP
+        # Ternary classifier convention: 0=HOLD, 1=INDEP, 2=COOP
+        return pred_item
     
     # Classifier Transforms
     cls_transform = transforms.Compose([
@@ -1217,21 +1247,28 @@ def main(args):
     temporal_agg = True
     if args.no_temporal_agg:
         temporal_agg = False
+    defer_shadow_updates = (not onscreen_render)
     
     num_queries = args.chunk_size
     float_nan = float('nan')
-    all_time_actions_dual = torch.full([max_timesteps, max_timesteps+num_queries, 14], float_nan).cuda()
-    all_time_actions_left = torch.full([max_timesteps, max_timesteps+num_queries, 7], float_nan).cuda()
-    all_time_actions_right = torch.full([max_timesteps, max_timesteps+num_queries, 7], float_nan).cuda()
+    if temporal_agg:
+        all_time_actions_dual = torch.full([max_timesteps, max_timesteps+num_queries, 14], float_nan).cuda()
+        all_time_actions_left = torch.full([max_timesteps, max_timesteps+num_queries, 7], float_nan).cuda()
+        all_time_actions_right = torch.full([max_timesteps, max_timesteps+num_queries, 7], float_nan).cuda()
+    else:
+        all_time_actions_dual = None
+        all_time_actions_left = None
+        all_time_actions_right = None
 
     def clear_temporary_states(reset_transition_windows=False):
         nonlocal step_in_chunk_dual, step_in_chunk_left, step_in_chunk_right
         nonlocal current_action_chunk_dual, current_action_chunk_left, current_action_chunk_right
         nonlocal transition_window_active_l, transition_window_active_r
 
-        all_time_actions_dual.fill_(float_nan)
-        all_time_actions_left.fill_(float_nan)
-        all_time_actions_right.fill_(float_nan)
+        if temporal_agg:
+            all_time_actions_dual.fill_(float_nan)
+            all_time_actions_left.fill_(float_nan)
+            all_time_actions_right.fill_(float_nan)
 
         step_in_chunk_dual = 0
         step_in_chunk_left = 0
@@ -1270,6 +1307,25 @@ def main(args):
         t = 0
         video_frames = []
         episode_count = 0
+        episode_wall_start = time.time()
+        profile_hl_sec = 0.0
+        profile_target_sec = 0.0
+        profile_policy_sec = 0.0
+        profile_logic_sec = 0.0
+        profile_input_sec = 0.0
+        profile_prep_sec = 0.0
+        profile_action_sec = 0.0
+        profile_action_core_sec = 0.0
+        profile_action_debug_sec = 0.0
+        profile_action_rehome_sec = 0.0
+        profile_step_sec = 0.0
+        profile_magnet_sec = 0.0
+        profile_removal_sec = 0.0
+        profile_query_dual = 0
+        profile_query_left = 0
+        profile_query_right = 0
+        profile_hl_infer = 0
+        temporal_weight_cache = {}
         
         # Stats
         episode_returns = []
@@ -1359,9 +1415,11 @@ def main(args):
         
         while True:
             # Check input (for quit)
+            _t_input_start = time.perf_counter()
             quit_key = None
             if old_settings:
                 quit_key = get_hitl_key()
+            profile_input_sec += (time.perf_counter() - _t_input_start)
             if quit_key == 'q':
                 break
 
@@ -1432,10 +1490,12 @@ def main(args):
                 )
             
             # --- SHADOW SYNC & HIDING ---
+            _t_target_start = time.perf_counter()
             # 1. Sync
-            sync_envs(env.physics, env_shadow_c.physics)
-            sync_envs(env.physics, env_shadow_i_left.physics)
-            sync_envs(env.physics, env_shadow_i_right.physics)
+            if not defer_shadow_updates:
+                sync_envs(env.physics, env_shadow_c.physics)
+                sync_envs(env.physics, env_shadow_i_left.physics)
+                sync_envs(env.physics, env_shadow_i_right.physics)
             
             # 2. Heuristic Targets
             color_seq = getattr(env.task, 'color_sequence', MANYCUBES_COLORS[0])
@@ -1618,9 +1678,10 @@ def main(args):
                  )
 
             # 3. Hide
-            hide_objects(env_shadow_i_left.physics, final_target_indices_i_left, "IndepLeft")
-            hide_objects(env_shadow_i_right.physics, final_target_indices_i_right, "IndepRight")
-            hide_objects(env_shadow_c.physics, final_target_indices_c, "Coop")
+            if not defer_shadow_updates:
+                hide_objects(env_shadow_i_left.physics, final_target_indices_i_left, "IndepLeft")
+                hide_objects(env_shadow_i_right.physics, final_target_indices_i_right, "IndepRight")
+                hide_objects(env_shadow_c.physics, final_target_indices_c, "Coop")
 
             # Render update (optimized: every 5 frames)
             if onscreen_render and t % 5 == 0:
@@ -1643,9 +1704,11 @@ def main(args):
                 # Non-blocking update (prevents focus stealing)
                 fig.canvas.draw()
                 fig.canvas.flush_events()
-                time.sleep(DT)
+
+            profile_target_sec += (time.perf_counter() - _t_target_start)
 
             # --- State Classifier Inference / Oracle Replay ---
+            _t_hl_start = time.perf_counter()
             if current_hl_oracle_schedule is not None:
                 future_steps = max(0, int(args.hl_oracle_future_steps))
                 if t < future_steps:
@@ -1663,14 +1726,16 @@ def main(args):
                 if args.hl_update_at_home_only:
                     should_update_hl = (hl_update_tick_l or hl_update_tick_r)
                 else:
-                    should_update_hl = True
+                    hl_infer_interval = max(1, int(args.hl_infer_interval))
+                    should_update_hl = (t == 0) or (t % hl_infer_interval == 0)
 
                 if should_update_hl:
+                    profile_hl_infer += 1
                     raw_img_np = ts.observation['images']['top'] # (H,W,C)
                     raw_pil = Image.fromarray(raw_img_np.astype('uint8'))
                     cls_input = cls_transform(raw_pil).unsqueeze(0).cuda()
 
-                    with torch.no_grad():
+                    with torch.inference_mode():
                         out_l, out_r = state_classifier(cls_input)
                         _, pred_l = torch.max(out_l, 1)
                         _, pred_r = torch.max(out_r, 1)
@@ -1678,11 +1743,15 @@ def main(args):
                         pred_r_item = pred_r.item()
 
                     if (not args.hl_update_at_home_only) or hl_update_tick_l:
-                        hl_mode_l = pred_l_item
+                        hl_mode_l = map_hl_pred_to_state(pred_l_item)
                         last_hl_update_step_l = t
                     if (not args.hl_update_at_home_only) or hl_update_tick_r:
-                        hl_mode_r = pred_r_item
+                        hl_mode_r = map_hl_pred_to_state(pred_r_item)
                         last_hl_update_step_r = t
+
+            profile_hl_sec += (time.perf_counter() - _t_hl_start)
+
+            _t_logic_start = time.perf_counter()
 
             s_l = hl_mode_l
             s_r = hl_mode_r
@@ -1693,13 +1762,8 @@ def main(args):
             state_history_r.append(s_r)
             
             # Majority Vote
-            def get_majority(queue):
-                if len(queue) == 0: return 0
-                counts = collections.Counter(queue)
-                return counts.most_common(1)[0][0]
-            
-            s_l_smooth = get_majority(state_history_l)
-            s_r_smooth = get_majority(state_history_r)
+            s_l_smooth = majority_state(state_history_l)
+            s_r_smooth = majority_state(state_history_r)
             
             # Use smoothed states for planning
             plan_l_state = 'INDEP'
@@ -1817,23 +1881,31 @@ def main(args):
             proposed_l_state = plan_l_state # Store raw intent
             
             if plan_l_state != committed_plan_l_state:
-                if steps_since_switch_l > MIN_STATE_DURATION_STEPS:
-                     committed_plan_l_state = plan_l_state
-                     steps_since_switch_l = 0
+                moving_switch_l = (plan_l_state in ['INDEP', 'COOP']) and (committed_plan_l_state in ['INDEP', 'COOP'])
+                if moving_switch_l:
+                    # INDEP/COOP transition must be committed only by home-gated activation below.
+                    plan_l_state = committed_plan_l_state
+                elif steps_since_switch_l > MIN_STATE_DURATION_STEPS:
+                    committed_plan_l_state = plan_l_state
+                    steps_since_switch_l = 0
                 else:
-                     # Suppress switch - stay committed
-                     plan_l_state = committed_plan_l_state
+                    # Suppress switch - stay committed
+                    plan_l_state = committed_plan_l_state
 
             steps_since_switch_r += 1
             proposed_r_state = plan_r_state # Store raw intent
             
             if plan_r_state != committed_plan_r_state:
-                if steps_since_switch_r > MIN_STATE_DURATION_STEPS:
-                     committed_plan_r_state = plan_r_state
-                     steps_since_switch_r = 0
+                moving_switch_r = (plan_r_state in ['INDEP', 'COOP']) and (committed_plan_r_state in ['INDEP', 'COOP'])
+                if moving_switch_r:
+                    # INDEP/COOP transition must be committed only by home-gated activation below.
+                    plan_r_state = committed_plan_r_state
+                elif steps_since_switch_r > MIN_STATE_DURATION_STEPS:
+                    committed_plan_r_state = plan_r_state
+                    steps_since_switch_r = 0
                 else:
-                     # Suppress switch - stay committed
-                     plan_r_state = committed_plan_r_state
+                    # Suppress switch - stay committed
+                    plan_r_state = committed_plan_r_state
 
             # --- Home-Gated Switching Logic ---
             # Don't switch immediately on high-level prediction.
@@ -1854,9 +1926,10 @@ def main(args):
                 switch_candidate_count_l = 0
 
             if waiting_home_target_l is None and switch_candidate_l is not None and switch_candidate_count_l >= args.switch_guard_steps:
-                waiting_home_target_l = switch_candidate_l
-                home_pause_count_l = 0
-                print(f"[Step {t}] Left switch requested: {committed_plan_l_state} -> {waiting_home_target_l} (home-gated)")
+                if is_arm_at_home(qpos_numpy[:7], home_pose[:7], threshold=args.switch_home_threshold):
+                    waiting_home_target_l = switch_candidate_l
+                    home_pause_count_l = 0
+                    print(f"[Step {t}] Left switch requested: {committed_plan_l_state} -> {waiting_home_target_l} (home-gated)")
 
             # RIGHT arm: track stable switch request
             if proposed_r_state in ['INDEP', 'COOP'] and proposed_r_state != committed_plan_r_state:
@@ -1870,9 +1943,10 @@ def main(args):
                 switch_candidate_count_r = 0
 
             if waiting_home_target_r is None and switch_candidate_r is not None and switch_candidate_count_r >= args.switch_guard_steps:
-                waiting_home_target_r = switch_candidate_r
-                home_pause_count_r = 0
-                print(f"[Step {t}] Right switch requested: {committed_plan_r_state} -> {waiting_home_target_r} (home-gated)")
+                if is_arm_at_home(qpos_numpy[7:14], home_pose[7:14], threshold=args.switch_home_threshold):
+                    waiting_home_target_r = switch_candidate_r
+                    home_pause_count_r = 0
+                    print(f"[Step {t}] Right switch requested: {committed_plan_r_state} -> {waiting_home_target_r} (home-gated)")
 
             # LEFT arm: hold current policy until home reached, then pause and switch
             if waiting_home_target_l is not None:
@@ -1893,8 +1967,9 @@ def main(args):
                         switch_candidate_count_l = 0
                         home_pause_count_l = 0
 
-                        all_time_actions_left.fill_(float_nan)
-                        all_time_actions_dual[:, :, :7].fill_(float_nan)
+                        if temporal_agg:
+                            all_time_actions_left.fill_(float_nan)
+                            all_time_actions_dual[:, :, :7].fill_(float_nan)
                         current_action_chunk_left = None
                         current_action_chunk_dual = None
                         transition_window_active_l = 0
@@ -1925,8 +2000,9 @@ def main(args):
                         switch_candidate_count_r = 0
                         home_pause_count_r = 0
 
-                        all_time_actions_right.fill_(float_nan)
-                        all_time_actions_dual[:, :, 7:].fill_(float_nan)
+                        if temporal_agg:
+                            all_time_actions_right.fill_(float_nan)
+                            all_time_actions_dual[:, :, 7:].fill_(float_nan)
                         current_action_chunk_right = None
                         current_action_chunk_dual = None
                         transition_window_active_r = 0
@@ -2016,8 +2092,9 @@ def main(args):
                     proposed_l_state = 'INDEP'
                     committed_plan_l_state = 'INDEP'
                     steps_since_switch_l = 0
-                    all_time_actions_left.fill_(float_nan)
-                    all_time_actions_dual[:, :, :7].fill_(float_nan)
+                    if temporal_agg:
+                        all_time_actions_left.fill_(float_nan)
+                        all_time_actions_dual[:, :, :7].fill_(float_nan)
                     current_action_chunk_left = None
                     step_in_chunk_left = 0
                     transition_window_active_l = 0
@@ -2057,8 +2134,9 @@ def main(args):
                     proposed_r_state = 'INDEP'
                     committed_plan_r_state = 'INDEP'
                     steps_since_switch_r = 0
-                    all_time_actions_right.fill_(float_nan)
-                    all_time_actions_dual[:, :, 7:].fill_(float_nan)
+                    if temporal_agg:
+                        all_time_actions_right.fill_(float_nan)
+                        all_time_actions_dual[:, :, 7:].fill_(float_nan)
                     current_action_chunk_right = None
                     step_in_chunk_right = 0
                     transition_window_active_r = 0
@@ -2159,7 +2237,7 @@ def main(args):
             # -----------------------
             # 4.3 HUMAN-IN-THE-LOOP OVERRIDE
             # -----------------------
-            key = get_hitl_key()
+            key = quit_key
             if key:
                 if key == 'q':   hitl_mode_l, hitl_mode_r = 'HOLD', 'INDEP'
                 elif key == 'w': hitl_mode_l, hitl_mode_r = 'INDEP', 'INDEP'
@@ -2187,6 +2265,9 @@ def main(args):
             if is_override:
                  print(f" [HITL override] {hitl_mode_l}/{hitl_mode_r}", end='\r')
 
+            profile_logic_sec += (time.perf_counter() - _t_logic_start)
+
+            _t_prep_start = time.perf_counter()
 
             # Determine Final Effective State for Saving
             effective_l = plan_l_state
@@ -2256,7 +2337,8 @@ def main(args):
                 if refresh_left_indep:
                     current_action_chunk_left = None
                     step_in_chunk_left = 0
-                    all_time_actions_left.fill_(float_nan)
+                    if temporal_agg:
+                        all_time_actions_left.fill_(float_nan)
                     force_query_l = True
                     if args.debug_hl_logs:
                         print(f"[Step {t}] Home refresh: LEFT INDEP chunk dropped -> force re-infer")
@@ -2264,7 +2346,8 @@ def main(args):
                 if refresh_right_indep:
                     current_action_chunk_right = None
                     step_in_chunk_right = 0
-                    all_time_actions_right.fill_(float_nan)
+                    if temporal_agg:
+                        all_time_actions_right.fill_(float_nan)
                     force_query_r = True
                     if args.debug_hl_logs:
                         print(f"[Step {t}] Home refresh: RIGHT INDEP chunk dropped -> force re-infer")
@@ -2272,10 +2355,14 @@ def main(args):
                 if refresh_dual_coop:
                     current_action_chunk_dual = None
                     step_in_chunk_dual = 0
-                    all_time_actions_dual.fill_(float_nan)
+                    if temporal_agg:
+                        all_time_actions_dual.fill_(float_nan)
                     force_query_dual = True
                     if args.debug_hl_logs:
                         print(f"[Step {t}] Home refresh: COOP chunk dropped (both home) -> force re-infer")
+            profile_prep_sec += (time.perf_counter() - _t_prep_start)
+
+            _t_policy_start = time.perf_counter()
             with torch.inference_mode():
                 if step_in_chunk_dual >= chunk_size and not (use_temporal_agg_l or use_temporal_agg_r):
                     step_in_chunk_dual = 0
@@ -2293,11 +2380,21 @@ def main(args):
                         force_query_l = True
                     if prev_plan_l_state == 'COOP' or plan_l_state == 'COOP':
                         force_query_dual = True
+                    # If the other arm is still COOP, dual context changed and stale chunk can cause jumps.
+                    if plan_r_state == 'COOP' or prev_plan_r_state == 'COOP':
+                        force_query_dual = True
+                        current_action_chunk_dual = None
+                        step_in_chunk_dual = 0
                 if mode_switch_r and not use_temporal_agg_r:
                     if prev_plan_r_state in ['INDEP', 'HOLD'] or plan_r_state in ['INDEP', 'HOLD']:
                         force_query_r = True
                     if prev_plan_r_state == 'COOP' or plan_r_state == 'COOP':
                         force_query_dual = True
+                    # Symmetric handling: right-side mode change while left keeps COOP.
+                    if plan_l_state == 'COOP' or prev_plan_l_state == 'COOP':
+                        force_query_dual = True
+                        current_action_chunk_dual = None
+                        step_in_chunk_dual = 0
                 
                 prev_plan_l_state = plan_l_state
                 prev_plan_r_state = plan_r_state
@@ -2314,6 +2411,7 @@ def main(args):
                     should_query_dual = True
 
                 if (need_dual_l or need_dual_r) and should_query_dual:
+                    profile_query_dual += 1
                      # Prepare input for Dual Policy
                     qpos_numpy_dual = qpos_numpy.copy()
                       
@@ -2326,6 +2424,9 @@ def main(args):
                      # -------------------------------------------
                      
                     # Shadow Env Observation
+                    if defer_shadow_updates:
+                        sync_envs(env.physics, env_shadow_c.physics)
+                        hide_objects(env_shadow_c.physics, final_target_indices_c, "Coop")
                     obs_c = env_shadow_c.task.get_observation(env_shadow_c.physics)
                     ts_c = type('TS', (object,), {'observation': obs_c})()
 
@@ -2359,13 +2460,20 @@ def main(args):
                 ts_i_left = None
                 ts_i_right = None
                 if need_indep_l and should_query_l:
+                    if defer_shadow_updates:
+                        sync_envs(env.physics, env_shadow_i_left.physics)
+                        hide_objects(env_shadow_i_left.physics, final_target_indices_i_left, "IndepLeft")
                     obs_i_left = env_shadow_i_left.task.get_observation(env_shadow_i_left.physics)
                     ts_i_left = type('TS', (object,), {'observation': obs_i_left})()
                 if need_indep_r and should_query_r:
+                    if defer_shadow_updates:
+                        sync_envs(env.physics, env_shadow_i_right.physics)
+                        hide_objects(env_shadow_i_right.physics, final_target_indices_i_right, "IndepRight")
                     obs_i_right = env_shadow_i_right.task.get_observation(env_shadow_i_right.physics)
                     ts_i_right = type('TS', (object,), {'observation': obs_i_right})()
 
                 if need_indep_l and should_query_l:
+                    profile_query_left += 1
                     qpos_left_numpy = qpos_numpy[:7]
                     qpos_left = pre_process_left(qpos_left_numpy)
                     qpos_left = torch.from_numpy(qpos_left).float().cuda().unsqueeze(0)
@@ -2382,6 +2490,7 @@ def main(args):
                 
                 # 3. Query Independent Right (if needed)
                 if need_indep_r and should_query_r:
+                    profile_query_right += 1
                     qpos_right_numpy = qpos_numpy[7:14]
                     qpos_right = pre_process_right(qpos_right_numpy)
                     qpos_right = torch.from_numpy(qpos_right).float().cuda().unsqueeze(0)
@@ -2412,6 +2521,20 @@ def main(args):
                              
                 
                 # --- HELPER: Get Action for a specific state ---
+                temporal_agg_window = int(args.temporal_agg_window)
+                temporal_agg_start_idx = 0 if temporal_agg_window <= 0 else max(0, t + 1 - temporal_agg_window)
+
+                def get_temporal_weights(length):
+                    if length <= 0:
+                        return None
+                    w = temporal_weight_cache.get(length)
+                    if w is None:
+                        idx = torch.arange(length, device='cuda', dtype=torch.float32)
+                        w = torch.exp(-float(args.temporal_agg_k) * (length - 1 - idx))
+                        w = (w / w.sum()).unsqueeze(1)
+                        temporal_weight_cache[length] = w
+                    return w
+
                 def get_action_for_state(target_state, arm_side, input_qpos_slice):
                     """
                     arm_side: 'left' or 'right'
@@ -2422,16 +2545,13 @@ def main(args):
                     if arm_side == 'left':
                         if target_state == 'COOP':
                             if use_temporal_agg_l:
-                                actions = all_time_actions_dual[:, t]
-                                valid = torch.all(~torch.isnan(actions[:, :7]), axis=1)
+                                actions = all_time_actions_dual[temporal_agg_start_idx:t+1, t]
+                                valid = torch.all(~torch.isnan(actions[:, :7]), dim=1)
                                 actions = actions[valid]
-                                if len(actions) == 0: return input_qpos_slice # Fail safe
-                                k = args.temporal_agg_k
-                                w_len = len(actions)
-                                weights = np.exp(-k * (w_len - 1 - np.arange(w_len)))
-                                weights = weights / weights.sum()
-                                weights = torch.from_numpy(weights).cuda().unsqueeze(dim=1)
-                                raw = (actions * weights).sum(dim=0, keepdim=True).squeeze(0).cpu().numpy()[:7]
+                                if len(actions) == 0:
+                                    return input_qpos_slice # Fail safe
+                                weights = get_temporal_weights(actions.shape[0])
+                                raw = (actions * weights).sum(dim=0).cpu().numpy()[:7]
                             else:
                                 safe_step = step_in_chunk_dual if step_in_chunk_dual < chunk_size else 0
                                 raw = current_action_chunk_dual[safe_step][:7]
@@ -2439,17 +2559,13 @@ def main(args):
 
                         elif target_state == 'INDEP':
                             if use_temporal_agg_l:
-                                actions = all_time_actions_left[:, t]
-                                valid = torch.all(~torch.isnan(actions), axis=1)
+                                actions = all_time_actions_left[temporal_agg_start_idx:t+1, t]
+                                valid = torch.all(~torch.isnan(actions), dim=1)
                                 actions = actions[valid]
                                 if len(actions) == 0:
                                     return input_qpos_slice
-                                k = args.temporal_agg_k
-                                w_len = len(actions)
-                                weights = np.exp(-k * (w_len - 1 - np.arange(w_len)))
-                                weights = weights / weights.sum()
-                                weights = torch.from_numpy(weights).cuda().unsqueeze(dim=1)
-                                raw = (actions * weights).sum(dim=0, keepdim=True).squeeze(0).cpu().numpy()
+                                weights = get_temporal_weights(actions.shape[0])
+                                raw = (actions * weights).sum(dim=0).cpu().numpy()
                             else:
                                 safe_step = step_in_chunk_left if step_in_chunk_left < chunk_size else 0
                                 raw = current_action_chunk_left[safe_step]
@@ -2461,16 +2577,13 @@ def main(args):
                     else:
                         if target_state == 'COOP':
                             if use_temporal_agg_r:
-                                actions = all_time_actions_dual[:, t]
-                                valid = torch.all(~torch.isnan(actions[:, 7:]), axis=1)
+                                actions = all_time_actions_dual[temporal_agg_start_idx:t+1, t]
+                                valid = torch.all(~torch.isnan(actions[:, 7:]), dim=1)
                                 actions = actions[valid]
-                                if len(actions) == 0: return input_qpos_slice
-                                k = args.temporal_agg_k
-                                w_len = len(actions)
-                                weights = np.exp(-k * (w_len - 1 - np.arange(w_len)))
-                                weights = weights / weights.sum()
-                                weights = torch.from_numpy(weights).cuda().unsqueeze(dim=1)
-                                raw = (actions * weights).sum(dim=0, keepdim=True).squeeze(0).cpu().numpy()[7:]
+                                if len(actions) == 0:
+                                    return input_qpos_slice
+                                weights = get_temporal_weights(actions.shape[0])
+                                raw = (actions * weights).sum(dim=0).cpu().numpy()[7:]
                             else:
                                 safe_step = step_in_chunk_dual if step_in_chunk_dual < chunk_size else 0
                                 raw = current_action_chunk_dual[safe_step][7:]
@@ -2478,16 +2591,13 @@ def main(args):
 
                         elif target_state == 'INDEP':
                             if use_temporal_agg_r:
-                                actions = all_time_actions_right[:, t]
-                                valid = torch.all(~torch.isnan(actions), axis=1)
+                                actions = all_time_actions_right[temporal_agg_start_idx:t+1, t]
+                                valid = torch.all(~torch.isnan(actions), dim=1)
                                 actions = actions[valid]
-                                if len(actions) == 0: return input_qpos_slice
-                                k = args.temporal_agg_k
-                                w_len = len(actions)
-                                weights = np.exp(-k * (w_len - 1 - np.arange(w_len)))
-                                weights = weights / weights.sum()
-                                weights = torch.from_numpy(weights).cuda().unsqueeze(dim=1)
-                                raw = (actions * weights).sum(dim=0, keepdim=True).squeeze(0).cpu().numpy()
+                                if len(actions) == 0:
+                                    return input_qpos_slice
+                                weights = get_temporal_weights(actions.shape[0])
+                                raw = (actions * weights).sum(dim=0).cpu().numpy()
                             else:
                                 safe_step = step_in_chunk_right if step_in_chunk_right < chunk_size else 0
                                 raw = current_action_chunk_right[safe_step]
@@ -2532,111 +2642,108 @@ def main(args):
                     action_r = interp_toward_home(qpos_numpy[7:14], home_pose[7:14])
                     if settle_after_switch_r > 0:
                         settle_after_switch_r -= 1
-                
-                # Combine
-                action = np.concatenate([action_l, action_r])
-                
-                target_qpos = action
 
-                # Debug mode: run scripted low-level in background and optionally override qpos.
-                if scripted_ll_test_mode and debug_ee_env is not None and debug_scripted_policy is not None and debug_ts_ee is not None:
+            profile_policy_sec += (time.perf_counter() - _t_policy_start)
+
+            _t_action_start = time.perf_counter()
+
+            _t_action_core_start = time.perf_counter()
+            # Combine
+            action = np.concatenate([action_l, action_r])
+
+            target_qpos = action
+            profile_action_core_sec += (time.perf_counter() - _t_action_core_start)
+
+            # Debug mode: run scripted low-level in background and optionally override qpos.
+            _t_action_debug_start = time.perf_counter()
+            use_scripted_override = scripted_ll_override_all_mode or (
+                scripted_ll_coop_only_mode and plan_l_state == 'COOP' and plan_r_state == 'COOP'
+            )
+            should_step_debug_ll = scripted_ll_override_all_mode or use_scripted_override
+            if should_step_debug_ll and debug_ee_env is not None and debug_scripted_policy is not None and debug_ts_ee is not None:
+                try:
+                    # Keep EE debug environment object poses aligned with current main env state.
+                    sync_debug_ee_objects_from_main(ts, debug_ee_env)
+                    debug_ts_ee = type('TS', (object,), {'observation': debug_ee_env.task.get_observation(debug_ee_env.physics)})()
+                    debug_scripted_policy.process_command_buffer(debug_ts_ee)
+                    ee_action = debug_scripted_policy(debug_ts_ee)
+                    debug_ts_ee = debug_ee_env.step(ee_action)
+                    if use_scripted_override:
+                        target_qpos = np.array(debug_ts_ee.observation['qpos']).copy()
+                        # Match replay conversion used in data generation/recording
+                        gripper_ctrl = debug_ts_ee.observation.get('gripper_ctrl', None)
+                        if gripper_ctrl is not None and len(gripper_ctrl) >= 2:
+                            target_qpos[6] = PUPPET_GRIPPER_POSITION_NORMALIZE_FN(gripper_ctrl[0])
+                            target_qpos[13] = PUPPET_GRIPPER_POSITION_NORMALIZE_FN(gripper_ctrl[1])
+                except Exception as e:
+                    print(f"[Debug Scripted LL] Step failed ({type(e).__name__}): {e}. Falling back to learned action for this step.")
                     try:
-                        # Keep EE debug environment object poses aligned with current main env state.
-                        sync_debug_ee_objects_from_main(ts, debug_ee_env)
-                        debug_ts_ee = type('TS', (object,), {'observation': debug_ee_env.task.get_observation(debug_ee_env.physics)})()
-                        debug_scripted_policy.process_command_buffer(debug_ts_ee)
-                        ee_action = debug_scripted_policy(debug_ts_ee)
-                        debug_ts_ee = debug_ee_env.step(ee_action)
-                        use_scripted_override = scripted_ll_override_all_mode or (
-                            scripted_ll_coop_only_mode and plan_l_state == 'COOP' and plan_r_state == 'COOP'
+                        if debug_ee_env is not None:
+                            del debug_ee_env
+                        debug_ee_env, debug_scripted_policy, debug_ts_ee = setup_debug_scripted_low_level(
+                            ts,
+                            getattr(args, 'current_command_sequence', None)
                         )
-                        if use_scripted_override:
-                            target_qpos = np.array(debug_ts_ee.observation['qpos']).copy()
-                            # Match replay conversion used in data generation/recording
-                            gripper_ctrl = debug_ts_ee.observation.get('gripper_ctrl', None)
-                            if gripper_ctrl is not None and len(gripper_ctrl) >= 2:
-                                target_qpos[6] = PUPPET_GRIPPER_POSITION_NORMALIZE_FN(gripper_ctrl[0])
-                                target_qpos[13] = PUPPET_GRIPPER_POSITION_NORMALIZE_FN(gripper_ctrl[1])
-                    except Exception as e:
-                        print(f"[Debug Scripted LL] Step failed ({type(e).__name__}): {e}. Falling back to learned action for this step.")
-                        try:
-                            if debug_ee_env is not None:
-                                del debug_ee_env
-                            debug_ee_env, debug_scripted_policy, debug_ts_ee = setup_debug_scripted_low_level(
-                                ts,
-                                getattr(args, 'current_command_sequence', None)
-                            )
-                            print("[Debug Scripted LL] Reinitialized debug EE runner.")
-                        except Exception as reset_e:
-                            print(f"[Debug Scripted LL] Reinit failed ({type(reset_e).__name__}): {reset_e}")
-                            debug_ee_env, debug_scripted_policy, debug_ts_ee = None, None, None
-                
-                # --- Safety Clamp REMOVED for debugging ---
-                diff = target_qpos - qpos_numpy
-                max_diff = np.max(np.abs(diff))
-                """
-                if max_diff > 0.1:
-                    print(f"\n[Step {t}] LARGE JUMP DETECTED! Max diff: {max_diff:.4f}")
-                    # Find which joints are jumping
-                    jump_indices = np.where(np.abs(diff) > 0.1)[0]
-                    print(f"  Jumping Joints indices: {jump_indices}")
-                    print(f"  Plan State: L={plan_l_state}, R={plan_r_state}")
-                    
-                    # Debug Buffer
-                    if plan_l_state == 'INDEP':
-                        print(f"  Left Buffer Count (approx): {len(actions_for_curr_step_l) if 'actions_for_curr_step_l' in locals() else 'N/A'}")
-                        # Check normalization
-                        # print(f"  Raw Action L (norm): {current_raw_action_l[:3]}")
-                        # print(f"  Action L (denorm): {action_l[:3]}")
-                        
-                    if plan_l_state == 'COOP' or plan_r_state == 'COOP':
-                         print(f"  Dual Buffer Count (approx): {len(actions_for_curr_step) if 'actions_for_curr_step' in locals() else 'N/A'}")
+                        print("[Debug Scripted LL] Reinitialized debug EE runner.")
+                    except Exception as reset_e:
+                        print(f"[Debug Scripted LL] Reinit failed ({type(reset_e).__name__}): {reset_e}")
+                        debug_ee_env, debug_scripted_policy, debug_ts_ee = None, None, None
+            profile_action_debug_sec += (time.perf_counter() - _t_action_debug_start)
 
-                # Update Previous States (Moved to top of loop logic)
-                prev_plan_l_state = plan_l_state
-                prev_plan_r_state = plan_r_state
-                """
+            # --- Safety Clamp REMOVED for debugging ---
+            _t_action_rehome_start = time.perf_counter()
+            diff = target_qpos - qpos_numpy
+            max_diff = np.max(np.abs(diff))
 
-                # Subtask smooth-to-home override (same intent as hierarchical_policy.py)
-                if subtask_rehome_stage == 'smooth_to_home':
-                    max_delta = float(subtask_rehome_interp_delta * 0.8)
-                    delta = home_pose - qpos_numpy
-                    step = np.clip(delta, -max_delta, max_delta)
-                    target_qpos = qpos_numpy + step
-                    target_qpos[6] = qpos_numpy[6]
-                    target_qpos[13] = qpos_numpy[13]
-                    subtask_rehome_settle_left -= 1
-                    if subtask_rehome_settle_left <= 0:
-                        subtask_rehome_stage = 'none'
+            # Subtask smooth-to-home override (same intent as hierarchical_policy.py)
+            if subtask_rehome_stage == 'smooth_to_home':
+                max_delta = float(subtask_rehome_interp_delta * 0.8)
+                delta = home_pose - qpos_numpy
+                step = np.clip(delta, -max_delta, max_delta)
+                target_qpos = qpos_numpy + step
+                target_qpos[6] = qpos_numpy[6]
+                target_qpos[13] = qpos_numpy[13]
+                subtask_rehome_settle_left -= 1
+                if subtask_rehome_settle_left <= 0:
+                    subtask_rehome_stage = 'none'
 
-                        # Clear temporal/action buffers before next inference phase
-                        clear_temporary_states(reset_transition_windows=True)
+                    # Clear temporal/action buffers before next inference phase
+                    clear_temporary_states(reset_transition_windows=True)
 
-                        # Reset switch/debounce candidates
-                        steps_since_switch_l = 0
-                        steps_since_switch_r = 0
-                        waiting_home_target_l = None
-                        waiting_home_target_r = None
-                        switch_candidate_l = None
-                        switch_candidate_r = None
-                        switch_candidate_count_l = 0
-                        switch_candidate_count_r = 0
-                        home_pause_count_l = 0
-                        home_pause_count_r = 0
+                    # Reset switch/debounce candidates
+                    steps_since_switch_l = 0
+                    steps_since_switch_r = 0
+                    waiting_home_target_l = None
+                    waiting_home_target_r = None
+                    switch_candidate_l = None
+                    switch_candidate_r = None
+                    switch_candidate_count_l = 0
+                    switch_candidate_count_r = 0
+                    home_pause_count_l = 0
+                    home_pause_count_r = 0
 
-                        # Short lock period before normal switching resumes
-                        subtask_post_lock_steps = 30
+                    # Short lock period before normal switching resumes
+                    subtask_post_lock_steps = 30
 
-                if subtask_post_lock_steps > 0:
-                    subtask_post_lock_steps -= 1
+            if subtask_post_lock_steps > 0:
+                subtask_post_lock_steps -= 1
 
+            profile_action_rehome_sec += (time.perf_counter() - _t_action_rehome_start)
+
+            profile_action_sec += (time.perf_counter() - _t_action_start)
+
+            _t_step_start = time.perf_counter()
             ts = env.step(target_qpos)
+            profile_step_sec += (time.perf_counter() - _t_step_start)
             current_episode_rewards.append(ts.reward)
             
             # --- Magnet Logic (Visual Stacking) ---
+            _t_magnet_start = time.perf_counter()
             apply_magnet_logic(env.physics, magnetized_pairs, args.color_sequence)
+            profile_magnet_sec += (time.perf_counter() - _t_magnet_start)
             
             # --- Object Removal Logic (Continuous) ---
+            _t_removal_start = time.perf_counter()
             # 1. Track Touches (if needed for debugging, but we mostly care about 'currently in hand')
             new_touches = get_touched_cubes_per_arm(env.physics)
             acc_touched_left.update(new_touches['left'])
@@ -2759,13 +2866,13 @@ def main(args):
                     or bool(bg_candidate_pairs)
                     or bool(forced_pair_removal)
                 )
-                if should_log_bg:
-                    print(
-                        f"[Step {t}] BG debug | on_cushion={sorted(list(on_cushion))} "
-                        f"in_goal={sorted(list(in_goal))} bg_pairs={bg_candidate_pairs} "
-                        f"magnet_pairs={[(g, d.get('blue_idx', None)) for g, d in magnetized_pairs.items()]} "
-                        f"active_pair={active_coop_pair} lock_pair={coop_display_lock_pair}"
-                    )
+                #if should_log_bg:
+                    #print(
+                    #    f"[Step {t}] BG debug | on_cushion={sorted(list(on_cushion))} "
+                    #    f"in_goal={sorted(list(in_goal))} bg_pairs={bg_candidate_pairs} "
+                    #    f"magnet_pairs={[(g, d.get('blue_idx', None)) for g, d in magnetized_pairs.items()]} "
+                    #    f"active_pair={active_coop_pair} lock_pair={coop_display_lock_pair}"
+                    #)
 
             ever_contacted_objects = set(ever_grasped_objects)
             ever_contacted_objects.update(acc_touched_left)
@@ -2928,6 +3035,17 @@ def main(args):
                  if to_remove:
                      print(f"[Step {t}] Auto-Removing objects: {to_remove}")
                      remove_cubes(env.physics, list(to_remove))
+                     # Scene changed: drop stale planned chunks immediately.
+                     current_action_chunk_dual = None
+                     current_action_chunk_left = None
+                     current_action_chunk_right = None
+                     step_in_chunk_dual = 0
+                     step_in_chunk_left = 0
+                     step_in_chunk_right = 0
+                     if temporal_agg:
+                         all_time_actions_dual.fill_(float_nan)
+                         all_time_actions_left.fill_(float_nan)
+                         all_time_actions_right.fill_(float_nan)
                      removed_objects.update(to_remove)
                      ever_grasped_objects -= to_remove
                      pending_removal -= to_remove
@@ -2957,6 +3075,7 @@ def main(args):
 
                      # Subtask rehome trigger: after successful removal, return home then resume
                      subtask_rehome_trigger_pending = True
+            profile_removal_sec += (time.perf_counter() - _t_removal_start)
             
             step_in_chunk += 1
             if current_action_chunk_dual is not None:
@@ -3006,7 +3125,34 @@ def main(args):
                 episode_returns.append(episode_return)
                 episode_highest_reward = np.max(rewards)
                 highest_rewards.append(episode_highest_reward)
-                print(f"Episode {episode_count}: Return={episode_return}, MaxReward={episode_highest_reward}")
+                episode_elapsed_sec = max(0.0, time.time() - episode_wall_start)
+                episode_steps = max(1, int(t))
+                episode_avg_step_ms = (episode_elapsed_sec / episode_steps) * 1000.0
+                print(
+                    f"Episode {episode_count}: Return={episode_return}, MaxReward={episode_highest_reward}, "
+                    f"Elapsed={episode_elapsed_sec:.2f}s, AvgStep={episode_avg_step_ms:.2f}ms ({episode_steps} steps)"
+                )
+                print(
+                    f"Episode {episode_count} Profile: HL={profile_hl_sec:.2f}s (infer={profile_hl_infer}), "
+                    f"Targets={profile_target_sec:.2f}s, Policy={profile_policy_sec:.2f}s, "
+                    f"Q(dual/left/right)={profile_query_dual}/{profile_query_left}/{profile_query_right}"
+                )
+                profiled_known_sec = (
+                    profile_hl_sec + profile_target_sec + profile_policy_sec + profile_logic_sec +
+                    profile_input_sec + profile_prep_sec + profile_action_sec +
+                    profile_step_sec + profile_magnet_sec + profile_removal_sec
+                )
+                other_sec = max(0.0, episode_elapsed_sec - profiled_known_sec)
+                print(
+                    f"Episode {episode_count} Runtime: Input={profile_input_sec:.2f}s, Prep={profile_prep_sec:.2f}s, "
+                    f"Action={profile_action_sec:.2f}s, Logic={profile_logic_sec:.2f}s, Step={profile_step_sec:.2f}s, "
+                    f"Magnet={profile_magnet_sec:.2f}s, Removal={profile_removal_sec:.2f}s, "
+                    f"Other={other_sec:.2f}s"
+                )
+                print(
+                    f"Episode {episode_count} ActionDetail: Core={profile_action_core_sec:.2f}s, "
+                    f"DebugLL={profile_action_debug_sec:.2f}s, RehomeTail={profile_action_rehome_sec:.2f}s"
+                )
                 
                 episode_count += 1
                 current_episode_rewards = []
@@ -3159,11 +3305,30 @@ def main(args):
                     break
                 reset_magnet_logic(env.physics, args.color_sequence)
                 ts = reset_with_new_pose()
+                episode_wall_start = time.time()
                 debug_ee_env, debug_scripted_policy, debug_ts_ee = setup_debug_scripted_low_level(ts, getattr(args, 'current_command_sequence', None))
                 current_hl_oracle_schedule = _select_oracle_schedule(episode_count, getattr(args, 'current_sequence_row', None)) if args.hl_oracle_metadata_csv else None
                 if current_hl_oracle_schedule is not None:
                     print(f"[HL Oracle] Enabled for episode {episode_count} (sequence_row={getattr(args, 'current_sequence_row', None)})")
                 t = 0
+                profile_hl_sec = 0.0
+                profile_target_sec = 0.0
+                profile_policy_sec = 0.0
+                profile_logic_sec = 0.0
+                profile_input_sec = 0.0
+                profile_prep_sec = 0.0
+                profile_action_sec = 0.0
+                profile_action_core_sec = 0.0
+                profile_action_debug_sec = 0.0
+                profile_action_rehome_sec = 0.0
+                profile_step_sec = 0.0
+                profile_magnet_sec = 0.0
+                profile_removal_sec = 0.0
+                profile_query_dual = 0
+                profile_query_left = 0
+                profile_query_right = 0
+                profile_hl_infer = 0
+                temporal_weight_cache.clear()
                 step_in_chunk = 0
                 step_in_chunk_dual = 0
                 step_in_chunk_left = 0
@@ -3238,13 +3403,14 @@ if __name__ == '__main__':
     parser.add_argument('--warmup_steps', action='store', type=int, default=0, help='Number of steps to run independent policy in background before switch')
     parser.add_argument('--no_temporal_agg', action='store_true', help='Disable temporal aggregation')
     parser.add_argument('--temporal_agg_transition_only', action='store_true', help='Enable temporal ensembling only around transitions')
-    parser.add_argument('--temporal_agg_window', action='store', type=int, default=50, help='Number of steps around transition to enable temporal agg')
+    parser.add_argument('--temporal_agg_window', action='store', type=int, default=50, help='Temporal aggregation history window (steps). Use <=0 to use full history')
     parser.add_argument('--hl_update_at_home_only', action='store_true', help='Update high-level classifier only when both arms are at home')
     parser.add_argument('--hl_update_interval', action='store', type=int, default=50, help='Step interval for high-level updates when home-only mode is enabled')
+    parser.add_argument('--hl_infer_interval', action='store', type=int, default=1, help='Step interval for high-level classifier inference in normal mode (default: 5 steps)')
     parser.add_argument('--hl_home_threshold', action='store', type=float, default=0.25, help='Arm joint threshold for hierarchical-style high-level home check')
     parser.add_argument('--hl_home_gripper_threshold', action='store', type=float, default=0.8, help='Gripper-open threshold for hierarchical-style high-level home check')
     parser.add_argument('--hl_update_log_interval', action='store', type=int, default=50, help='Step interval for logging non-fired high-level updates in home-only mode')
-    parser.add_argument('--debug_hl_logs', action='store_true', help='Enable verbose high-level/update/home-refresh debug logs')
+    parser.add_argument('--debug_hl_logs', action='store_true', default=True, help='Enable verbose high-level/update/home-refresh debug logs')
     parser.add_argument('--switch_guard_steps', action='store', type=int, default=8, help='Stable high-level prediction steps required before requesting mode switch')
     parser.add_argument('--switch_home_pause_steps', action='store', type=int, default=15, help='Pause steps at home before activating next policy')
     parser.add_argument('--switch_home_settle_steps', action='store', type=int, default=6, help='Additional steps to keep exact home pose after switch activation')
@@ -3267,7 +3433,7 @@ if __name__ == '__main__':
                         help='Optional metadata CSV (e.g., dryrun_sequence_metadata output) to replay handcrafted high-level mode transitions')
     parser.add_argument('--hl_oracle_future_steps', action='store', type=int, default=50,
                         help='When using hl_oracle_metadata_csv, query oracle mode at t+N (default: 50) to match future-predicting high-level timing')
-    parser.add_argument('--debug_bg_removal_logs', action='store_true', help='Enable debug logs for BG pair candidate/removal conditions')
+    parser.add_argument('--debug_bg_removal_logs', action='store_true', default=True, help='Enable debug logs for BG pair candidate/removal conditions')
     parser.add_argument('--debug_bg_log_interval', action='store', type=int, default=50, help='Step interval for periodic BG debug logs')
 
     args = parser.parse_args()

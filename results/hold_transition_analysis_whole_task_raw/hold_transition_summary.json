@@ -1,0 +1,68 @@
+{
+  "dataset_dir": "data5/whole_task_raw",
+  "episodes": 100,
+  "into_hold": {
+    "left": {
+      "INDEP": 63,
+      "COOP": 126
+    },
+    "right": {
+      "COOP": 108,
+      "INDEP": 57
+    }
+  },
+  "out_hold": {
+    "left": {
+      "COOP": 169
+    },
+    "right": {
+      "INDEP": 89,
+      "COOP": 67
+    }
+  },
+  "triplets_top10": {
+    "left": {
+      "COOP->HOLD->COOP": 104,
+      "INDEP->HOLD->COOP": 45,
+      "COOP->HOLD->END": 22,
+      "START->HOLD->COOP": 20,
+      "INDEP->HOLD->END": 18
+    },
+    "right": {
+      "COOP->HOLD->INDEP": 54,
+      "COOP->HOLD->COOP": 52,
+      "INDEP->HOLD->INDEP": 35,
+      "INDEP->HOLD->COOP": 15,
+      "INDEP->HOLD->END": 7,
+      "COOP->HOLD->END": 2
+    }
+  },
+  "state_frame_counts": {
+    "left": {
+      "COOP": 152060,
+      "INDEP": 47902,
+      "HOLD": 77159
+    },
+    "right": {
+      "COOP": 152508,
+      "HOLD": 27986,
+      "INDEP": 96627
+    }
+  },
+  "hold_duration_stats": {
+    "left": {
+      "num_hold_blocks": 209,
+      "mean_frames": 369.1818181818182,
+      "median_frames": 370.0,
+      "p90_frames": 560.0,
+      "max_frames": 1140
+    },
+    "right": {
+      "num_hold_blocks": 165,
+      "mean_frames": 169.61212121212122,
+      "median_frames": 170.0,
+      "p90_frames": 307.19999999999993,
+      "max_frames": 747
+    }
+  }
+}
