@@ -1,94 +1,0 @@
-Dataset loaded with 100 samples.
-/home/act/miniconda3/envs/aloha/lib/python3.10/site-packages/torchvision/models/_utils.py:208: UserWarning: The parameter 'pretrained' is deprecated since 0.13 and may be removed in the future, please use 'weights' instead.
-  warnings.warn(
-/home/act/miniconda3/envs/aloha/lib/python3.10/site-packages/torchvision/models/_utils.py:223: UserWarning: Arguments other than a weight enum or `None` for 'weights' are deprecated since 0.13 and may be removed in the future. The current behavior is equivalent to passing `weights=ResNet18_Weights.IMAGENET1K_V1`. You can also use `weights=ResNet18_Weights.DEFAULT` to get the most up-to-date weights.
-  warnings.warn(msg)
-Epoch 1/15
-Training:   0%|          | 0/3 [00:00<?, ?it/s]Training:  33%|███▎      | 1/3 [00:00<00:01,  1.85it/s]Training: 100%|██████████| 3/3 [00:00<00:00,  4.99it/s]
-Validation:   0%|          | 0/1 [00:00<?, ?it/s]Validation: 100%|██████████| 1/1 [00:00<00:00,  8.21it/s]Validation: 100%|██████████| 1/1 [00:00<00:00,  7.15it/s]
-Train Loss: 4.9928 Val Loss: 5.2460
-Accuracies -> LM: 0.8000, RM: 0.7000, LO: 0.0000, RO: 0.0000
-Model saved.
-Epoch 2/15
-Training:   0%|          | 0/3 [00:00<?, ?it/s]Training:  33%|███▎      | 1/3 [00:00<00:00,  7.99it/s]Training: 100%|██████████| 3/3 [00:00<00:00, 16.92it/s]
-Validation:   0%|          | 0/1 [00:00<?, ?it/s]Validation: 100%|██████████| 1/1 [00:00<00:00,  8.55it/s]
-Train Loss: 3.2191 Val Loss: 4.5636
-Accuracies -> LM: 0.8500, RM: 0.7000, LO: 0.2000, RO: 0.3500
-Model saved.
-Epoch 3/15
-Training:   0%|          | 0/3 [00:00<?, ?it/s]Training:  33%|███▎      | 1/3 [00:00<00:00,  7.94it/s]Training: 100%|██████████| 3/3 [00:00<00:00, 16.55it/s]
-Validation:   0%|          | 0/1 [00:00<?, ?it/s]Validation: 100%|██████████| 1/1 [00:00<00:00,  8.50it/s]
-Train Loss: 2.1572 Val Loss: 3.9734
-Accuracies -> LM: 0.9000, RM: 0.7000, LO: 0.3500, RO: 0.7500
-Model saved.
-Epoch 4/15
-Training:   0%|          | 0/3 [00:00<?, ?it/s]Training:  33%|███▎      | 1/3 [00:00<00:00,  7.92it/s]Training: 100%|██████████| 3/3 [00:00<00:00, 16.58it/s]
-Validation:   0%|          | 0/1 [00:00<?, ?it/s]Validation: 100%|██████████| 1/1 [00:00<00:00,  8.49it/s]
-Train Loss: 1.5301 Val Loss: 3.3017
-Accuracies -> LM: 0.9000, RM: 0.8500, LO: 0.4500, RO: 0.8500
-Model saved.
-Epoch 5/15
-Training:   0%|          | 0/3 [00:00<?, ?it/s]Training:  33%|███▎      | 1/3 [00:00<00:00,  8.00it/s]Training: 100%|██████████| 3/3 [00:00<00:00, 16.88it/s]
-Validation:   0%|          | 0/1 [00:00<?, ?it/s]Validation: 100%|██████████| 1/1 [00:00<00:00,  9.24it/s]
-Train Loss: 1.0385 Val Loss: 2.6519
-Accuracies -> LM: 0.9500, RM: 0.8000, LO: 0.7500, RO: 0.9500
-Model saved.
-Epoch 6/15
-Training:   0%|          | 0/3 [00:00<?, ?it/s]Training:  33%|███▎      | 1/3 [00:00<00:00,  7.94it/s]Training: 100%|██████████| 3/3 [00:00<00:00, 16.32it/s]
-Validation:   0%|          | 0/1 [00:00<?, ?it/s]Validation: 100%|██████████| 1/1 [00:00<00:00,  9.05it/s]
-Train Loss: 0.6815 Val Loss: 2.1179
-Accuracies -> LM: 0.9500, RM: 0.8000, LO: 0.7500, RO: 1.0000
-Model saved.
-Epoch 7/15
-Training:   0%|          | 0/3 [00:00<?, ?it/s]Training:  33%|███▎      | 1/3 [00:00<00:00,  8.09it/s]Training: 100%|██████████| 3/3 [00:00<00:00, 17.07it/s]
-Validation:   0%|          | 0/1 [00:00<?, ?it/s]Validation: 100%|██████████| 1/1 [00:00<00:00,  8.93it/s]
-Train Loss: 0.5013 Val Loss: 1.7647
-Accuracies -> LM: 0.9500, RM: 0.9000, LO: 0.7500, RO: 1.0000
-Model saved.
-Epoch 8/15
-Training:   0%|          | 0/3 [00:00<?, ?it/s]Training:  33%|███▎      | 1/3 [00:00<00:00,  7.96it/s]Training: 100%|██████████| 3/3 [00:00<00:00, 15.96it/s]
-Validation:   0%|          | 0/1 [00:00<?, ?it/s]Validation: 100%|██████████| 1/1 [00:00<00:00,  8.53it/s]
-Train Loss: 0.3424 Val Loss: 1.5364
-Accuracies -> LM: 0.9500, RM: 0.9000, LO: 0.7500, RO: 1.0000
-Model saved.
-Epoch 9/15
-Training:   0%|          | 0/3 [00:00<?, ?it/s]Training:  33%|███▎      | 1/3 [00:00<00:00,  7.03it/s]Training: 100%|██████████| 3/3 [00:00<00:00, 15.10it/s]
-Validation:   0%|          | 0/1 [00:00<?, ?it/s]Validation: 100%|██████████| 1/1 [00:00<00:00,  8.77it/s]
-Train Loss: 0.2806 Val Loss: 1.4130
-Accuracies -> LM: 0.9500, RM: 0.9000, LO: 0.7500, RO: 1.0000
-Model saved.
-Epoch 10/15
-Training:   0%|          | 0/3 [00:00<?, ?it/s]Training:  33%|███▎      | 1/3 [00:00<00:00,  7.85it/s]Training: 100%|██████████| 3/3 [00:00<00:00, 16.65it/s]
-Validation:   0%|          | 0/1 [00:00<?, ?it/s]Validation: 100%|██████████| 1/1 [00:00<00:00,  9.07it/s]
-Train Loss: 0.2435 Val Loss: 1.3409
-Accuracies -> LM: 0.9500, RM: 0.9500, LO: 0.7500, RO: 1.0000
-Model saved.
-Epoch 11/15
-Training:   0%|          | 0/3 [00:00<?, ?it/s]Training:  33%|███▎      | 1/3 [00:00<00:00,  7.98it/s]Training: 100%|██████████| 3/3 [00:00<00:00, 16.12it/s]
-Validation:   0%|          | 0/1 [00:00<?, ?it/s]Validation: 100%|██████████| 1/1 [00:00<00:00,  9.00it/s]
-Train Loss: 0.1668 Val Loss: 1.3460
-Accuracies -> LM: 0.9500, RM: 0.9500, LO: 0.7500, RO: 1.0000
-Epoch 12/15
-Training:   0%|          | 0/3 [00:00<?, ?it/s]Training:  33%|███▎      | 1/3 [00:00<00:00,  8.20it/s]Training: 100%|██████████| 3/3 [00:00<00:00, 16.98it/s]
-Validation:   0%|          | 0/1 [00:00<?, ?it/s]Validation: 100%|██████████| 1/1 [00:00<00:00,  9.45it/s]Validation: 100%|██████████| 1/1 [00:00<00:00,  7.95it/s]
-Train Loss: 0.1299 Val Loss: 1.3249
-Accuracies -> LM: 0.9500, RM: 0.9500, LO: 0.7500, RO: 0.9500
-Model saved.
-Epoch 13/15
-Training:   0%|          | 0/3 [00:00<?, ?it/s]Training:  33%|███▎      | 1/3 [00:00<00:00,  7.46it/s]Training: 100%|██████████| 3/3 [00:00<00:00, 15.63it/s]
-Validation:   0%|          | 0/1 [00:00<?, ?it/s]Validation: 100%|██████████| 1/1 [00:00<00:00,  8.59it/s]
-Train Loss: 0.1114 Val Loss: 1.3016
-Accuracies -> LM: 0.9500, RM: 0.9500, LO: 0.7500, RO: 0.9500
-Model saved.
-Epoch 14/15
-Training:   0%|          | 0/3 [00:00<?, ?it/s]Training:  33%|███▎      | 1/3 [00:00<00:00,  8.00it/s]Training: 100%|██████████| 3/3 [00:00<00:00, 16.71it/s]
-Validation:   0%|          | 0/1 [00:00<?, ?it/s]Validation: 100%|██████████| 1/1 [00:00<00:00,  9.19it/s]
-Train Loss: 0.1026 Val Loss: 1.2376
-Accuracies -> LM: 0.9500, RM: 0.9500, LO: 0.7500, RO: 0.9500
-Model saved.
-Epoch 15/15
-Training:   0%|          | 0/3 [00:00<?, ?it/s]Training:  33%|███▎      | 1/3 [00:00<00:00,  7.92it/s]Training: 100%|██████████| 3/3 [00:00<00:00, 16.63it/s]
-Validation:   0%|          | 0/1 [00:00<?, ?it/s]Validation: 100%|██████████| 1/1 [00:00<00:00,  8.79it/s]
-Train Loss: 0.0895 Val Loss: 1.1838
-Accuracies -> LM: 0.9500, RM: 0.9500, LO: 0.7500, RO: 0.9500
-Model saved.

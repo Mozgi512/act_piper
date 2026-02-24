@@ -1218,6 +1218,14 @@ def main(args):
         return
 
     ts = reset_with_new_pose()
+    # --- Debug: Print obj3 position at episode start ---
+    try:
+        physics = env.physics
+        obj3_id = physics.model.name2id('cube_3', 'body')
+        obj3_pos = physics.data.xpos[obj3_id]
+        print(f"[Episode Start] obj3 position: X={obj3_pos[0]:.3f}, Y={obj3_pos[1]:.3f}, Z={obj3_pos[2]:.3f}")
+    except Exception as e:
+        print(f"[Episode Start] obj3 position: error {e}")
     debug_ee_env, debug_scripted_policy, debug_ts_ee = setup_debug_scripted_low_level(ts, getattr(args, 'current_command_sequence', None))
     current_hl_oracle_schedule = _select_oracle_schedule(0, getattr(args, 'current_sequence_row', None)) if args.hl_oracle_metadata_csv else None
     if current_hl_oracle_schedule is not None:
@@ -1302,8 +1310,49 @@ def main(args):
     hitl_images = []
     hitl_labels_l = []
     hitl_labels_r = []
+    hl_debug_f = None
+    hl_debug_writer = None
+    prev_effective_l_for_csv = None
+    prev_effective_r_for_csv = None
+
+    def state_name_from_id(state_id):
+        try:
+            state_id = int(state_id)
+            if 0 <= state_id < len(STATE_NAMES):
+                return STATE_NAMES[state_id]
+        except Exception:
+            pass
+        return str(state_id)
+
+    def raw_hl_name_from_pred(pred_item):
+        try:
+            pred_item = int(pred_item)
+        except Exception:
+            return str(pred_item)
+        if hl_classifier_num_classes <= 2:
+            # Binary classifier convention: 0=INDEP, 1=COOP
+            return 'INDEP' if pred_item == 0 else 'COOP'
+        return state_name_from_id(pred_item)
 
     try:
+        if args.save_hl_debug_csv:
+            hl_debug_dir = os.path.dirname(args.save_hl_debug_csv)
+            if hl_debug_dir:
+                os.makedirs(hl_debug_dir, exist_ok=True)
+            file_exists = os.path.isfile(args.save_hl_debug_csv)
+            hl_debug_f = open(args.save_hl_debug_csv, 'a', newline='')
+            hl_debug_fields = [
+                'Episode', 'Step', 'Raw_Source', 'Raw_L', 'Raw_R',
+                'Maj_Count_L', 'Maj_Mode_L', 'Maj_Count_R', 'Maj_Mode_R',
+                'Plan_L', 'Plan_R', 'Mode_Changed', 'Adopted_L', 'Adopted_R', 'Rehome_Stage',
+                'Committed_Before_L', 'Committed_Before_R',
+                'Mixed_Pair', 'Mixed_Allow', 'Pair_Blocked',
+                'Home_Constrained', 'Left_ForcedHold_IndepWait', 'Right_ForcedHold_IndepWait',
+            ]
+            hl_debug_writer = csv.DictWriter(hl_debug_f, fieldnames=hl_debug_fields)
+            if not file_exists:
+                hl_debug_writer.writeheader()
+
         t = 0
         video_frames = []
         episode_count = 0
@@ -1383,18 +1432,25 @@ def main(args):
         switch_candidate_r = None
         switch_candidate_count_l = 0
         switch_candidate_count_r = 0
+        switch_candidate_seen_home_l = False
+        switch_candidate_seen_home_r = False
         waiting_home_target_l = None
         waiting_home_target_r = None
         home_pause_count_l = 0
         home_pause_count_r = 0
         settle_after_switch_l = 0
         settle_after_switch_r = 0
+        dual_coop_switch_pending = False
+        force_coop_target_refresh_steps = 0
+        coop_start_rearm_from_cc = False
 
         # Subtask-level rehome state machine (ported from hierarchical_policy.py)
         subtask_rehome_stage = 'none'  # none | wait_near_home | smooth_to_home
         subtask_rehome_trigger_pending = False
         subtask_rehome_settle_left = 0
-        subtask_rehome_detect_threshold = 0.1
+        subtask_rehome_detect_threshold = 0.05
+        subtask_rehome_near_home_streak = 0
+        subtask_rehome_near_home_required = 20
         subtask_rehome_interp_delta = 0.01
         subtask_rehome_steps = 50
         subtask_post_lock_steps = 0
@@ -1407,13 +1463,26 @@ def main(args):
         last_removal_step = -100
         current_target_indices_i = []
         current_target_indices_c = []
+        no_coop_target_streak = 0
         
         left_waiting_indep_target = False
         left_resume_reinfer_pending = False
+        left_forced_hold_wait_indep = False
         right_waiting_indep_target = False
         right_resume_reinfer_pending = False
+        right_forced_hold_wait_indep = False
+        coop_waiting_target = False
+        coop_forced_hold_wait_target = False
         
         while True:
+            # --- Debug: Print obj3 position every step ---
+            #try:
+            #    physics = env.physics
+            #    obj3_id = physics.model.name2id('cube_3', 'body')
+            #    obj3_pos = physics.data.xpos[obj3_id]
+            #    print(f"[Step {t}] obj3 position: X={obj3_pos[0]:.3f}, Y={obj3_pos[1]:.3f}, Z={obj3_pos[2]:.3f}")
+            #except Exception as e:
+            #    print(f"[Step {t}] obj3 position: error {e}")
             # Check input (for quit)
             _t_input_start = time.perf_counter()
             quit_key = None
@@ -1430,13 +1499,20 @@ def main(args):
             if subtask_rehome_trigger_pending and subtask_rehome_stage == 'none':
                 subtask_rehome_stage = 'wait_near_home'
                 subtask_rehome_trigger_pending = False
+                subtask_rehome_near_home_streak = 0
 
             if subtask_rehome_stage == 'wait_near_home':
-                left_near = is_arm_at_home(qpos_numpy[:7], home_pose[:7], threshold=subtask_rehome_detect_threshold)
-                right_near = is_arm_at_home(qpos_numpy[7:14], home_pose[7:14], threshold=subtask_rehome_detect_threshold)
-                if left_near and right_near:
-                    subtask_rehome_stage = 'smooth_to_home'
-                    subtask_rehome_settle_left = subtask_rehome_steps
+                left_near = is_arm_at_home(qpos_numpy[:6], home_pose[:6], threshold=subtask_rehome_detect_threshold)
+                right_near = is_arm_at_home(qpos_numpy[7:13], home_pose[7:13], threshold=subtask_rehome_detect_threshold)
+                left_open_for_rehome = qpos_numpy[6] > args.hl_home_gripper_threshold
+                right_open_for_rehome = qpos_numpy[13] > args.hl_home_gripper_threshold
+                if left_near and right_near and left_open_for_rehome and right_open_for_rehome:
+                    subtask_rehome_near_home_streak += 1
+                    if subtask_rehome_near_home_streak >= subtask_rehome_near_home_required:
+                        subtask_rehome_stage = 'smooth_to_home'
+                        subtask_rehome_settle_left = subtask_rehome_steps
+                else:
+                    subtask_rehome_near_home_streak = 0
 
             # Arm-wise high-level update ticks
             hl_update_tick_l = (t == 0)
@@ -1505,7 +1581,14 @@ def main(args):
             if args.hl_update_at_home_only:
                 should_update_targets = (hl_update_tick_l or hl_update_tick_r) 
             else:
-                should_update_targets = (t - last_removal_step >= 50)
+                should_update_targets = (
+                    (t - last_removal_step >= 50)
+                    or dual_coop_switch_pending
+                    or (force_coop_target_refresh_steps > 0)
+                )
+
+            if force_coop_target_refresh_steps > 0:
+                force_coop_target_refresh_steps -= 1
 
             # Independent R targets are updated every step.
             spatial_map = get_spatial_object_map(env.physics)
@@ -1533,6 +1616,18 @@ def main(args):
                 except Exception:
                     return None
 
+            def coop_display_pair_allowed(indices):
+                if indices is None or len(indices) < 2:
+                    return False
+                x_vals = []
+                for idx in indices[:2]:
+                    x_val = safe_cube_x_local(idx)
+                    if x_val is None:
+                        return False
+                    x_vals.append(x_val)
+                avg_x = 0.5 * (x_vals[0] + x_vals[1])
+                return avg_x >= args.coop_display_avg_x_min
+
             def is_removed_cube_local(idx):
                 try:
                     geom_id = env.physics.model.name2id(f'cube_{idx}', 'geom')
@@ -1555,6 +1650,11 @@ def main(args):
                 if exclude is None:
                     exclude = set()
 
+                def in_indep_display_range_local(arm_local, x_local):
+                    if arm_local == 'left':
+                        return args.indep_left_display_x_min <= x_local <= args.indep_left_display_x_max
+                    return args.indep_right_display_x_min <= x_local <= args.indep_right_display_x_max
+
                 # Split by x=0 and choose the rightmost (max-X) object on that side.
                 side_candidates = []
                 for idx in candidates:
@@ -1565,13 +1665,8 @@ def main(args):
                     x_val = safe_cube_x_local(idx)
                     if x_val is None:
                         continue
-
-                    if arm == 'left':
-                        if x_val < -0.05:
-                            side_candidates.append((x_val, idx))
-                    else:
-                        if x_val >= -0.05:
-                            side_candidates.append((x_val, idx))
+                    if in_indep_display_range_local(arm, x_val):
+                        side_candidates.append((x_val, idx))
 
                 if side_candidates:
                     best_idx = max(side_candidates, key=lambda t_: t_[0])[1]
@@ -1596,7 +1691,7 @@ def main(args):
                     if x_val is None:
                         return False, []
                     x_vals.append(x_val)
-                return all(x >= 0.0 for x in x_vals), x_vals
+                return all(x >= args.indep_right_ready_x_min for x in x_vals), x_vals
 
             def left_indep_target_ready():
                 if len(final_target_indices_i_left) == 0:
@@ -1607,7 +1702,7 @@ def main(args):
                     if x_val is None:
                         return False, []
                     x_vals.append(x_val)
-                return all(x >= -0.35 for x in x_vals), x_vals
+                return all(x >= args.indep_left_ready_x_min for x in x_vals), x_vals
 
             # Keep grasped RED cubes visible per arm in independent shadows.
             for idx in held_indices_left:
@@ -1657,6 +1752,8 @@ def main(args):
                             x_pos = env.physics.data.xpos[bid][0]
                         except Exception:
                             x_pos = -1e9
+                        if not (args.coop_display_x_min <= x_pos <= args.coop_display_x_max):
+                            continue
                         if color == 'g':
                             g_candidates.append((x_pos, c_idx))
                         else:
@@ -1669,6 +1766,9 @@ def main(args):
                         final_target_indices_c = [g_best, b_best]
                     else:
                         final_target_indices_c = []
+
+            if len(final_target_indices_c) >= 2 and not coop_display_pair_allowed(final_target_indices_c):
+                final_target_indices_c = []
             
             if t % 50 == 0:
                  print(
@@ -1676,6 +1776,23 @@ def main(args):
                      f"IndepL={final_target_indices_i_left}, IndepR={final_target_indices_i_right}, "
                      f"Coop={final_target_indices_c}"
                  )
+
+            if len(final_target_indices_c) == 0:
+                no_coop_target_streak += 1
+            else:
+                no_coop_target_streak = 0
+
+            def coop_target_ready():
+                if len(final_target_indices_c) < 2:
+                    return False, []
+                x_vals = []
+                for idx in final_target_indices_c[:2]:
+                    x_val = safe_cube_x_local(idx)
+                    if x_val is None:
+                        return False, []
+                    x_vals.append(x_val)
+                in_range = all(args.coop_ready_x_min <= x <= args.coop_ready_x_max for x in x_vals)
+                return in_range, x_vals
 
             # 3. Hide
             if not defer_shadow_updates:
@@ -1709,6 +1826,9 @@ def main(args):
 
             # --- State Classifier Inference / Oracle Replay ---
             _t_hl_start = time.perf_counter()
+            hl_raw_source = 'none'
+            hl_raw_l_name = ''
+            hl_raw_r_name = ''
             if current_hl_oracle_schedule is not None:
                 future_steps = max(0, int(args.hl_oracle_future_steps))
                 if t < future_steps:
@@ -1718,6 +1838,9 @@ def main(args):
                 (oracle_l, oracle_r), oracle_pair = _oracle_states_at_t(current_hl_oracle_schedule, oracle_query_t)
                 hl_mode_l = oracle_l
                 hl_mode_r = oracle_r
+                hl_raw_source = 'oracle_shifted'
+                hl_raw_l_name = state_name_from_id(oracle_l)
+                hl_raw_r_name = state_name_from_id(oracle_r)
                 last_hl_update_step_l = t
                 last_hl_update_step_r = t
                 if t % 50 == 0:
@@ -1741,6 +1864,9 @@ def main(args):
                         _, pred_r = torch.max(out_r, 1)
                         pred_l_item = pred_l.item()
                         pred_r_item = pred_r.item()
+                        hl_raw_source = 'classifier'
+                        hl_raw_l_name = raw_hl_name_from_pred(pred_l_item)
+                        hl_raw_r_name = raw_hl_name_from_pred(pred_r_item)
 
                     if (not args.hl_update_at_home_only) or hl_update_tick_l:
                         hl_mode_l = map_hl_pred_to_state(pred_l_item)
@@ -1753,6 +1879,13 @@ def main(args):
 
             _t_logic_start = time.perf_counter()
 
+            committed_before_rules_l = ''
+            committed_before_rules_r = ''
+            mixed_pair_csv = ''
+            mixed_allow_csv = ''
+            pair_blocked_csv = 0
+            home_constrained_csv = 0
+
             s_l = hl_mode_l
             s_r = hl_mode_r
             
@@ -1764,6 +1897,8 @@ def main(args):
             # Majority Vote
             s_l_smooth = majority_state(state_history_l)
             s_r_smooth = majority_state(state_history_r)
+            maj_count_l = collections.Counter(state_history_l).get(s_l_smooth, 0)
+            maj_count_r = collections.Counter(state_history_r).get(s_r_smooth, 0)
             
             # Use smoothed states for planning
             plan_l_state = 'INDEP'
@@ -1782,11 +1917,53 @@ def main(args):
                 elif s_r_smooth == STATE_INDEP: plan_r_state = 'INDEP'
                 else: plan_r_state = 'HOLD'
 
+            # Deadlock escape: if cooperative targets disappear for a sustained period,
+            # force stale committed COOP arms back to INDEP so CI can recover.
+            if current_hl_oracle_schedule is None and no_coop_target_streak >= args.no_coop_to_indep_steps:
+                if committed_plan_l_state == 'COOP':
+                    committed_plan_l_state = 'INDEP'
+                    waiting_home_target_l = None
+                    switch_candidate_l = None
+                    switch_candidate_count_l = 0
+                    home_pause_count_l = 0
+                if committed_plan_r_state == 'COOP':
+                    committed_plan_r_state = 'INDEP'
+                    waiting_home_target_r = None
+                    switch_candidate_r = None
+                    switch_candidate_count_r = 0
+                    home_pause_count_r = 0
+
             # --- Pair interpretation rules (user-defined) ---
             # 1) H/C or C/H is not allowed -> interpret as C/C.
             # 2) I/C or C/I is allowed only when transitioning from committed C/C.
             raw_pair = (plan_l_state, plan_r_state)
+            coop_start_intent = (raw_pair == ('COOP', 'COOP'))
             committed_pair_before_rules = (committed_plan_l_state, committed_plan_r_state)
+            committed_before_rules_l, committed_before_rules_r = committed_pair_before_rules
+
+            if current_hl_oracle_schedule is None:
+                if committed_pair_before_rules != ('COOP', 'COOP'):
+                    coop_start_rearm_from_cc = False
+
+                allow_direct_dual_from = committed_pair_before_rules in [
+                    ('INDEP', 'HOLD'),
+                    ('HOLD', 'INDEP'),
+                    
+                ]
+                allow_cc_rearm = (committed_pair_before_rules == ('COOP', 'COOP')) and coop_start_rearm_from_cc
+
+                if coop_start_intent and (allow_direct_dual_from or allow_cc_rearm):
+                    if not dual_coop_switch_pending:
+                        dual_coop_switch_pending = True
+                        waiting_home_target_l = None
+                        waiting_home_target_r = None
+                        switch_candidate_l = None
+                        switch_candidate_r = None
+                        switch_candidate_count_l = 0
+                        switch_candidate_count_r = 0
+                    coop_start_rearm_from_cc = False
+                elif dual_coop_switch_pending and (not coop_start_intent):
+                    dual_coop_switch_pending = False
 
             if raw_pair in [('HOLD', 'COOP'), ('COOP', 'HOLD')]:
                 plan_l_state, plan_r_state = 'COOP', 'COOP'
@@ -1794,14 +1971,41 @@ def main(args):
                     print(f"[Step {t}] Pair rule: {raw_pair[0]}/{raw_pair[1]} -> COOP/COOP")
 
             mixed_pair = (plan_l_state, plan_r_state)
-            if mixed_pair in [('INDEP', 'COOP'), ('COOP', 'INDEP')] and committed_pair_before_rules != ('COOP', 'COOP'):
-                plan_l_state, plan_r_state = committed_pair_before_rules
+            mixed_pair_csv = f"{mixed_pair[0]}/{mixed_pair[1]}"
+            allow_mixed_pair = False
+            if mixed_pair == ('INDEP', 'COOP'):
+                # IC sustain is always allowed if already committed as IC.
+                if committed_pair_before_rules == ('INDEP', 'COOP'):
+                    allow_mixed_pair = True
+                # IC new transition is allowed only from CC or HC.
+                elif committed_pair_before_rules in [('COOP', 'COOP'), ('HOLD', 'COOP')]:
+                    allow_mixed_pair = True
+            elif mixed_pair == ('COOP', 'INDEP'):
+                # CI sustain is always allowed if already committed as CI.
+                if committed_pair_before_rules == ('COOP', 'INDEP'):
+                    allow_mixed_pair = True
+                # CI new transition is allowed only from CC or CH.
+                elif committed_pair_before_rules in [('COOP', 'COOP'), ('COOP', 'HOLD')]:
+                    allow_mixed_pair = True
+                # Right indep-wait recovery path can resume CI.
+                elif right_forced_hold_wait_indep:
+                    allow_mixed_pair = True
+
+            if mixed_pair in [('INDEP', 'COOP'), ('COOP', 'INDEP')] and not allow_mixed_pair:
+                if mixed_pair == ('INDEP', 'COOP'):
+                    # Interpret unexpected IC as IH.
+                    plan_l_state, plan_r_state = 'INDEP', 'HOLD'
+                else:
+                    # Interpret unexpected CI as HI.
+                    plan_l_state, plan_r_state = 'HOLD', 'INDEP'
+                pair_blocked_csv = 1
                 if t % 20 == 0:
                     print(
                         f"[Step {t}] Pair rule: {mixed_pair[0]}/{mixed_pair[1]} blocked "
                         f"(committed={committed_pair_before_rules[0]}/{committed_pair_before_rules[1]}) "
                         f"-> {plan_l_state}/{plan_r_state}"
                     )
+            mixed_allow_csv = int(allow_mixed_pair)
 
             # --- Home-conditioned state-pair constraints ---
             # User rule:
@@ -1827,6 +2031,8 @@ def main(args):
                     ('INDEP', 'COOP'),
                     ('COOP', 'INDEP'),
                     ('INDEP', 'INDEP'),
+                    ('INDEP', 'HOLD'),
+                    ('HOLD', 'INDEP'),
                 }
             elif left_arm_home_for_pair and right_arm_home_for_pair:
                 allowed_pairs = {
@@ -1852,12 +2058,47 @@ def main(args):
                     reverse=True,
                 )
                 plan_l_state, plan_r_state = ranked[0]
+                home_constrained_csv = 1
                 if t % 20 == 0:
                     print(
                         f"[Step {t}] Pair constrained by home state: "
                         f"{current_pair[0]}/{current_pair[1]} -> {plan_l_state}/{plan_r_state} "
                         f"(left_home={left_arm_home_for_pair}, right_home={right_arm_home_for_pair})"
                     )
+
+            # Final safety: home-conditioned rewrite must also satisfy mixed-pair legality.
+            if current_hl_oracle_schedule is None:
+                final_mixed_pair = (plan_l_state, plan_r_state)
+                final_allow_mixed = False
+                if final_mixed_pair == ('INDEP', 'COOP'):
+                    if committed_pair_before_rules == ('INDEP', 'COOP'):
+                        final_allow_mixed = True
+                    elif committed_pair_before_rules in [('COOP', 'COOP'), ('HOLD', 'COOP')]:
+                        final_allow_mixed = True
+                elif final_mixed_pair == ('COOP', 'INDEP'):
+                    if committed_pair_before_rules == ('COOP', 'INDEP'):
+                        final_allow_mixed = True
+                    elif committed_pair_before_rules in [('COOP', 'COOP'), ('COOP', 'HOLD')]:
+                        final_allow_mixed = True
+                    elif right_forced_hold_wait_indep:
+                        final_allow_mixed = True
+
+                if final_mixed_pair in [('INDEP', 'COOP'), ('COOP', 'INDEP')] and not final_allow_mixed:
+                    if final_mixed_pair == ('INDEP', 'COOP'):
+                        plan_l_state, plan_r_state = 'INDEP', 'HOLD'
+                    else:
+                        plan_l_state, plan_r_state = 'HOLD', 'INDEP'
+                    pair_blocked_csv = 1
+                    if t % 20 == 0:
+                        print(
+                            f"[Step {t}] Final mixed legality: {final_mixed_pair[0]}/{final_mixed_pair[1]} blocked "
+                            f"(committed={committed_pair_before_rules[0]}/{committed_pair_before_rules[1]}) "
+                            f"-> {plan_l_state}/{plan_r_state}"
+                        )
+
+                mixed_pair_csv = f"{plan_l_state}/{plan_r_state}"
+                if (plan_l_state, plan_r_state) in [('INDEP', 'COOP'), ('COOP', 'INDEP')]:
+                    mixed_allow_csv = int(final_allow_mixed)
 
             # Episode-start alignment:
             # At t=0, use fresh classifier-based plan immediately instead of inheriting
@@ -1871,6 +2112,8 @@ def main(args):
                 switch_candidate_r = None
                 switch_candidate_count_l = 0
                 switch_candidate_count_r = 0
+                switch_candidate_seen_home_l = False
+                switch_candidate_seen_home_r = False
                 waiting_home_target_l = None
                 waiting_home_target_r = None
                 home_pause_count_l = 0
@@ -1886,8 +2129,14 @@ def main(args):
                     # INDEP/COOP transition must be committed only by home-gated activation below.
                     plan_l_state = committed_plan_l_state
                 elif steps_since_switch_l > MIN_STATE_DURATION_STEPS:
-                    committed_plan_l_state = plan_l_state
-                    steps_since_switch_l = 0
+                    # Prevent illegal HI -> CI commit via debounce path.
+                    if committed_pair_before_rules == ('HOLD', 'INDEP') and plan_l_state == 'COOP':
+                        plan_l_state = committed_plan_l_state
+                        if t % 20 == 0:
+                            print(f"[Step {t}] Debounce guard: block HI->CI commit on left")
+                    else:
+                        committed_plan_l_state = plan_l_state
+                        steps_since_switch_l = 0
                 else:
                     # Suppress switch - stay committed
                     plan_l_state = committed_plan_l_state
@@ -1901,8 +2150,14 @@ def main(args):
                     # INDEP/COOP transition must be committed only by home-gated activation below.
                     plan_r_state = committed_plan_r_state
                 elif steps_since_switch_r > MIN_STATE_DURATION_STEPS:
-                    committed_plan_r_state = plan_r_state
-                    steps_since_switch_r = 0
+                    # Prevent illegal IH -> IC commit via debounce path.
+                    if committed_pair_before_rules == ('INDEP', 'HOLD') and plan_r_state == 'COOP':
+                        plan_r_state = committed_plan_r_state
+                        if t % 20 == 0:
+                            print(f"[Step {t}] Debounce guard: block IH->IC commit on right")
+                    else:
+                        committed_plan_r_state = plan_r_state
+                        steps_since_switch_r = 0
                 else:
                     # Suppress switch - stay committed
                     plan_r_state = committed_plan_r_state
@@ -1914,6 +2169,64 @@ def main(args):
             force_hold_l = False
             force_hold_r = False
 
+            if dual_coop_switch_pending:
+                left_home_dual = is_arm_at_home(qpos_numpy[:6], home_pose[:6], threshold=args.switch_home_threshold)
+                right_home_dual = is_arm_at_home(qpos_numpy[7:13], home_pose[7:13], threshold=args.switch_home_threshold)
+                if left_home_dual and right_home_dual:
+                    if (home_pause_count_l < args.switch_home_pause_steps) or (home_pause_count_r < args.switch_home_pause_steps):
+                        force_hold_l = True
+                        force_hold_r = True
+                        plan_l_state = 'HOLD'
+                        plan_r_state = 'HOLD'
+                        proposed_l_state = 'HOLD'
+                        proposed_r_state = 'HOLD'
+                        home_pause_count_l += 1
+                        home_pause_count_r += 1
+                    else:
+                        committed_plan_l_state = 'COOP'
+                        committed_plan_r_state = 'COOP'
+                        plan_l_state = 'COOP'
+                        plan_r_state = 'COOP'
+                        proposed_l_state = 'COOP'
+                        proposed_r_state = 'COOP'
+                        steps_since_switch_l = 0
+                        steps_since_switch_r = 0
+
+                        waiting_home_target_l = None
+                        waiting_home_target_r = None
+                        switch_candidate_l = None
+                        switch_candidate_r = None
+                        switch_candidate_count_l = 0
+                        switch_candidate_count_r = 0
+                        switch_candidate_seen_home_l = False
+                        switch_candidate_seen_home_r = False
+                        home_pause_count_l = 0
+                        home_pause_count_r = 0
+
+                        if temporal_agg:
+                            all_time_actions_left.fill_(float_nan)
+                            all_time_actions_right.fill_(float_nan)
+                            all_time_actions_dual.fill_(float_nan)
+                        current_action_chunk_left = None
+                        current_action_chunk_right = None
+                        current_action_chunk_dual = None
+                        step_in_chunk_left = 0
+                        step_in_chunk_right = 0
+                        step_in_chunk_dual = 0
+                        transition_window_active_l = 0
+                        transition_window_active_r = 0
+                        settle_after_switch_l = max(0, args.switch_home_settle_steps)
+                        settle_after_switch_r = max(0, args.switch_home_settle_steps)
+                        force_coop_target_refresh_steps = max(force_coop_target_refresh_steps, 6)
+                        dual_coop_switch_pending = False
+                        if t % 20 == 0:
+                            print(f"[Step {t}] Direct dual switch activated: IH/HI -> COOP/COOP")
+                else:
+                    plan_l_state = committed_plan_l_state
+                    plan_r_state = committed_plan_r_state
+                    proposed_l_state = committed_plan_l_state
+                    proposed_r_state = committed_plan_r_state
+
             # LEFT arm: track stable switch request
             if proposed_l_state in ['INDEP', 'COOP'] and proposed_l_state != committed_plan_l_state:
                 if switch_candidate_l == proposed_l_state:
@@ -1921,15 +2234,23 @@ def main(args):
                 else:
                     switch_candidate_l = proposed_l_state
                     switch_candidate_count_l = 1
+                    switch_candidate_seen_home_l = False
+                if is_arm_at_home(qpos_numpy[:6], home_pose[:6], threshold=args.switch_home_threshold):
+                    switch_candidate_seen_home_l = True
             else:
                 switch_candidate_l = None
                 switch_candidate_count_l = 0
+                switch_candidate_seen_home_l = False
 
-            if waiting_home_target_l is None and switch_candidate_l is not None and switch_candidate_count_l >= args.switch_guard_steps:
-                if is_arm_at_home(qpos_numpy[:7], home_pose[:7], threshold=args.switch_home_threshold):
-                    waiting_home_target_l = switch_candidate_l
-                    home_pause_count_l = 0
-                    print(f"[Step {t}] Left switch requested: {committed_plan_l_state} -> {waiting_home_target_l} (home-gated)")
+            if (not dual_coop_switch_pending) and waiting_home_target_l is None and switch_candidate_l is not None and switch_candidate_count_l >= args.switch_guard_steps:
+                if switch_candidate_seen_home_l or is_arm_at_home(qpos_numpy[:6], home_pose[:6], threshold=args.switch_home_threshold):
+                    if switch_candidate_l == 'COOP' and committed_plan_r_state == 'INDEP':
+                        if t % 20 == 0:
+                            print(f"[Step {t}] Left switch request blocked: HI->CI is not allowed")
+                    else:
+                        waiting_home_target_l = switch_candidate_l
+                        home_pause_count_l = 0
+                        print(f"[Step {t}] Left switch requested: {committed_plan_l_state} -> {waiting_home_target_l} (home-gated)")
 
             # RIGHT arm: track stable switch request
             if proposed_r_state in ['INDEP', 'COOP'] and proposed_r_state != committed_plan_r_state:
@@ -1938,78 +2259,110 @@ def main(args):
                 else:
                     switch_candidate_r = proposed_r_state
                     switch_candidate_count_r = 1
+                    switch_candidate_seen_home_r = False
+                if is_arm_at_home(qpos_numpy[7:13], home_pose[7:13], threshold=args.switch_home_threshold):
+                    switch_candidate_seen_home_r = True
             else:
                 switch_candidate_r = None
                 switch_candidate_count_r = 0
+                switch_candidate_seen_home_r = False
 
-            if waiting_home_target_r is None and switch_candidate_r is not None and switch_candidate_count_r >= args.switch_guard_steps:
-                if is_arm_at_home(qpos_numpy[7:14], home_pose[7:14], threshold=args.switch_home_threshold):
-                    waiting_home_target_r = switch_candidate_r
-                    home_pause_count_r = 0
-                    print(f"[Step {t}] Right switch requested: {committed_plan_r_state} -> {waiting_home_target_r} (home-gated)")
+            if (not dual_coop_switch_pending) and waiting_home_target_r is None and switch_candidate_r is not None and switch_candidate_count_r >= args.switch_guard_steps:
+                if switch_candidate_seen_home_r or is_arm_at_home(qpos_numpy[7:13], home_pose[7:13], threshold=args.switch_home_threshold):
+                    if switch_candidate_r == 'COOP' and committed_plan_l_state == 'INDEP':
+                        if t % 20 == 0:
+                            print(f"[Step {t}] Right switch request blocked: IH->IC is not allowed")
+                    else:
+                        waiting_home_target_r = switch_candidate_r
+                        home_pause_count_r = 0
+                        print(f"[Step {t}] Right switch requested: {committed_plan_r_state} -> {waiting_home_target_r} (home-gated)")
 
             # LEFT arm: hold current policy until home reached, then pause and switch
-            if waiting_home_target_l is not None:
-                if is_arm_at_home(qpos_numpy[:7], home_pose[:7], threshold=args.switch_home_threshold):
+            if (not dual_coop_switch_pending) and waiting_home_target_l is not None:
+                if is_arm_at_home(qpos_numpy[:6], home_pose[:6], threshold=args.switch_home_threshold):
                     if home_pause_count_l < args.switch_home_pause_steps:
                         force_hold_l = True
                         plan_l_state = 'HOLD'
                         proposed_l_state = 'HOLD'
                         home_pause_count_l += 1
                     else:
-                        committed_plan_l_state = waiting_home_target_l
-                        plan_l_state = committed_plan_l_state
-                        proposed_l_state = committed_plan_l_state
-                        steps_since_switch_l = 0
+                        if waiting_home_target_l == 'COOP' and committed_plan_r_state == 'INDEP':
+                            if t % 20 == 0:
+                                print(f"[Step {t}] Left switch activation blocked: HI->CI is not allowed")
+                            waiting_home_target_l = None
+                            switch_candidate_l = None
+                            switch_candidate_count_l = 0
+                            switch_candidate_seen_home_l = False
+                            home_pause_count_l = 0
+                            plan_l_state = committed_plan_l_state
+                            proposed_l_state = committed_plan_l_state
+                        else:
+                            committed_plan_l_state = waiting_home_target_l
+                            plan_l_state = committed_plan_l_state
+                            proposed_l_state = committed_plan_l_state
+                            steps_since_switch_l = 0
 
-                        waiting_home_target_l = None
-                        switch_candidate_l = None
-                        switch_candidate_count_l = 0
-                        home_pause_count_l = 0
+                            waiting_home_target_l = None
+                            switch_candidate_l = None
+                            switch_candidate_count_l = 0
+                            switch_candidate_seen_home_l = False
+                            home_pause_count_l = 0
 
-                        if temporal_agg:
-                            all_time_actions_left.fill_(float_nan)
-                            all_time_actions_dual[:, :, :7].fill_(float_nan)
-                        current_action_chunk_left = None
-                        current_action_chunk_dual = None
-                        transition_window_active_l = 0
-                        step_in_chunk_left = 0
-                        step_in_chunk_dual = 0
-                        settle_after_switch_l = max(0, args.switch_home_settle_steps)
-                        print(f"[Step {t}] Left switch activated at home -> {plan_l_state}")
+                            if temporal_agg:
+                                all_time_actions_left.fill_(float_nan)
+                                all_time_actions_dual[:, :, :7].fill_(float_nan)
+                            current_action_chunk_left = None
+                            current_action_chunk_dual = None
+                            transition_window_active_l = 0
+                            step_in_chunk_left = 0
+                            step_in_chunk_dual = 0
+                            settle_after_switch_l = max(0, args.switch_home_settle_steps)
+                            print(f"[Step {t}] Left switch activated at home -> {plan_l_state}")
                 else:
                     plan_l_state = committed_plan_l_state
                     proposed_l_state = committed_plan_l_state
 
             # RIGHT arm: hold current policy until home reached, then pause and switch
-            if waiting_home_target_r is not None:
-                if is_arm_at_home(qpos_numpy[7:14], home_pose[7:14], threshold=args.switch_home_threshold):
+            if (not dual_coop_switch_pending) and waiting_home_target_r is not None:
+                if is_arm_at_home(qpos_numpy[7:13], home_pose[7:13], threshold=args.switch_home_threshold):
                     if home_pause_count_r < args.switch_home_pause_steps:
                         force_hold_r = True
                         plan_r_state = 'HOLD'
                         proposed_r_state = 'HOLD'
                         home_pause_count_r += 1
                     else:
-                        committed_plan_r_state = waiting_home_target_r
-                        plan_r_state = committed_plan_r_state
-                        proposed_r_state = committed_plan_r_state
-                        steps_since_switch_r = 0
+                        if waiting_home_target_r == 'COOP' and committed_plan_l_state == 'INDEP':
+                            if t % 20 == 0:
+                                print(f"[Step {t}] Right switch activation blocked: IH->IC is not allowed")
+                            waiting_home_target_r = None
+                            switch_candidate_r = None
+                            switch_candidate_count_r = 0
+                            switch_candidate_seen_home_r = False
+                            home_pause_count_r = 0
+                            plan_r_state = committed_plan_r_state
+                            proposed_r_state = committed_plan_r_state
+                        else:
+                            committed_plan_r_state = waiting_home_target_r
+                            plan_r_state = committed_plan_r_state
+                            proposed_r_state = committed_plan_r_state
+                            steps_since_switch_r = 0
 
-                        waiting_home_target_r = None
-                        switch_candidate_r = None
-                        switch_candidate_count_r = 0
-                        home_pause_count_r = 0
+                            waiting_home_target_r = None
+                            switch_candidate_r = None
+                            switch_candidate_count_r = 0
+                            switch_candidate_seen_home_r = False
+                            home_pause_count_r = 0
 
-                        if temporal_agg:
-                            all_time_actions_right.fill_(float_nan)
-                            all_time_actions_dual[:, :, 7:].fill_(float_nan)
-                        current_action_chunk_right = None
-                        current_action_chunk_dual = None
-                        transition_window_active_r = 0
-                        step_in_chunk_right = 0
-                        step_in_chunk_dual = 0
-                        settle_after_switch_r = max(0, args.switch_home_settle_steps)
-                        print(f"[Step {t}] Right switch activated at home -> {plan_r_state}")
+                            if temporal_agg:
+                                all_time_actions_right.fill_(float_nan)
+                                all_time_actions_dual[:, :, 7:].fill_(float_nan)
+                            current_action_chunk_right = None
+                            current_action_chunk_dual = None
+                            transition_window_active_r = 0
+                            step_in_chunk_right = 0
+                            step_in_chunk_dual = 0
+                            settle_after_switch_r = max(0, args.switch_home_settle_steps)
+                            print(f"[Step {t}] Right switch activated at home -> {plan_r_state}")
                 else:
                     plan_r_state = committed_plan_r_state
                     proposed_r_state = committed_plan_r_state
@@ -2021,7 +2374,7 @@ def main(args):
             # LEFT
             is_transitioning_l = False
             alpha_l = 0.0
-            if plan_l_state != proposed_l_state: # Switch is currently suppressed
+            if (waiting_home_target_l is not None) and (plan_l_state != proposed_l_state): # Switch is currently suppressed
                 steps_remaining = MIN_STATE_DURATION_STEPS - steps_since_switch_l
                 if steps_remaining <= TRANSITION_WINDOW:
                     is_transitioning_l = True
@@ -2032,7 +2385,7 @@ def main(args):
             # RIGHT
             is_transitioning_r = False
             alpha_r = 0.0
-            if plan_r_state != proposed_r_state:
+            if (waiting_home_target_r is not None) and (plan_r_state != proposed_r_state):
                 steps_remaining = MIN_STATE_DURATION_STEPS - steps_since_switch_r
                 if steps_remaining <= TRANSITION_WINDOW:
                     is_transitioning_r = True
@@ -2077,6 +2430,7 @@ def main(args):
 
             left_home_gate_threshold = max(args.switch_home_threshold, args.hl_home_threshold)
             left_home_now = np.max(np.abs(qpos_numpy[:6] - home_pose[:6])) < left_home_gate_threshold
+            left_has_grasp = (len(held_indices_left) > 0)
             left_indep_intent = (
                 (waiting_home_target_l == 'INDEP')
                 or (proposed_l_state == 'INDEP')
@@ -2087,6 +2441,7 @@ def main(args):
                 if ready_l:
                     print(f"[Step {t}] Left INDEP resume: left-shadow target arrived (x={target_x_vals_l})")
                     left_waiting_indep_target = False
+                    left_forced_hold_wait_indep = False
                     force_hold_l = False
                     plan_l_state = 'INDEP'
                     proposed_l_state = 'INDEP'
@@ -2099,15 +2454,22 @@ def main(args):
                     step_in_chunk_left = 0
                     transition_window_active_l = 0
                     left_resume_reinfer_pending = True
+                elif left_has_grasp:
+                    # While grasping, do not force HOLD wait; keep INDEP to avoid dropping object.
+                    left_waiting_indep_target = False
+                    left_forced_hold_wait_indep = False
                 elif left_indep_intent:
+                    left_forced_hold_wait_indep = True
                     force_hold_l = True
                     plan_l_state = 'HOLD'
                     proposed_l_state = 'HOLD'
                 else:
                     left_waiting_indep_target = False
-            elif waiting_home_target_l is None and left_indep_intent and left_home_now:
+                    left_forced_hold_wait_indep = False
+            elif waiting_home_target_l is None and left_indep_intent and left_home_now and (not left_has_grasp):
                 ready_l, target_x_vals_l = left_indep_target_ready()
                 if not ready_l:
+                    left_forced_hold_wait_indep = True
                     force_hold_l = True
                     plan_l_state = 'HOLD'
                     proposed_l_state = 'HOLD'
@@ -2116,9 +2478,12 @@ def main(args):
                     else:
                         print(f"[Step {t}] Left INDEP wait at home: shadow target x={target_x_vals_l} -> HOLD")
                     left_waiting_indep_target = True
+            elif not left_waiting_indep_target:
+                left_forced_hold_wait_indep = False
 
             right_home_gate_threshold = max(args.switch_home_threshold, args.hl_home_threshold)
             right_home_now = np.max(np.abs(qpos_numpy[7:13] - home_pose[7:13])) < right_home_gate_threshold
+            right_has_grasp = (len(held_indices_right) > 0)
             right_indep_intent = (
                 (waiting_home_target_r == 'INDEP')
                 or (proposed_r_state == 'INDEP')
@@ -2129,6 +2494,7 @@ def main(args):
                 if ready_r:
                     print(f"[Step {t}] Right INDEP resume: right-shadow target arrived (x={target_x_vals_r})")
                     right_waiting_indep_target = False
+                    right_forced_hold_wait_indep = False
                     force_hold_r = False
                     plan_r_state = 'INDEP'
                     proposed_r_state = 'INDEP'
@@ -2141,15 +2507,22 @@ def main(args):
                     step_in_chunk_right = 0
                     transition_window_active_r = 0
                     right_resume_reinfer_pending = True
+                elif right_has_grasp:
+                    # While grasping, do not force HOLD wait; keep INDEP to avoid dropping object.
+                    right_waiting_indep_target = False
+                    right_forced_hold_wait_indep = False
                 elif right_indep_intent:
+                    right_forced_hold_wait_indep = True
                     force_hold_r = True
                     plan_r_state = 'HOLD'
                     proposed_r_state = 'HOLD'
                 else:
                     right_waiting_indep_target = False
-            elif waiting_home_target_r is None and right_indep_intent and right_home_now:
+                    right_forced_hold_wait_indep = False
+            elif waiting_home_target_r is None and right_indep_intent and right_home_now and (not right_has_grasp):
                 ready_r, target_x_vals_r = right_indep_target_ready()
                 if not ready_r:
+                    right_forced_hold_wait_indep = True
                     force_hold_r = True
                     plan_r_state = 'HOLD'
                     proposed_r_state = 'HOLD'
@@ -2158,6 +2531,98 @@ def main(args):
                     else:
                         print(f"[Step {t}] Right INDEP wait at home: shadow target x={target_x_vals_r} -> HOLD")
                     right_waiting_indep_target = True
+            elif not right_waiting_indep_target:
+                right_forced_hold_wait_indep = False
+
+            coop_pair_ready, coop_target_x_vals = coop_target_ready()
+            coop_intent = (
+                dual_coop_switch_pending
+                or (waiting_home_target_l == 'COOP')
+                or (waiting_home_target_r == 'COOP')
+                or ((proposed_l_state == 'COOP') and (proposed_r_state == 'COOP'))
+                or ((plan_l_state == 'COOP') and (plan_r_state == 'COOP'))
+            )
+
+            if coop_waiting_target:
+                if coop_pair_ready:
+                    print(f"[Step {t}] COOP resume: coop-shadow target ready (x={coop_target_x_vals}) -> COOP")
+                    coop_waiting_target = False
+                    coop_forced_hold_wait_target = False
+                    force_hold_l = False
+                    force_hold_r = False
+                    plan_l_state = 'COOP'
+                    plan_r_state = 'COOP'
+                    proposed_l_state = 'COOP'
+                    proposed_r_state = 'COOP'
+                    committed_plan_l_state = 'COOP'
+                    committed_plan_r_state = 'COOP'
+                    steps_since_switch_l = 0
+                    steps_since_switch_r = 0
+                    if temporal_agg:
+                        all_time_actions_dual.fill_(float_nan)
+                    current_action_chunk_dual = None
+                    step_in_chunk_dual = 0
+                    transition_window_active_l = 0
+                    transition_window_active_r = 0
+                elif coop_intent:
+                    coop_forced_hold_wait_target = True
+                    force_hold_l = True
+                    force_hold_r = True
+                    plan_l_state = 'HOLD'
+                    plan_r_state = 'HOLD'
+                    proposed_l_state = 'HOLD'
+                    proposed_r_state = 'HOLD'
+                else:
+                    coop_waiting_target = False
+                    coop_forced_hold_wait_target = False
+            elif coop_intent and not coop_pair_ready:
+                coop_forced_hold_wait_target = True
+                force_hold_l = True
+                force_hold_r = True
+                plan_l_state = 'HOLD'
+                plan_r_state = 'HOLD'
+                proposed_l_state = 'HOLD'
+                proposed_r_state = 'HOLD'
+                if len(coop_target_x_vals) == 0:
+                    print(f"[Step {t}] COOP wait: no coop-shadow target -> HOLD/HOLD")
+                else:
+                    print(f"[Step {t}] COOP wait: coop target out of range x={coop_target_x_vals} -> HOLD/HOLD")
+                coop_waiting_target = True
+            else:
+                coop_forced_hold_wait_target = False
+
+            # Final-late guard: downstream logic may rewrite plans after earlier checks.
+            # Re-enforce mixed legality right before logging/action selection.
+            if current_hl_oracle_schedule is None:
+                late_pair = (plan_l_state, plan_r_state)
+                late_allow_mixed = False
+                if late_pair == ('INDEP', 'COOP'):
+                    if committed_pair_before_rules == ('INDEP', 'COOP'):
+                        late_allow_mixed = True
+                    elif committed_pair_before_rules in [('COOP', 'COOP'), ('HOLD', 'COOP')]:
+                        late_allow_mixed = True
+                elif late_pair == ('COOP', 'INDEP'):
+                    if committed_pair_before_rules == ('COOP', 'INDEP'):
+                        late_allow_mixed = True
+                    elif committed_pair_before_rules in [('COOP', 'COOP'), ('COOP', 'HOLD')]:
+                        late_allow_mixed = True
+                    elif right_forced_hold_wait_indep:
+                        late_allow_mixed = True
+
+                if late_pair in [('INDEP', 'COOP'), ('COOP', 'INDEP')] and not late_allow_mixed:
+                    if late_pair == ('INDEP', 'COOP'):
+                        plan_l_state, plan_r_state = 'INDEP', 'HOLD'
+                    else:
+                        plan_l_state, plan_r_state = 'HOLD', 'INDEP'
+                    pair_blocked_csv = 1
+                    mixed_allow_csv = 0
+                    mixed_pair_csv = f"{plan_l_state}/{plan_r_state}"
+                    if t % 20 == 0:
+                        print(
+                            f"[Step {t}] Late mixed legality: {late_pair[0]}/{late_pair[1]} blocked "
+                            f"(committed={committed_pair_before_rules[0]}/{committed_pair_before_rules[1]}) "
+                            f"-> {plan_l_state}/{plan_r_state}"
+                        )
 
             # Logging
             if args.debug_hl_logs and t % 50 == 0:
@@ -2275,19 +2740,58 @@ def main(args):
             video_mode_l_char = mode_to_char(effective_l)
             video_mode_r_char = mode_to_char(effective_r)
 
+            if hl_debug_writer is not None:
+                mode_changed = 0
+                if prev_effective_l_for_csv is not None:
+                    mode_changed = int((effective_l != prev_effective_l_for_csv) or (effective_r != prev_effective_r_for_csv))
+                adopted_l = int(last_hl_update_step_l == t)
+                adopted_r = int(last_hl_update_step_r == t)
+                left_forced_hold_wait_indep_csv = int(left_forced_hold_wait_indep)
+                right_forced_hold_wait_indep_csv = int(right_forced_hold_wait_indep)
+                hl_debug_writer.writerow({
+                    'Episode': episode_count,
+                    'Step': t,
+                    'Raw_Source': hl_raw_source,
+                    'Raw_L': hl_raw_l_name,
+                    'Raw_R': hl_raw_r_name,
+                    'Maj_Count_L': maj_count_l,
+                    'Maj_Mode_L': state_name_from_id(s_l_smooth),
+                    'Maj_Count_R': maj_count_r,
+                    'Maj_Mode_R': state_name_from_id(s_r_smooth),
+                    'Plan_L': effective_l,
+                    'Plan_R': effective_r,
+                    'Mode_Changed': mode_changed,
+                    'Adopted_L': adopted_l,
+                    'Adopted_R': adopted_r,
+                    'Rehome_Stage': subtask_rehome_stage,
+                    'Committed_Before_L': committed_before_rules_l,
+                    'Committed_Before_R': committed_before_rules_r,
+                    'Mixed_Pair': mixed_pair_csv,
+                    'Mixed_Allow': mixed_allow_csv,
+                    'Pair_Blocked': pair_blocked_csv,
+                    'Home_Constrained': home_constrained_csv,
+                    'Left_ForcedHold_IndepWait': left_forced_hold_wait_indep_csv,
+                    'Right_ForcedHold_IndepWait': right_forced_hold_wait_indep_csv,
+                })
+                prev_effective_l_for_csv = effective_l
+                prev_effective_r_for_csv = effective_r
+
             if args.save_video:
-                main_rgb = env._physics.render(height=240, width=320, camera_id='top')
-                coop_rgb = env_shadow_c.physics.render(height=240, width=320, camera_id='top')
-                indep_l_rgb = env_shadow_i_left.physics.render(height=240, width=320, camera_id='top')
-                indep_r_rgb = env_shadow_i_right.physics.render(height=240, width=320, camera_id='top')
-                video_frame = compose_video_frame(
-                    main_rgb,
-                    coop_rgb,
-                    indep_l_rgb,
-                    indep_r_rgb,
-                    video_mode_l_char,
-                    video_mode_r_char,
-                )
+                if args.save_video_main_only_720p:
+                    video_frame = env._physics.render(height=720, width=1280, camera_id='top')
+                else:
+                    main_rgb = env._physics.render(height=240, width=320, camera_id='top')
+                    coop_rgb = env_shadow_c.physics.render(height=240, width=320, camera_id='top')
+                    indep_l_rgb = env_shadow_i_left.physics.render(height=240, width=320, camera_id='top')
+                    indep_r_rgb = env_shadow_i_right.physics.render(height=240, width=320, camera_id='top')
+                    video_frame = compose_video_frame(
+                        main_rgb,
+                        coop_rgb,
+                        indep_l_rgb,
+                        indep_r_rgb,
+                        video_mode_l_char,
+                        video_mode_r_char,
+                    )
                 video_frames.append(video_frame)
             
             # --- Record HITL Data (if enabled) ---
@@ -3035,6 +3539,8 @@ def main(args):
                  if to_remove:
                      print(f"[Step {t}] Auto-Removing objects: {to_remove}")
                      remove_cubes(env.physics, list(to_remove))
+                     if committed_plan_l_state == 'COOP' and committed_plan_r_state == 'COOP':
+                         coop_start_rearm_from_cc = True
                      # Scene changed: drop stale planned chunks immediately.
                      current_action_chunk_dual = None
                      current_action_chunk_left = None
@@ -3074,7 +3580,7 @@ def main(args):
                      current_target_indices_c = [idx for idx in current_target_indices_c if idx not in to_remove]
 
                      # Subtask rehome trigger: after successful removal, return home then resume
-                     subtask_rehome_trigger_pending = True
+                     #subtask_rehome_trigger_pending = True
             profile_removal_sec += (time.perf_counter() - _t_removal_start)
             
             step_in_chunk += 1
@@ -3187,6 +3693,8 @@ def main(args):
                 committed_plan_r_state = 'INDEP'
                 steps_since_switch_l = 0
                 steps_since_switch_r = 0
+                prev_effective_l_for_csv = None
+                prev_effective_r_for_csv = None
 
                 # Reset hold/home counters
                 consecutive_at_home_l = 0
@@ -3200,26 +3708,37 @@ def main(args):
                 last_removal_step = -100
                 current_target_indices_i = []
                 current_target_indices_c = []
+                no_coop_target_streak = 0
 
                 switch_candidate_l = None
                 switch_candidate_r = None
                 switch_candidate_count_l = 0
                 switch_candidate_count_r = 0
+                switch_candidate_seen_home_l = False
+                switch_candidate_seen_home_r = False
                 waiting_home_target_l = None
                 waiting_home_target_r = None
                 home_pause_count_l = 0
                 home_pause_count_r = 0
                 settle_after_switch_l = 0
                 settle_after_switch_r = 0
+                dual_coop_switch_pending = False
+                force_coop_target_refresh_steps = 0
+                coop_start_rearm_from_cc = False
                 left_waiting_indep_target = False
                 left_resume_reinfer_pending = False
+                left_forced_hold_wait_indep = False
                 right_waiting_indep_target = False
                 right_resume_reinfer_pending = False
+                right_forced_hold_wait_indep = False
+                coop_waiting_target = False
+                coop_forced_hold_wait_target = False
 
                 # Reset subtask rehome state machine
                 subtask_rehome_stage = 'none'
                 subtask_rehome_trigger_pending = False
                 subtask_rehome_settle_left = 0
+                subtask_rehome_near_home_streak = 0
                 subtask_post_lock_steps = 0
 
                 # Save Stats to CSV
@@ -3374,6 +3893,8 @@ def main(args):
 
 
     finally:
+        if hl_debug_f is not None:
+            hl_debug_f.close()
         if old_settings:
             termios.tcsetattr(sys.stdin, termios.TCSADRAIN, old_settings)
         plt.close()
@@ -3395,7 +3916,9 @@ if __name__ == '__main__':
     
     parser.add_argument('--onscreen_render', action='store_true')
     parser.add_argument('--save_video', nargs='?', const='videos', type=str, help='Save execution video to mp4 (optional path, default "videos")')
+    parser.add_argument('--save_video_main_only_720p', action='store_true', help='When saving video, record only main environment at 1280x720 (presentation mode)')
     parser.add_argument('--save_stats_path', action='store', type=str, help='Path to save episode statistics CSV')
+    parser.add_argument('--save_hl_debug_csv', action='store', type=str, default=None, help='Path to save per-step high-level debug CSV (raw predictions, majority, plans)')
     parser.add_argument('--num_rollouts', action='store', type=int, default=1, help='Number of evaluation episodes')
     parser.add_argument('--color_sequence', action='store', type=str, default=None, help='Color sequence (e.g. rrgbrrgbrr)')
     parser.add_argument('--episode_len', action='store', type=int, default=None, help='Override task-specific episode length')
@@ -3407,7 +3930,7 @@ if __name__ == '__main__':
     parser.add_argument('--hl_update_at_home_only', action='store_true', help='Update high-level classifier only when both arms are at home')
     parser.add_argument('--hl_update_interval', action='store', type=int, default=50, help='Step interval for high-level updates when home-only mode is enabled')
     parser.add_argument('--hl_infer_interval', action='store', type=int, default=1, help='Step interval for high-level classifier inference in normal mode (default: 5 steps)')
-    parser.add_argument('--hl_home_threshold', action='store', type=float, default=0.25, help='Arm joint threshold for hierarchical-style high-level home check')
+    parser.add_argument('--hl_home_threshold', action='store', type=float, default=0.05, help='Arm joint threshold for hierarchical-style high-level home check')
     parser.add_argument('--hl_home_gripper_threshold', action='store', type=float, default=0.8, help='Gripper-open threshold for hierarchical-style high-level home check')
     parser.add_argument('--hl_update_log_interval', action='store', type=int, default=50, help='Step interval for logging non-fired high-level updates in home-only mode')
     parser.add_argument('--debug_hl_logs', action='store_true', default=True, help='Enable verbose high-level/update/home-refresh debug logs')
@@ -3416,6 +3939,20 @@ if __name__ == '__main__':
     parser.add_argument('--switch_home_settle_steps', action='store', type=int, default=6, help='Additional steps to keep exact home pose after switch activation')
     parser.add_argument('--switch_home_interp_max_delta', action='store', type=float, default=0.04, help='Max per-step joint delta when interpolating toward home during switch hold/settle')
     parser.add_argument('--switch_home_threshold', action='store', type=float, default=0.12, help='Home detection threshold for gated switching')
+    parser.add_argument('--no_coop_to_indep_steps', action='store', type=int, default=20, help='If coop target is empty for N steps, demote stale committed COOP arm(s) to INDEP')
+    parser.add_argument('--indep_left_split_x', action='store', type=float, default=-0.05, help='Left independent display split threshold: show left target only if x < this')
+    parser.add_argument('--indep_right_split_x', action='store', type=float, default=-0.05, help='Right independent display split threshold: show right target only if x >= this')
+    parser.add_argument('--indep_left_display_x_min', action='store', type=float, default=-0.3, help='Left independent display lower bound for next-target selection')
+    parser.add_argument('--indep_left_display_x_max', action='store', type=float, default=-0.05, help='Left independent display upper bound for next-target selection')
+    parser.add_argument('--indep_right_display_x_min', action='store', type=float, default=0.0, help='Right independent display lower bound for next-target selection')
+    parser.add_argument('--indep_right_display_x_max', action='store', type=float, default=10.0, help='Right independent display upper bound for next-target selection')
+    parser.add_argument('--indep_left_ready_x_min', action='store', type=float, default=-0.3, help='Left independent wait-resume threshold: require target x >= this to start/resume INDEP')
+    parser.add_argument('--indep_right_ready_x_min', action='store', type=float, default=0.0, help='Right independent wait-resume threshold: require target x >= this to start/resume INDEP')
+    parser.add_argument('--coop_display_x_min', action='store', type=float, default=-10.0, help='Cooperative display filter min-x: G/B candidates outside this range are hidden from coop shadow')
+    parser.add_argument('--coop_display_x_max', action='store', type=float, default=10.0, help='Cooperative display filter max-x: G/B candidates outside this range are hidden from coop shadow')
+    parser.add_argument('--coop_display_avg_x_min', action='store', type=float, default=-0.2, help='Cooperative display criterion: show coop pair only when average pair x is >= this threshold')
+    parser.add_argument('--coop_ready_x_min', action='store', type=float, default=-10.0, help='Cooperative wait-resume min-x: CC stays HOLD until both coop targets satisfy this range')
+    parser.add_argument('--coop_ready_x_max', action='store', type=float, default=10.0, help='Cooperative wait-resume max-x: CC stays HOLD until both coop targets satisfy this range')
     parser.add_argument('--x_shift', action='store', type=float, default=0.0, help='Shift all objects along X-axis')
     parser.add_argument('--x_shift_start_idx', action='store', type=int, default=0, help='Start index for applying x-shift (0-indexed)')
     

@@ -50,6 +50,16 @@ python3 evaluate_policy_switcher.py \
     --sequence_file sequences.csv \
     --max_timesteps 2700 --onscreen_render --save_video videos/e2e
 
+# E2E評価: BG-R/BG-BG の相対距離は維持しつつ、作業部品グループ間のみ間隔を拡張
+python3 evaluate_policy_switcher.py \
+    --task_name sim_many_cubes \
+    --ckpt_e2e ckpt4/end2end \
+    --policy_class ACT --kl_weight 10 --chunk_size 75 --hidden_dim 512 --dim_feedforward 3200 \
+    --num_rollouts 10 \
+    --sequence_file original_sequences.csv \
+    --max_timesteps 2700 --onscreen_render --save_video videos/e2e_gap \
+    --e2e_pair_gap_extra_x 0.08 --e2e_pair_gap_mode color_group
+
 ----------------------------------------------------------------------------------------------------
 #事前学習
 python3 generate_dataset.py --pretrain_mode independent --num_episodes 2 --dataset_dir data4/pretrain_i --onscreen_render --no_save_data --save_video material --video_camera top
@@ -178,9 +188,9 @@ python3 train_state_classifier.py \
 
 python3 state_switcher.py \
     --task_name sim_many_cubes \
-    --ckpt_dual ckpt4/pretrained_c \
-    --ckpt_left ckpt4/pretrained_left \
-    --ckpt_right ckpt4/pretrained_right \
+    --ckpt_dual ckpt5/pretrained_c_60000/policy_epoch_11000_seed_0.ckpt \
+    --ckpt_left ckpt5/pretrained_left \
+    --ckpt_right ckpt5/pretrained_right \
     --state_ckpt state_classifier_best.pth \
     --policy_class ACT --kl_weight 10 --chunk_size 30 --hidden_dim 512 --dim_feedforward 3200 \
     --inherit_temporal_buffer --temporal_agg_k 0.1\
@@ -210,7 +220,7 @@ python3 state_switcher.py         --task_name sim_many_cubes         --ckpt_dual
 
 python3 state_switcher.py \
         --task_name sim_many_cubes \
-        --ckpt_dual ckpts/coordinated  \
+        --ckpt_dual ckpt5/pretrained_c_60000/policy_epoch_11000_seed_0.ckpt \
         --ckpt_left ckpts/independent_left  \
         --ckpt_right ckpts/independent_right  \
         --state_ckpt binary_state_classifier.pth \
@@ -218,20 +228,21 @@ python3 state_switcher.py \
         --inherit_temporal_buffer --temporal_agg_k 0.03  \
         --warmup_steps 50 --num_rollouts 50  --episode_len 3000 --seed 2 \
         --sequence_file original_sequences.csv --no_temporal_agg  \
-        --save_stats_path results/hie_binary_classifier.txt --save_video videos/hie_binary_classifier --unit_test_scripted_low_level
+        --save_stats_path results/hie_binary_classifie_10.txt --save_video videos/hie_binary_classifier --unit_test_scripted_low_level
 
 
 python3 evaluate_policy_switcher.py\
  --task_name sim_many_cubes \
- --ckpt_dual ckpt5/pretrained_c \
+ --ckpt_dual ckpt5/pretrained_c_60000/policy_epoch_11000_seed_0.ckpt \
  --policy_class ACT \
  --chunk_size 75 \
- --num_rollouts 2 \
-  --episode_len 1000 --seed 2 \
+ --num_rollouts 50 \
+  --episode_len 600 \
   --coop_only \
   --no_temporal_agg \
   --onscreen_render \
   --save_stats_path coop_only_results.txt \
+  --coop_x_csv results/coop_gb_positions_rightmost.csv
   --save_video material/testcoop \
   --video_camera angle
 
@@ -249,48 +260,33 @@ python3 evaluate_policy_switcher.py \
     --save_video material/testindep \
      --video_camera angle
 
+# INDEP用: データセットからR初期位置抽出 → その位置で単体評価
+python3 extract_indep_r_positions.py \
+    --dataset_dir data5/whole_task_raw \
+    --output_csv results/indep_r_positions.csv \
+    --min_area 50 \
+    --save_debug_dir results/indep_r_debug
 
-
-
-
-
-
-
-python3 hierarchical_policy.py \
-  --task_name sim_many_cubes \
-  --ckpt_dual ckpt5/pretrained_c_60000 \
-  --ckpt_left ckpt5/pretrained_left \
-  --ckpt_right ckpt5/pretrained_right \
-  --state_ckpt old_state_classifier_best.pth \
-  --chunk_size 75 \
-  --num_rollouts 10 \
-  --episode_len 3000 \
-  --seed 2 \
-  --sequence_file original_sequences.csv \
-  --hl_update_at_home_only \
-  --hl_update_interval 50 \
-  --no_temporal_agg \
-  --onscreen_render \
-  --save_stats_path hie_eval_simplified.csv \
-   --save_video videos/hie_simplified
-
-python3 hierarchical_policy.py \
+python3 evaluate_policy_switcher.py \
     --task_name sim_many_cubes \
-    --ckpt_dual ckpt5/pretrained_c_60000 \
     --ckpt_left ckpt5/pretrained_left \
     --ckpt_right ckpt5/pretrained_right \
-    --state_ckpt old_state_classifier_best.pth \
-    --sequence_file original_sequences.csv \
-    --num_rollouts 10 \
-    --episode_len 3000 \
-    --seed 2 \
+    --policy_class ACT \
+    --chunk_size 75 \
+    --num_rollouts 50 \
+    --episode_len 370 \
+    --indep_only \
+    --indep_r_csv results/indep_r_positions.csv \
+    --no_temporal_agg \
+    --save_video video_indep_r_test \
     --onscreen_render \
-    --sequence_success_n 20 --save_video videos/hie_simplified --hl_oracle_metadata_csv random_dryrun_metadata.csv
+    --save_stats_path results/indep_only_from_rcsv.txt
+
 
 python3 state_switcher.py         --task_name sim_many_cubes         --ckpt_dual ckpt5/pretrained_c_60000          --ckpt_left ckpt5/pretrained_left          --ckpt_right ckpt5/pretrained_right          --state_ckpt old_state_classifier_best.pth         --chunk_size 75         --temporal_agg_k 0.03          --num_rollouts 50  --episode_len 3000 --seed 0         --sequence_file original_sequences.csv --hl_update_at_home_only --hl_update_interval 50 --no_temporal_agg  --unit_test_scripted_low_level  --save_stats_path hie_scripted_lowlevel.txt
 
 
-    python3 analyze_hie_evaluation.py --input results/test_binary_classifier.txt --out_dir results/binary_classifier_analysis
+python3 analyze_hie_evaluation.py --input hie_result_11.csv --out_dir results/binary_classifier_analysis_10
     
 python3 dryrun_sequence_metadata.py --sequence_file original_sequences.csv --output_csv dryrun100.csv --num_episodes 100 --no_shuffle
 

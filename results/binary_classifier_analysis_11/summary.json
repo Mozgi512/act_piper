@@ -1,0 +1,33 @@
+{
+  "episodes": 50,
+  "success_count": 34,
+  "success_rate": 0.68,
+  "reward_mean": 14727.54,
+  "reward_std": 2061.0629608044487,
+  "reward_min": 7970.0,
+  "reward_max": 17330.0,
+  "status_counts": {
+    "Coop_Success": 264,
+    "Indep_Success": 194,
+    "Fail": 42
+  },
+  "color_status_counts": {
+    "g": {
+      "Coop_Success": 132,
+      "Fail": 15
+    },
+    "b": {
+      "Coop_Success": 132,
+      "Fail": 15
+    },
+    "r": {
+      "Indep_Success": 194,
+      "Fail": 12
+    }
+  },
+  "mean_object_reward_by_color": {
+    "g": 1.7959183673469388,
+    "b": 1.7959183673469388,
+    "r": 0.941747572815534
+  }
+}

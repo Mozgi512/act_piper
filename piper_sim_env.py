@@ -535,18 +535,63 @@ class ManyCubesTask(BimanualPiperTask):
                      poses = {} # Clear specials
                      start_x = 0.0 # Start of working area
                      spacing = 0.15 # Spacing towards Upstream (+X)
+
+                     pair_gap_extra_x = float(MANYCUBES_CONFIG.get('pair_gap_extra_x', 0.0))
+                     pair_gap_mode = str(MANYCUBES_CONFIG.get('pair_gap_mode', 'count'))
+                     pair_group_size = int(MANYCUBES_CONFIG.get('pair_group_size', 3))
+
+                     color_group_ids = None
+                     if pair_gap_extra_x != 0.0 and pair_gap_mode == 'color_group':
+                         seq = MANYCUBES_COLORS[0]
+                         if seq is not None and len(seq) >= 10:
+                             color_group_ids = []
+                             group_idx = 0
+                             k = 0
+                             while k < 10:
+                                 c = str(seq[k]).lower()
+                                 if c in ('b', 'g'):
+                                     target = 'g' if c == 'b' else 'b'
+                                     color_group_ids.append(group_idx)
+                                     k += 1
+                                     while k < 10:
+                                         c2 = str(seq[k]).lower()
+                                         color_group_ids.append(group_idx)
+                                         k += 1
+                                         if c2 == target:
+                                             break
+                                     group_idx += 1
+                                 elif c == 'r':
+                                     while k < 10 and str(seq[k]).lower() == 'r':
+                                         color_group_ids.append(group_idx)
+                                         k += 1
+                                     group_idx += 1
+                                 else:
+                                     color_group_ids.append(group_idx)
+                                     k += 1
+                                     group_idx += 1
+
                      for i in range(10):
                          # x = start + i*spacing
                          # 0: 0.35
                          # 1: 0.53
                          # ...
                          px = start_x - i * spacing
+
+                         # Optional extra gap between object groups (keeps intra-group spacing unchanged).
+                         # Example: group_size=3 makes groups [0,1,2], [3,4,5], ... and shifts each later group further downstream.
+                         if pair_gap_extra_x != 0.0:
+                             if pair_gap_mode == 'color_group' and color_group_ids is not None and i < len(color_group_ids):
+                                 pair_idx = int(color_group_ids[i])
+                             elif pair_group_size > 0:
+                                 pair_idx = i // pair_group_size
+                             else:
+                                 pair_idx = 0
+                             px -= pair_idx * pair_gap_extra_x
+
                          # Apply global shift
                          shift_val = MANYCUBES_CONFIG.get('x_shift', 0.0)
                          px += shift_val
-                         
-                         #if i == 3:
-                             #px -= 0.02
+
                          #if i == 1:
                              #px -= 0.02
                          #if i == 5:
@@ -565,7 +610,7 @@ class ManyCubesTask(BimanualPiperTask):
                              # Hide non-target object
                              poses[i] = np.array([10.0 + i, -10.0, -1.0, 1, 0, 0, 0])
                          else:
-                             poses[i] = np.array([px, py, 0.025, 1, 0, 0, 0])
+                             poses[i] = np.array([px, py, 0.01, 1, 0, 0, 0])
                              print(f"Debug: Cube {i} initialized at X={px:.3f}, Y={py:.3f}")
             
                      ref_x = 0 # Ignored
@@ -654,7 +699,7 @@ class ManyCubesTask(BimanualPiperTask):
                          # Hide non-target object
                          poses[cube_idx] = np.array([10.0 + cube_idx, -10.0, -1.0, 1, 0, 0, 0])
                      else:
-                         poses[cube_idx] = np.array([px, py, 0.005, 1, 0, 0, 0])
+                         poses[cube_idx] = np.array([px, py, 0.01, 1, 0, 0, 0])
                          print(f"DEBUG: Interleave Dense - Cube {cube_idx} at Slot {slot_i} (X={px:.3f})")
 
             for i in range(10):
@@ -671,7 +716,7 @@ class ManyCubesTask(BimanualPiperTask):
                     cube_x = orig_x + np.random.uniform(-0.01, 0.01)
                     cube_y = np.random.uniform(0.30, 0.45)
                     cube_quat = np.array([1, 0, 0, 0])
-                    cube_pose = np.concatenate([[cube_x, cube_y, 0.005], cube_quat])
+                    cube_pose = np.concatenate([[cube_x, cube_y, 0.01], cube_quat])
 
                 start_idx = physics.model.name2id(f'cube_{i}_joint', 'joint')
                 qpos_adr = physics.model.jnt_qposadr[start_idx]

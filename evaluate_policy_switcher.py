@@ -31,7 +31,7 @@ from policy import ACTPolicy
 
 # Import Sim Env
 from piper_sim_env import REDBOX_POSE, GREENBOX_POSE, BLUEBOX_POSE
-from piper_sim_env import make_sim_env, MANYCUBES_COLORS, MANYCUBES_TASK_COUNT, MANYCUBES_CONFIG
+from piper_sim_env import make_sim_env, MANYCUBES_COLORS, MANYCUBES_TASK_COUNT, MANYCUBES_CONFIG, MANYCUBES_POSES
 from piper_ee_sim_env import make_ee_sim_env
 from utils import apply_rgb_mask_to_strip, apply_rgb_mask_to_right_strip
 # Constants
@@ -457,7 +457,7 @@ def apply_magnet_logic(physics, magnetized_pairs, color_sequence=None):
         blues = [9]
 
     # 2. Check for new magnetizations
-    threshold = 0.04 # 8cm
+    threshold = 0.06 # 8cm
     
     for g_idx in greens:
         if g_idx in magnetized_pairs: continue
@@ -608,7 +608,11 @@ def load_policy_and_stats(ckpt_dir, policy_class, args, override_state_dim=None,
         stats = pickle.load(f)
 
     policy = make_policy(policy_class, policy_config)
-    loaded_state_dict = torch.load(ckpt_path)
+    loaded_obj = torch.load(ckpt_path)
+    if isinstance(loaded_obj, dict) and 'model_state_dict' in loaded_obj:
+        loaded_state_dict = loaded_obj['model_state_dict']
+    else:
+        loaded_state_dict = loaded_obj
     
     # Handle chunk_size mismatch
     if 'model.pos_table' in loaded_state_dict and 'model.query_embed.weight' in loaded_state_dict:
@@ -642,11 +646,16 @@ def main(args):
     video_camera = args.video_camera
 
     # Import Globals from Sim Env (Moved up to fix UnboundLocalError)
-    from piper_sim_env import MANYCUBES_COLORS, MANYCUBES_TASK_COUNT, MANYCUBES_CONFIG
+    from piper_sim_env import MANYCUBES_COLORS, MANYCUBES_TASK_COUNT, MANYCUBES_CONFIG, MANYCUBES_POSES
     import piper_constants
     
     # Default Fallback (if not defined elsewhere)
     COLOR_SEQUENCE = list('rrgbrrgbrr') # Default if not provided
+
+    # Reset configurable many-cubes placement modifiers (avoid stale globals across runs)
+    MANYCUBES_CONFIG['pair_gap_extra_x'] = 0.0
+    MANYCUBES_CONFIG['pair_group_size'] = 3
+    MANYCUBES_CONFIG['pair_gap_mode'] = 'count'
 
     # --- Sequence Loading Logic ---
     available_sequences = []
@@ -673,6 +682,66 @@ def main(args):
     if args.coop_only and args.indep_only:
         print("Error: --coop_only and --indep_only cannot be used together.")
         return
+
+    coop_x_pairs = []
+    if args.coop_only and args.coop_x_csv:
+        if not os.path.isfile(args.coop_x_csv):
+            print(f"Error: coop_x_csv not found: {args.coop_x_csv}")
+            return
+        with open(args.coop_x_csv, 'r', newline='') as f:
+            reader = csv.DictReader(f)
+            for row in reader:
+                gx_m = row.get('green_x_m', '')
+                bx_m = row.get('blue_x_m', '')
+
+                if gx_m != '' and bx_m != '':
+                    coop_x_pairs.append((float(gx_m), float(bx_m)))
+                    continue
+
+                gx = row.get('green_x', '')
+                bx = row.get('blue_x', '')
+                width = row.get('image_width', '320')
+                if gx == '' or bx == '':
+                    continue
+                width = float(width) if width else 320.0
+                gx_m = (float(gx) - width / 2.0) / 224.0
+                bx_m = (float(bx) - width / 2.0) / 224.0
+                coop_x_pairs.append((gx_m, bx_m))
+
+        if len(coop_x_pairs) == 0:
+            print(f"Error: No valid (green_x, blue_x) rows in {args.coop_x_csv}")
+            return
+        print(f"Loaded coop x-coordinate pairs: {len(coop_x_pairs)} from {args.coop_x_csv}")
+
+    indep_r_pairs = []
+    if args.indep_only and args.indep_r_csv:
+        if not os.path.isfile(args.indep_r_csv):
+            print(f"Error: indep_r_csv not found: {args.indep_r_csv}")
+            return
+        with open(args.indep_r_csv, 'r', newline='') as f:
+            reader = csv.DictReader(f)
+            for row in reader:
+                lx_m = row.get('left_red_x_m', '')
+                rx_m = row.get('right_red_x_m', '')
+
+                if lx_m != '' and rx_m != '':
+                    indep_r_pairs.append((float(lx_m), float(rx_m)))
+                    continue
+
+                lx = row.get('left_red_x', '')
+                rx = row.get('right_red_x', '')
+                width = row.get('image_width', '320')
+                if lx == '' or rx == '':
+                    continue
+                width = float(width) if width else 320.0
+                lx_m = (float(lx) - width / 2.0) / 224.0
+                rx_m = (float(rx) - width / 2.0) / 224.0
+                indep_r_pairs.append((lx_m, rx_m))
+
+        if len(indep_r_pairs) == 0:
+            print(f"Error: No valid (left_red_x, right_red_x) rows in {args.indep_r_csv}")
+            return
+        print(f"Loaded indep red x-coordinate pairs: {len(indep_r_pairs)} from {args.indep_r_csv}")
 
     # Validation check for non-CSV mode
     if not args.sequence_file and not args.commands and not args.match_pretrain_coop_env and not args.coop_only and not args.indep_only:
@@ -874,131 +943,182 @@ def main(args):
 
     try:
         while episode_count < args.num_rollouts:
+            MANYCUBES_POSES[0] = None
             # --- Sequence Selection ---
             if args.coop_only:
-                x_shift = 1.0 + np.random.uniform(-0.10, 0.10)
-                MANYCUBES_CONFIG['x_shift'] = x_shift
+                if len(coop_x_pairs) > 0:
+                    g_x, b_x = coop_x_pairs[np.random.randint(len(coop_x_pairs))]
+                    g_idx, b_idx = 8, 9
+                    y_min, y_max = 0.32, 0.45
+                    g_y = np.random.uniform(y_min, y_max)
+                    b_y = np.random.uniform(y_min, y_max)
 
-                start_x = 0.0
-                spacing = 0.15
-                xs = [(start_x - i * spacing) + x_shift for i in range(10)]
+                    poses = {}
+                    for i in range(10):
+                        poses[i] = np.array([10.0 + i, -10.0, -1.0, 1, 0, 0, 0], dtype=np.float32)
+                    poses[g_idx] = np.array([g_x, g_y, 0.01, 1, 0, 0, 0], dtype=np.float32)
+                    poses[b_idx] = np.array([b_x, b_y, 0.01, 1, 0, 0, 0], dtype=np.float32)
+                    MANYCUBES_POSES[0] = poses
 
-                # Same bounds as generate_pretrain_dataset.py cooperative mode
-                l_bound_u, l_bound_l = 0.15, -0.60
-                r_bound_l, r_bound_u = -0.35, 0.60
+                    color_seq = ['r'] * 10
+                    color_seq[g_idx] = 'g'
+                    color_seq[b_idx] = 'b'
+                    command_queue = list('C')
+                    MANYCUBES_CONFIG['target_indices'] = {g_idx, b_idx}
 
-                left_candidates = [i for i, x in enumerate(xs) if x <= l_bound_u and x > l_bound_l]
-                right_candidates = [i for i, x in enumerate(xs) if x >= r_bound_l and x < r_bound_u]
-
-                if not left_candidates or not right_candidates:
-                    print(f"  [Eval] WARNING: Could not find candidates in both regions (X-Shift={x_shift:.3f})! Fallback to random.")
-                    indices = np.random.choice(10, 2, replace=False)
-                    l_idx, r_idx = int(indices[0]), int(indices[1])
+                    print(
+                        f"Rollout {episode_count} | coop_only(x-from-csv) "
+                        f"G(x={g_x:.3f}, y={g_y:.3f}) B(x={b_x:.3f}, y={b_y:.3f})"
+                    )
                 else:
-                    # Same cooperative pair selection policy as generate_pretrain_dataset.py
-                    max_abs_dx = 0.70
-                    jitter_x_cfg = 0.08
-                    center_dx_limit = max(0.0, max_abs_dx - 2.0 * jitter_x_cfg)
-                    use_proximity = (np.random.rand() < 0.6)
-                    anchor_left = (np.random.rand() < 0.5)
+                    x_shift = 1.0 + np.random.uniform(-0.10, 0.10)
+                    MANYCUBES_CONFIG['x_shift'] = x_shift
 
-                    if anchor_left:
-                        l_idx = int(np.random.choice(left_candidates))
-                        prox_right = [ri for ri in right_candidates if ri != l_idx and abs(l_idx - ri) <= 3]
-                        valid_right = [ri for ri in right_candidates if ri != l_idx and abs(xs[l_idx] - xs[ri]) <= center_dx_limit]
-                        prox_right_valid = [ri for ri in prox_right if abs(xs[l_idx] - xs[ri]) <= center_dx_limit]
-                        if use_proximity and prox_right:
-                            pick_pool = prox_right_valid if prox_right_valid else prox_right
-                            r_idx = int(np.random.choice(pick_pool))
-                        else:
-                            right_pool = [ri for ri in right_candidates if ri != l_idx] or right_candidates
-                            pick_pool = valid_right if valid_right else right_pool
-                            r_idx = int(np.random.choice(pick_pool))
+                    start_x = 0.0
+                    spacing = 0.15
+                    xs = [(start_x - i * spacing) + x_shift for i in range(10)]
+
+                    # Same bounds as generate_pretrain_dataset.py cooperative mode
+                    l_bound_u, l_bound_l = 0.15, -0.60
+                    r_bound_l, r_bound_u = -0.35, 0.60
+
+                    left_candidates = [i for i, x in enumerate(xs) if x <= l_bound_u and x > l_bound_l]
+                    right_candidates = [i for i, x in enumerate(xs) if x >= r_bound_l and x < r_bound_u]
+
+                    if not left_candidates or not right_candidates:
+                        print(f"  [Eval] WARNING: Could not find candidates in both regions (X-Shift={x_shift:.3f})! Fallback to random.")
+                        indices = np.random.choice(10, 2, replace=False)
+                        l_idx, r_idx = int(indices[0]), int(indices[1])
                     else:
-                        r_idx = int(np.random.choice(right_candidates))
-                        prox_left = [li for li in left_candidates if li != r_idx and abs(li - r_idx) <= 3]
-                        valid_left = [li for li in left_candidates if li != r_idx and abs(xs[li] - xs[r_idx]) <= center_dx_limit]
-                        prox_left_valid = [li for li in prox_left if abs(xs[li] - xs[r_idx]) <= center_dx_limit]
-                        if use_proximity and prox_left:
-                            pick_pool = prox_left_valid if prox_left_valid else prox_left
-                            l_idx = int(np.random.choice(pick_pool))
-                        else:
-                            left_pool = [li for li in left_candidates if li != r_idx] or left_candidates
-                            pick_pool = valid_left if valid_left else left_pool
-                            l_idx = int(np.random.choice(pick_pool))
+                    # Same cooperative pair selection policy as generate_pretrain_dataset.py
+                        max_abs_dx = 0.70
+                        jitter_x_cfg = 0.08
+                        center_dx_limit = max(0.0, max_abs_dx - 2.0 * jitter_x_cfg)
+                        use_proximity = (np.random.rand() < 0.6)
+                        anchor_left = (np.random.rand() < 0.5)
 
-                    center_dx = abs(xs[l_idx] - xs[r_idx])
-                    if center_dx > center_dx_limit:
                         if anchor_left:
+                            l_idx = int(np.random.choice(left_candidates))
+                            prox_right = [ri for ri in right_candidates if ri != l_idx and abs(l_idx - ri) <= 3]
                             valid_right = [ri for ri in right_candidates if ri != l_idx and abs(xs[l_idx] - xs[ri]) <= center_dx_limit]
-                            if valid_right:
-                                r_idx = min(valid_right, key=lambda ri: abs(xs[l_idx] - xs[ri]))
+                            prox_right_valid = [ri for ri in prox_right if abs(xs[l_idx] - xs[ri]) <= center_dx_limit]
+                            if use_proximity and prox_right:
+                                pick_pool = prox_right_valid if prox_right_valid else prox_right
+                                r_idx = int(np.random.choice(pick_pool))
+                            else:
+                                right_pool = [ri for ri in right_candidates if ri != l_idx] or right_candidates
+                                pick_pool = valid_right if valid_right else right_pool
+                                r_idx = int(np.random.choice(pick_pool))
                         else:
+                            r_idx = int(np.random.choice(right_candidates))
+                            prox_left = [li for li in left_candidates if li != r_idx and abs(li - r_idx) <= 3]
                             valid_left = [li for li in left_candidates if li != r_idx and abs(xs[li] - xs[r_idx]) <= center_dx_limit]
-                            if valid_left:
-                                l_idx = min(valid_left, key=lambda li: abs(xs[li] - xs[r_idx]))
+                            prox_left_valid = [li for li in prox_left if abs(xs[li] - xs[r_idx]) <= center_dx_limit]
+                            if use_proximity and prox_left:
+                                pick_pool = prox_left_valid if prox_left_valid else prox_left
+                                l_idx = int(np.random.choice(pick_pool))
+                            else:
+                                left_pool = [li for li in left_candidates if li != r_idx] or left_candidates
+                                pick_pool = valid_left if valid_left else left_pool
+                                l_idx = int(np.random.choice(pick_pool))
 
-                command_queue = list('C')
-                indices = np.array([l_idx, r_idx])
+                        center_dx = abs(xs[l_idx] - xs[r_idx])
+                        if center_dx > center_dx_limit:
+                            if anchor_left:
+                                valid_right = [ri for ri in right_candidates if ri != l_idx and abs(xs[l_idx] - xs[ri]) <= center_dx_limit]
+                                if valid_right:
+                                    r_idx = min(valid_right, key=lambda ri: abs(xs[l_idx] - xs[ri]))
+                            else:
+                                valid_left = [li for li in left_candidates if li != r_idx and abs(xs[li] - xs[r_idx]) <= center_dx_limit]
+                                if valid_left:
+                                    l_idx = min(valid_left, key=lambda li: abs(xs[li] - xs[r_idx]))
 
-                # Same cooperative placement diversity config as generate_pretrain_dataset.py
-                MANYCUBES_CONFIG['target_jitter_x'] = 0.08
-                MANYCUBES_CONFIG['target_y_min'] = 0.32
-                MANYCUBES_CONFIG['target_y_max'] = 0.45
+                    command_queue = list('C')
+                    indices = np.array([l_idx, r_idx])
 
-                c_list = ['r'] * 10
-                pair = ['g', 'b']
-                np.random.shuffle(pair)
-                c_list[indices[0]] = pair[0]
-                c_list[indices[1]] = pair[1]
-                color_seq = c_list
-                MANYCUBES_CONFIG['target_indices'] = set(indices.tolist())
+                    # Same cooperative placement diversity config as generate_pretrain_dataset.py
+                    MANYCUBES_CONFIG['target_jitter_x'] = 0.08
+                    MANYCUBES_CONFIG['target_y_min'] = 0.32
+                    MANYCUBES_CONFIG['target_y_max'] = 0.45
 
-                print(
-                    f"Rollout {episode_count} | coop_only(pretrain-coop-like) x_shift={x_shift:.3f} "
-                    f"targets=({l_idx},{r_idx}) colors={''.join(color_seq)} commands=C"
-                )
+                    c_list = ['r'] * 10
+                    pair = ['g', 'b']
+                    np.random.shuffle(pair)
+                    c_list[indices[0]] = pair[0]
+                    c_list[indices[1]] = pair[1]
+                    color_seq = c_list
+                    MANYCUBES_CONFIG['target_indices'] = set(indices.tolist())
+
+                    print(
+                        f"Rollout {episode_count} | coop_only(pretrain-coop-like) x_shift={x_shift:.3f} "
+                        f"targets=({l_idx},{r_idx}) colors={''.join(color_seq)} commands=C"
+                    )
 
             elif args.indep_only:
-                x_shift = 1.0 + np.random.uniform(-0.10, 0.10)
-                MANYCUBES_CONFIG['x_shift'] = x_shift
+                if len(indep_r_pairs) > 0:
+                    left_x, right_x = indep_r_pairs[np.random.randint(len(indep_r_pairs))]
+                    left_idx, right_idx = 8, 9
+                    y_min, y_max = 0.32, 0.45
+                    left_y = np.random.uniform(y_min, y_max)
+                    right_y = np.random.uniform(y_min, y_max)
 
-                start_x = 0.0
-                spacing = 0.15
-                xs = [(start_x - i * spacing) + x_shift for i in range(10)]
+                    poses = {}
+                    for i in range(10):
+                        poses[i] = np.array([10.0 + i, -10.0, -1.0, 1, 0, 0, 0], dtype=np.float32)
+                    poses[left_idx] = np.array([left_x, left_y, 0.01, 1, 0, 0, 0], dtype=np.float32)
+                    poses[right_idx] = np.array([right_x, right_y, 0.01, 1, 0, 0, 0], dtype=np.float32)
+                    MANYCUBES_POSES[0] = poses
 
-                # Match generate_dataset.py --pretrain_mode independent bounds
-                l_bound_u, l_bound_l = -0.10, -0.40
-                r_bound_l, r_bound_u = 0.00, 0.30
+                    color_seq = ['g'] * 10
+                    color_seq[left_idx] = 'r'
+                    color_seq[right_idx] = 'r'
+                    command_queue = list('I')
+                    MANYCUBES_CONFIG['target_indices'] = {left_idx, right_idx}
 
-                left_candidates = [i for i, x in enumerate(xs) if x <= l_bound_u and x > l_bound_l]
-                right_candidates = [i for i, x in enumerate(xs) if x >= r_bound_l and x < r_bound_u]
-
-                if not left_candidates or not right_candidates:
-                    print(f"  [Eval] WARNING: Could not find candidates in both regions (X-Shift={x_shift:.3f})! Fallback to random.")
-                    indices = np.random.choice(10, 2, replace=False)
-                    l_idx, r_idx = int(indices[0]), int(indices[1])
+                    print(
+                        f"Rollout {episode_count} | indep_only(x-from-csv) "
+                        f"L-R(x={left_x:.3f}, y={left_y:.3f}) R-R(x={right_x:.3f}, y={right_y:.3f})"
+                    )
                 else:
-                    l_idx = int(np.random.choice(left_candidates))
-                    right_filtered = [ri for ri in right_candidates if ri != l_idx]
-                    if right_filtered:
-                        r_idx = int(np.random.choice(right_filtered))
+                    x_shift = 1.0 + np.random.uniform(-0.10, 0.10)
+                    MANYCUBES_CONFIG['x_shift'] = x_shift
+
+                    start_x = 0.0
+                    spacing = 0.15
+                    xs = [(start_x - i * spacing) + x_shift for i in range(10)]
+
+                    # Match generate_dataset.py --pretrain_mode independent bounds
+                    l_bound_u, l_bound_l = -0.10, -0.40
+                    r_bound_l, r_bound_u = 0.00, 0.30
+
+                    left_candidates = [i for i, x in enumerate(xs) if x <= l_bound_u and x > l_bound_l]
+                    right_candidates = [i for i, x in enumerate(xs) if x >= r_bound_l and x < r_bound_u]
+
+                    if not left_candidates or not right_candidates:
+                        print(f"  [Eval] WARNING: Could not find candidates in both regions (X-Shift={x_shift:.3f})! Fallback to random.")
+                        indices = np.random.choice(10, 2, replace=False)
+                        l_idx, r_idx = int(indices[0]), int(indices[1])
                     else:
-                        r_idx = int(np.random.choice(right_candidates))
+                        l_idx = int(np.random.choice(left_candidates))
+                        right_filtered = [ri for ri in right_candidates if ri != l_idx]
+                        if right_filtered:
+                            r_idx = int(np.random.choice(right_filtered))
+                        else:
+                            r_idx = int(np.random.choice(right_candidates))
 
-                command_queue = list('I')
-                indices = np.array([l_idx, r_idx])
+                    command_queue = list('I')
+                    indices = np.array([l_idx, r_idx])
 
-                c_list = np.random.choice(['g', 'b'], size=10).tolist()
-                c_list[indices[0]] = 'r'
-                c_list[indices[1]] = 'r'
-                color_seq = c_list
-                MANYCUBES_CONFIG['target_indices'] = set(indices.tolist())
+                    c_list = np.random.choice(['g', 'b'], size=10).tolist()
+                    c_list[indices[0]] = 'r'
+                    c_list[indices[1]] = 'r'
+                    color_seq = c_list
+                    MANYCUBES_CONFIG['target_indices'] = set(indices.tolist())
 
-                print(
-                    f"Rollout {episode_count} | indep_only(pretrain-indep-like) x_shift={x_shift:.3f} "
-                    f"targets=({l_idx},{r_idx}) colors={''.join(color_seq)} commands=I"
-                )
+                    print(
+                        f"Rollout {episode_count} | indep_only(pretrain-indep-like) x_shift={x_shift:.3f} "
+                        f"targets=({l_idx},{r_idx}) colors={''.join(color_seq)} commands=I"
+                    )
 
             elif args.match_pretrain_coop_env:
                 x_shift = 1.0 + np.random.uniform(-0.10, 0.10)
@@ -1064,6 +1184,15 @@ def main(args):
                 command_queue = list('C')
             elif args.indep_only:
                 command_queue = list('I')
+
+            if args.ckpt_e2e and args.e2e_pair_gap_extra_x != 0.0:
+                MANYCUBES_CONFIG['pair_gap_extra_x'] = float(args.e2e_pair_gap_extra_x)
+                MANYCUBES_CONFIG['pair_group_size'] = max(1, int(args.e2e_pair_group_size))
+                MANYCUBES_CONFIG['pair_gap_mode'] = str(args.e2e_pair_gap_mode)
+            else:
+                MANYCUBES_CONFIG['pair_gap_extra_x'] = 0.0
+                MANYCUBES_CONFIG['pair_group_size'] = 3
+                MANYCUBES_CONFIG['pair_gap_mode'] = 'count'
             
             # Update Globals for simulation environment
             MANYCUBES_COLORS[0] = color_seq
@@ -1821,6 +1950,11 @@ if __name__ == '__main__':
     parser.add_argument('--x_shift', action='store', type=float, default=0.0, help='Shift all objects along X-axis')
     parser.add_argument('--x_shift_start_idx', action='store', type=int, default=0, help='Start index for applying x-shift (0-indexed)')
     parser.add_argument('--match_pretrain_coop_env', action='store_true', help='Match generate_dataset --pretrain_mode cooperative conditions (2 visible cubes + random x-shift)')
+    parser.add_argument('--coop_x_csv', action='store', type=str, default=None, help='CSV with extracted green/blue x positions (pixel or meter columns) used to initialize --coop_only object x')
+    parser.add_argument('--indep_r_csv', action='store', type=str, default=None, help='CSV with extracted left/right red x positions (pixel or meter columns) used to initialize --indep_only object x')
+    parser.add_argument('--e2e_pair_gap_extra_x', action='store', type=float, default=0.0, help='E2E eval only: add extra X gap between object groups while keeping intra-group spacing')
+    parser.add_argument('--e2e_pair_gap_mode', action='store', type=str, choices=['count', 'color_group'], default='count', help='E2E eval only: gap grouping mode (count: fixed by group_size, color_group: by RGB color group)')
+    parser.add_argument('--e2e_pair_group_size', action='store', type=int, default=3, help='E2E eval only: group size used for e2e_pair_gap_extra_x (default: 3)')
     
     args = parser.parse_args()
     main(args)

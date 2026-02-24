@@ -7,12 +7,6 @@
     </asset>
 
     <worldbody>
-        <!-- Invisible belt extension to the left (-1.0 -> -0.5 range approx) -->
-        <!-- Invisible belt extension to the left (-1.0 -> -0.5 range approx) -->
-        <body name="belt_extension" pos="-1.0 0.38 -0.02">
-             <joint name="belt_extension_joint" type="slide" axis="1 0 0" frictionloss="0.0" />
-             <geom condim="4" friction="0 0 0" pos="0 0 0" size="0.5 0.099 0.02" type="box" name="belt_extension_geom" rgba="0 1 0 0" />
-        </body>
 
         <body name="cube_0" pos="0 0.0 0.05">
             <joint name="cube_0_joint" type="free" frictionloss="0.01" />
@@ -87,8 +81,5 @@
 
     </actuator>
 
-    <equality>
-        <joint joint1="belt_joint" joint2="belt_extension_joint" polycoef="0 1 0 0 0" />
-    </equality>
 
 </mujoco>
